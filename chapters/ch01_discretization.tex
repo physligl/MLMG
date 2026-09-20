@@ -3,30 +3,31 @@
 
 本章建立后续全书共同使用的离散对象：怎样从连续椭圆型方程得到有限个未知量、局部 stencil 和全局线性系统。后面的 Jacobi、Gauss--Seidel、多重网格以及并行实现都只是在操作这个离散系统，因此第一章最重要的不是记住若干公式，而是能够解释每一个矩阵系数从哪一个局部关系产生。
 
-本章先用 Poisson 方程建立节点型有限差分的最小模型，再保持同一个 Poisson 问题不变，引入 cell-centered 有限体积。这样读者可以先单独理解“方法怎样不同”。随后才把连续模型推广为一般变系数椭圆算子，并要求 FD 与 FV 分别完成一次推广。最后再讨论同一组边界条件怎样进入这两种已经明确的离散表示。两条路线最终都会得到 $A\bm u=\bm b$，但未知量位置和局部方程的生成机制并不相同。\textbf{本章始终只讨论单一分辨率网格}；局部细化以及粗、细离散层之间的耦合留到\chapref{ch:amr-discretization}。
+本章先用 Poisson 方程建立节点型有限差分的最小模型，让读者看清 Taylor 展开怎样生成 stencil 与矩阵；随后保持同一个连续问题不变，引入 cell-centered 有限体积，并把“控制体--面--数值通量--局部守恒”建立成后续全书的主表示。进入一般变系数椭圆算子以后，两种方法仍会并行比较，但从物理边界、AMR coarse--fine interface 到后续 matrix-free 实现，本书优先使用\textbf{面通量}解释离散闭合。节点型 FD 继续作为重要的等价代数表示和分析工具，而不是后续边界与界面讨论的唯一出发点。\textbf{本章始终只讨论单一分辨率网格}；局部细化以及粗、细离散层之间的耦合留到\chapref{ch:amr-discretization}。
 
 \begin{keybox}
 \textbf{本章的核心学习链：}
 \[
 \boxed{\text{Poisson}\rightarrow
 \begin{cases}
-\text{节点型 FD：导数近似}\\
-\text{cell-centered FV：控制体收支}
+\text{节点型 FD：导数近似生成 stencil}\\
+\text{cell-centered FV：控制体收支生成数值通量}
 \end{cases}
-\rightarrow\text{局部离散关系}}
+\rightarrow A\bm u=\bm b}
 \]
 \[
-\boxed{\text{一般椭圆算子}\rightarrow
-\begin{cases}
-\text{FD：半点通量再做散度差分}\\
-\text{FV：材料系数进入数值面通量}
-\end{cases}
-\rightarrow\text{加权局部耦合}}
+\boxed{\text{一般椭圆算子}
+\rightarrow\text{面/半点通量}
+\rightarrow\text{共享面反对称装配}
+\rightarrow\text{局部守恒}}
 \]
 \[
-\boxed{\text{边界数据}\rightarrow\text{按未知量布局闭合}\rightarrow\text{矩阵行/右端/零空间的变化}}
+\boxed{\text{物理边界}
+\rightarrow\text{边界面缺少域内邻居}
+\rightarrow\text{BC 闭合 }\widehat Q_f
+\rightarrow\text{矩阵/右端/零空间变化}}
 \]
-第一次阅读需要始终回答四个问题：当前连续方程是什么？未知量放在哪里？一条局部离散方程是怎样生成的？边界信息最终改变了哪一个代数对象？Kronecker 记号、DtN、张量各向异性以及详细存储预算属于压缩表示或扩展内容，可以跳过而不破坏核心路径。
+第一次阅读需要始终回答五个问题：当前连续方程是什么？离散未知量放在哪里？每一个面上的数值通量由哪些状态决定？内部共享面怎样保证守恒？物理边界面怎样由边界关系闭合？Kronecker 记号、DtN、张量各向异性以及详细存储预算属于压缩表示或扩展内容，可以跳过而不破坏核心路径。
 \end{keybox}
 
 \section{一维 Poisson 方程的离散与线性系统}
@@ -778,63 +779,440 @@ u_{i+1,j+1}-u_{i+1,j-1}-u_{i-1,j+1}+u_{i-1,j-1}}{4h_xh_y},
 \section{边界条件的离散闭合}
 \label{sec:discretization-boundary-conditions}
 
-现在节点型 FD 和 cell-centered FV 都已经建立。连续边界条件本身并不会因为离散方法改变，但它进入代数系统的方式取决于\textbf{未知量布局}：FD 可能在边界节点上直接保存 $u$，FV 则通常通过控制体的边界面提供通量闭合。因此本节不再切换离散表示，只研究“同一个边界信息在已经确定的表示中怎样闭合方程”。本节始终沿着同一条链路：
+前面已经建立了两种离散语言：节点型有限差分从点上的导数近似出发，cell-centered 有限体积则从控制体的通量收支出发。从这一节开始，本书把\textbf{有限体积的面通量观点作为边界条件的主表示}。原因不是有限差分不能处理边界，而是后续的变系数扩散、AMR coarse--fine interface、embedded boundary 以及并行 patch 边界都会反复使用同一个问题：\textbf{某个离散控制体的一个面没有普通的同层邻居时，这个面的数值通量怎样闭合？}
+
+对一般扩散型椭圆算子
+\begin{equation}
+-\nabla\cdot(\beta\nabla u)+\alpha u=f,
+\end{equation}
+定义扩散通量
+\begin{equation}
+\bm q=-\beta\nabla u.
+\end{equation}
+对控制体 $V_P$ 的离散方程写成
 \begin{equation}
 \boxed{
-\begin{gathered}
-\text{连续边界条件}\longrightarrow\text{离散边界关系}\\
-\downarrow\\[-0.4em]
-\text{消去边界/辅助量}\longrightarrow\text{修改矩阵行与右端}
-\end{gathered}
+\sum_{f\subset\partial V_P}\widehat Q_{P,f}
++\alpha_PV_Pu_P
+=f_PV_P,
+}
+\label{eq:discretization-boundary-control-volume-balance}
+\end{equation}
+其中 $\widehat Q_{P,f}$ 是相对于控制体 $P$ 外法向定向的数值面通量。对内部共享面，邻接控制体提供另一侧状态；对物理边界面，则不存在域内同层邻居，必须由边界条件闭合 $\widehat Q_{P,f}$。因此本节的主链不是“边界点缺一个 stencil 值”，而是
+\begin{equation}
+\boxed{
+\text{连续边界关系}
+\longrightarrow
+\text{边界面状态--通量关系}
+\longrightarrow
+\widehat Q_{P,f}
+\longrightarrow
+\text{控制体装配}
+\longrightarrow
+A\bm u=\bm b.
 }
 \label{eq:discretization-bc-chain}
 \end{equation}
-先在一维节点型有限差分上把这条链走通，再进入二维、三维。这样多维边界不会变成一组需要背诵的特殊规则。
 
+\begin{keybox}
+\textbf{后续全书使用的边界心智模型：}
 
-\subsection{未知量布局与边界表示}
+物理边界不是“stencil 到头了”的特殊补丁，而是计算域真正结束的位置。内部面由两个离散状态共同决定一个共享数值通量；物理边界面没有域内邻居，因此由 Dirichlet、Neumann、Robin 或更一般的边界算子提供\textbf{通量闭合}。ghost value、单边差分和边界节点方程都只是实现这种闭合的具体表示，不是边界条件本身。
+\end{keybox}
 
-在写任何边界公式之前，先把两种表示放在一起：
-\begin{center}
-\small
-\begin{tabularx}{0.95\textwidth}{>{\bfseries}p{2.8cm}X X}
-\toprule
- & 节点型 FD & cell-centered FV\\
-\midrule
-边界附近未知量 & 边界点可能就是一个 $u_0$ & 最近未知量在边界内侧的 cell center $P$\\
-Dirichlet & 可直接给边界节点值，或消去该自由度 & 用已知边界面值闭合 $Q_f$\\
-Neumann & 用单边/辅助点关系近似法向导数 & 直接给定边界面通量或由导数换算通量\\
-二维角部 & 不同边界段可能落到同一个角节点 & 一个角部 cell 拥有多个物理边界面\\
-三维棱/角 & 一个节点可能位于多个边界面的闭包上 & 一个 cell 可同时拥有两个或三个边界面\\
-\bottomrule
-\end{tabularx}
-\end{center}
+\subsection{物理边界面与内部共享面的区别}
+\label{sec:discretization-cell-centered-boundary}
 
-因此边界条件离散的第一步永远不是“套 Dirichlet/Neumann 公式”，而是先确认当前代数未知量与物理边界之间的几何关系。
+设内部面 $f=P|N$ 由控制体 $P$ 与 $N$ 共享。只要两边使用同一个数值通量并采用相反外法向，就有
+\begin{equation}
+\widehat Q_{N,f}=-\widehat Q_{P,f}.
+\end{equation}
+这使该面在所有控制体方程求和时严格抵消，是离散局部守恒的来源。
 
-\subsection{一维边界闭合}
+物理边界面 $f\subset\partial\Omega$ 则不同：面外侧没有另一个域内控制体，因此不能写成普通的 $P|N$ 两点关系。边界条件的作用，就是把连续边界信息转换成这个面的离散通量。图~\ref{fig:discretization-boundary-flux-closure} 把两种面并排表示。
 
-回到一维 Poisson 方程。第一个内部点满足
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.92,font=\small,>=Stealth]
+  \begin{scope}[xshift=0cm]
+    \draw[thick] (0,0) rectangle (2,2);
+    \draw[thick] (2,0) rectangle (4,2);
+    \fill (1,1) circle (2.3pt);
+    \fill (3,1) circle (2.3pt);
+    \node[above right] at (1,1) {$P$};
+    \node[above right] at (3,1) {$N$};
+    \draw[very thick,deepblue] (2,0)--(2,2);
+    \draw[->,deepblue,thick] (1.55,1.45)--(2.45,1.45);
+    \node[above] at (2,1.52) {$\widehat Q_{P,f}$};
+    \node at (2,-0.45) {内部共享面：两侧状态闭合一个通量};
+  \end{scope}
+  \begin{scope}[xshift=6.0cm]
+    \draw[very thick,deepblue] (0,0)--(0,2);
+    \draw[thick] (0,0) rectangle (2,2);
+    \fill (1,1) circle (2.3pt);
+    \node[above right] at (1,1) {$P$};
+    \draw[->,deepblue,thick] (0.55,1.45)--(-0.55,1.45);
+    \node[above] at (-0.05,1.52) {$\widehat Q_{P,f}$};
+    \node[left] at (0,0.55) {$\partial\Omega$};
+    \node at (1,-0.45) {物理边界面：BC 闭合缺失通量};
+  \end{scope}
+\end{tikzpicture}
+\caption{内部共享面与物理边界面的离散角色。内部面两侧都有域内状态；物理边界面没有域内邻居，边界条件必须提供状态--通量关系来闭合数值通量。}
+\label{fig:discretization-boundary-flux-closure}
+\end{figure}
+
+这一视角会直接延续到\chapref{ch:amr-discretization}：coarse--fine interface 仍位于计算域内部，所以它不是新的物理边界；它的困难是相邻状态属于不同尺度，需要跨层重构并闭合跨层通量。第一章先把真正的物理边界说清楚，第二章只需改变“邻居来自哪里”，不需要更换离散语言。
+
+\subsection{Dirichlet 条件：给定边界状态并恢复通量}
+
+设边界面 $f$ 给定
+\begin{equation}
+u_f=g_D.
+\end{equation}
+若 $P$ 的 cell center 到边界面的法向距离为 $\delta_f$，面面积为 $A_f$，边界面系数为 $\beta_f$，则最简单的一侧两点闭合为
+\begin{equation}
+\boxed{
+\widehat Q_{P,f}
+=T_f(u_P-g_D),
+\qquad
+T_f=\frac{\beta_fA_f}{\delta_f}.
+}
+\label{eq:discretization-bc-dirichlet-numerical-flux}
+\end{equation}
+这个式子的生成顺序很重要。Dirichlet 条件首先给的是边界状态 $u_f$，然后数值方法用 $u_P$ 与 $u_f$ 的差近似法向梯度，最后才得到外向扩散通量。把式~\eqref{eq:discretization-bc-dirichlet-numerical-flux}放入控制体方程后，该边界面对矩阵和右端的贡献分别是
+\begin{equation}
+\Delta A_{PP}=T_f,
+\qquad
+\Delta b_P=T_fg_D.
+\end{equation}
+
+这也暴露了边界精度必须独立检查。若 $u_P$ 被解释为中心点值，则 $(g_D-u_P)/\delta_f$ 对边界法向导数通常只有一阶一致性；内部二阶 stencil 并不能自动把这一侧闭合提升到二阶。若全局目标是二阶或更高阶，就必须使用与目标阶数匹配的边界重构，并通过网格收敛实验验证。
+
+\subsection{Neumann 条件：直接给定边界通量}
+
+Neumann 条件给定外法向导数
+\begin{equation}
+\frac{\partial u}{\partial n}=g_N.
+\label{eq:discretization-neumann-bc}
+\end{equation}
+由于本章定义的扩散通量为 $\bm q=-\beta\nabla u$，因此相对于控制体外法向的连续通量密度是 $-\beta g_N$。用面中点值代表边界数据时，数值面通量直接写成
+\begin{equation}
+\boxed{
+\widehat Q_{P,f}
+=-\beta_fA_fg_N.
+}
+\label{eq:discretization-bc-neumann-numerical-flux}
+\end{equation}
+如果 $g_N$ 或 $\beta$ 沿面变化，更严格的写法应对 $-\beta g_N$ 做面求积；式~\eqref{eq:discretization-bc-neumann-numerical-flux}包含了面中点求积近似。
+
+因此 Neumann 与 Dirichlet 的角色并不对称：Dirichlet 给状态，数值方法还要从状态恢复通量；Neumann 已经给出法向导数，乘以 $-\beta$ 后就直接提供边界通量。这也是有限体积视角下最值得保留的区别。
+
+纯 Neumann 问题的兼容条件可以直接从全局通量平衡得到，而无需先观察矩阵。令 $\alpha=0$，对所有控制体方程求和。所有内部共享面都因通量反对称性成对抵消，只剩物理边界面：
+\begin{equation}
+\sum_P f_PV_P
+=
+\sum_{f\subset\partial\Omega}\widehat Q_f
+=-\sum_{f\subset\partial\Omega}\beta_fA_fg_{N,f}.
+\end{equation}
+于是离散兼容条件为
+\begin{equation}
+\boxed{
+\sum_P f_PV_P
++\sum_{f\subset\partial\Omega}\beta_fA_fg_{N,f}=0.
+}
+\label{eq:discretization-neumann-discrete-compatibility}
+\end{equation}
+连续极限对应
+\begin{equation}
+\boxed{
+\int_\Omega f\,\mathrm d\Omega
++\int_{\partial\Omega}\beta g_N\,\mathrm dS=0.
+}
+\label{eq:discretization-neumann-compatibility}
+\end{equation}
+对 Poisson 方程取 $\beta=1$ 即得到常见形式。另一方面，当边界全部为齐次 Neumann 且 $\alpha=0$ 时，离散方程只依赖未知量差值，所以
+\begin{equation}
+A\bm 1=0.
+\end{equation}
+常数零空间与全局兼容条件因此都可以从同一个守恒结构理解，而不是把它们当成求解器阶段突然出现的特殊情形。
+
+\subsection{Robin 条件：局部状态--通量关系}
+
+Robin 条件给定边界状态与外法向导数的局部线性组合
+\begin{equation}
+a_fu_f+b_f\frac{\partial u}{\partial n}=g_f.
+\label{eq:discretization-robin-general}
+\end{equation}
+仍用一侧法向近似
+\begin{equation}
+\frac{\partial u}{\partial n}
+\approx
+\frac{u_f-u_P}{\delta_f}.
+\end{equation}
+若 $a_f\delta_f+b_f\ne0$，则边界面状态满足
+\begin{equation}
+\boxed{
+u_f
+=\frac{b_f}{a_f\delta_f+b_f}u_P
++\frac{g_f\delta_f}{a_f\delta_f+b_f}.
+}
+\label{eq:discretization-robin-fv-boundary-state}
+\end{equation}
+再代入两点通量
+\begin{equation}
+\widehat Q_{P,f}=T_f(u_P-u_f),
+\qquad
+T_f=\frac{\beta_fA_f}{\delta_f},
+\label{eq:discretization-bc-transmissibility}
+\end{equation}
+得到
+\begin{equation}
+\boxed{
+\widehat Q_{P,f}
+=\frac{\beta_fA_fa_f}{a_f\delta_f+b_f}u_P
+-\frac{\beta_fA_fg_f}{a_f\delta_f+b_f}.
+}
+\label{eq:discretization-robin-flux-closure}
+\end{equation}
+因此 Robin 边界面对矩阵和右端的贡献是
+\begin{equation}
+\boxed{
+\Delta A_{PP}
+=\frac{\beta_fA_fa_f}{a_f\delta_f+b_f},
+\qquad
+\Delta b_P
+=\frac{\beta_fA_fg_f}{a_f\delta_f+b_f}.
+}
+\label{eq:discretization-robin-matrix-contribution}
+\end{equation}
+
+这个推导比记忆 Robin 的某个矩阵行更有迁移性。令 $b_f=0$，边界状态退化为 $u_f=g_f/a_f$，恢复 Dirichlet；令 $a_f=0$，边界导数退化为 $g_f/b_f$，式~\eqref{eq:discretization-robin-flux-closure} 变为 $\widehat Q_{P,f}=-\beta_fA_fg_f/b_f$，恢复 Neumann。两个极限同时检查了法向、扩散通量定义以及右端符号。
+
+更一般地，如果某个局部边界闭合可以写成
+\begin{equation}
+u_f=c_fu_P+s_f,
+\label{eq:discretization-bc-affine-closure}
+\end{equation}
+则
+\begin{equation}
+\widehat Q_{P,f}
+=T_f(u_P-u_f)
+=T_f(1-c_f)u_P-T_fs_f.
+\end{equation}
+因此代数贡献统一为
+\begin{equation}
+\boxed{
+\Delta A_{PP}=T_f(1-c_f),
+\qquad
+\Delta b_P=T_fs_f.
+}
+\label{eq:discretization-bc-general-matrix-contribution}
+\end{equation}
+这里必须区分两层事实：式~\eqref{eq:discretization-bc-general-matrix-contribution} 是给定离散闭合后的精确代数恒等式；而 $u_f=c_fu_P+s_f$ 对连续边界关系逼近到什么阶，则属于截断误差问题，需要单独分析。
+
+\subsection{多边界面、角部与逐面装配}
+
+有限体积对二维角部和三维棱/角的处理非常直接，因为边界条件定义在\textbf{面}上，而不是把多个边界关系强行压到一个几何角点未知量上。对一个控制体 $P$，记 $\mathcal N(P)$ 为内部面邻居集合，$\Gamma(P)$ 为物理边界面集合，则
+\begin{equation}
+\boxed{
+\begin{aligned}
+&\left(
+\alpha_PV_P
++\sum_{N\in\mathcal N(P)}T_{PN}
++\sum_{f\in\Gamma(P)}\Delta A_f
+\right)u_P\\
+&\qquad
+-\sum_{N\in\mathcal N(P)}T_{PN}u_N
+=
+f_PV_P
++\sum_{f\in\Gamma(P)}\Delta b_f.
+\end{aligned}
+}
+\label{eq:discretization-general-boundary-row}
+\end{equation}
+每一个物理边界面独立贡献自己的 $\Delta A_f$ 和 $\Delta b_f$。二维角部 cell 可以有两个边界面，三维棱部 cell 可以有两个边界面，三维角部 cell 可以有三个边界面；装配规则本身不变。
+
+例如二维左下角控制体 $P$ 的西面为 Dirichlet $u=g_D$，南面为 Neumann $\partial_nu=g_N$，东、北分别邻接内部 cell $E,N$。将四个面的通量代入式~\eqref{eq:discretization-boundary-control-volume-balance}，得到
+\begin{equation}
+\boxed{
+\begin{aligned}
+&\left(T_{PE}+T_{PN}+T_W+\alpha_PV_P\right)u_P
+-T_{PE}u_E-T_{PN}u_N\\
+&\qquad
+=f_PV_P+T_Wg_D+\beta_SA_Sg_N.
+\end{aligned}
+}
+\label{eq:discretization-mixed-corner-row}
+\end{equation}
+右端的 $+\beta_SA_Sg_N$ 不是额外约定：南面的外向通量是 $-\beta_SA_Sg_N$，把这个已知通量移到右端后自然得到正号。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.88,font=\small]
+  \begin{scope}[xshift=0cm]
+    \draw[very thick] (0,0)--(0,2.2);
+    \draw[very thick] (0,0)--(2.2,0);
+    \draw[gray] (0,1)--(2,1) (1,0)--(1,2) (0,2)--(2,2) (2,0)--(2,2);
+    \foreach \x/\y in {0.5/0.5,1.5/0.5,0.5/1.5,1.5/1.5}{\fill (\x,\y) circle (2.2pt);}
+    \node[above right] at (0.5,0.5) {$P$};
+    \node[above right] at (1.5,0.5) {$E$};
+    \node[above right] at (0.5,1.5) {$N$};
+    \draw[deepblue,very thick] (0,0)--(0,1);
+    \draw[deepblue,very thick] (0,0)--(1,0);
+    \node[left] at (0,0.5) {$f_W$};
+    \node[below] at (0.5,0) {$f_S$};
+    \node at (1.0,-0.65) {FV：一个 cell，两个边界面};
+  \end{scope}
+  \begin{scope}[xshift=5.4cm]
+    \draw[very thick] (0,0)--(0,2.2);
+    \draw[very thick] (0,0)--(2.2,0);
+    \foreach \x in {0,0.8,1.6}{
+      \foreach \y in {0,0.8,1.6}{\fill (\x,\y) circle (2pt);}
+    }
+    \draw[gray] (0,0.8)--(1.6,0.8) (0,1.6)--(1.6,1.6)
+                (0.8,0)--(0.8,1.6) (1.6,0)--(1.6,1.6);
+    \filldraw[fill=white,draw=black,thick] (0,0) circle (3.4pt);
+    \node[above left] at (0,0) {角节点};
+    \node[left] at (0,1.25) {$\Gamma_W$};
+    \node[below] at (1.2,0) {$\Gamma_S$};
+    \node at (0.8,-0.65) {节点型：多个边界段共享一个节点};
+  \end{scope}
+\end{tikzpicture}
+\caption{同一个二维物理角在两种离散布局中的表示。FV 主视角下，角部控制体通过两个独立边界面逐面装配；节点型离散若显式保存角节点，则必须给共享角节点一个一致的离散约定。}
+\label{fig:discretization-corner-layouts}
+\end{figure}
+
+节点型离散的角点兼容问题因此应该放在表示转换之后理解。若西边与南边都给 Dirichlet 数据
+\begin{equation}
+u(0,y)=g_W(y),\qquad u(x,0)=g_S(x),
+\end{equation}
+并且离散布局显式保存角节点 $u_{0,0}$，则该节点只能取一个值。对经典连续边界迹，自然要求
+\begin{equation}
+g_W(0)=g_S(0).
+\label{eq:discretization-dirichlet-corner-compatibility}
+\end{equation}
+Dirichlet--Neumann、Dirichlet--Robin 等交界也需要明确角节点由哪一种离散约定处理。这个问题属于\textbf{节点表示如何压缩多个边界面信息}，而不是物理边界本身天然需要一条“角点特殊 PDE”。
+
+边界类型的切换点仍然可能降低连续解的局部正则性，几何再入角会进一步加强这种效应。因此即使逐面闭合公式在光滑边界段上具有目标阶数，也必须通过包含角部/交界区域的网格收敛实验验证整体误差阶。
+
+\subsection{周期边界：把几何边界重新识别为内部邻接}
+
+周期条件与 Dirichlet、Neumann、Robin 有一个本质区别：它并不从域外提供新的状态或通量，而是把一侧的边界面与另一侧对应边界面\textbf{识别成同一个周期共享面}。因此从有限体积拓扑看，周期边界实际上把两个几何边界重新变成了内部邻接。
+
+设一维周期网格的首尾单元互为邻居，则跨周期面的数值通量只计算一次，并以相反符号装配到首尾两个控制体。这与普通内部共享面的守恒规则完全相同。若把同一关系写成节点型均匀网格的矩阵，常见表示为
+\begin{equation}
+u_0=u_N,
+\qquad
+u_{N+1}=u_1,
+\end{equation}
+从而得到循环三对角矩阵
+\begin{equation}
+\frac1{h^2}
+\begin{bmatrix}
+2&-1&0&\cdots&-1\\
+-1&2&-1&&0\\
+0&\ddots&\ddots&\ddots&\vdots\\
+\vdots&&-1&2&-1\\
+-1&0&\cdots&-1&2
+\end{bmatrix}.
+\label{eq:discretization-periodic-matrix}
+\end{equation}
+所以周期条件在代数上的特征是增加跨几何边界的未知量耦合，而不是把已知边界数据移入右端。没有零阶项时，周期 Poisson 与纯 Neumann 一样保留常数零空间。
+
+二维只在 $x$ 方向周期时，每个西边界面都与同一 $y$ 坐标上的东边界面配对；多个方向同时周期时，这些配对在棱和角处必须组成一致的等价关系。后续并行章节会把这种几何邻接进一步变成跨 rank 的周期邻居通信，但数学上仍是同一个共享面关系。
+
+\subsection{Dirichlet-to-Neumann：非局部边界通量闭合}
+
+前面的 Dirichlet、Neumann 与 Robin 都是局部边界关系：一个边界面的通量只依赖该面附近的少量状态。Dirichlet-to-Neumann（DtN）算子则通常来自被截去外域的消元，它把\textbf{整个边界上的状态}映射为相应的外向通量，因此一般是非局部的。
+
+为了与本节的通量语言保持一致，离散 DtN 直接定义成边界状态到外向扩散通量的映射
+\begin{equation}
+\boxed{
+\bm q_\Gamma
+=K_\Gamma\bm u_\Gamma+\bm q_\Gamma^{(0)}.
+}
+\label{eq:discretization-discrete-dtn-flux}
+\end{equation}
+若 $C_\Gamma\bm u$ 提取全局未知量在边界上的离散 trace，$B_\Gamma$ 把边界通量装配进相邻控制体方程，则
+\begin{equation}
+A_{int}\bm u+B_\Gamma\bm q_\Gamma=\bm b_{int}
+\end{equation}
+变成
+\begin{equation}
+\boxed{
+\left(A_{int}+B_\Gamma K_\Gamma C_\Gamma\right)\bm u
+=
+\bm b_{int}-B_\Gamma\bm q_\Gamma^{(0)}.
+}
+\label{eq:discretization-dtn-matrix-form}
+\end{equation}
+当 $K_\Gamma$ 只是逐面局部乘法时，它看起来类似 Robin；一般二维、三维外域中，$K_\Gamma$ 会耦合多个边界自由度，于是边界闭合本身就可能生成宽于原局部 stencil 的矩阵块。
+
+\paragraph{一个可精确求出的模型外域。}
+考虑内部区域 $0<x<L$，而外部半直线 $x>L$ 满足
+\begin{equation}
+-v''+\kappa^2v=0,
+\qquad
+v(x)\to0\quad(x\to\infty),
+\qquad
+v(L)=u(L),
+\end{equation}
+其中 $\kappa>0$。外域解为
+\begin{equation}
+v(x)=u(L)e^{-\kappa(x-L)},
+\end{equation}
+因此在内部区域右边界、外法向为 $+x$ 时
+\begin{equation}
+\boxed{
+\frac{\partial u}{\partial n}(L)=-\kappa u(L).
+}
+\label{eq:discretization-dtn-one-dimensional-exact}
+\end{equation}
+若扩散系数为 $\beta$，外向扩散通量为
+\begin{equation}
+q_n=-\beta\frac{\partial u}{\partial n}
+=\beta\kappa u(L).
+\end{equation}
+所以在式~\eqref{eq:discretization-discrete-dtn-flux}的定义下，这个一维 DtN 只是局部标量 $K_\Gamma=[\beta\kappa]$。它之所以退化成 Robin 形式，是这一维外域模型的特殊性，而不是一般 DtN 都是局部 Robin。
+
+\paragraph{外域消元与 Schur 补。}
+把完整离散系统按保留区域未知量与被消去外域未知量分块：
+\begin{equation}
+\begin{bmatrix}
+A_{II}&A_{IE}\\
+A_{EI}&A_{EE}
+\end{bmatrix}
+\begin{bmatrix}
+\bm u_I\\
+\bm u_E
+\end{bmatrix}
+=
+\begin{bmatrix}
+\bm b_I\\
+\bm b_E
+\end{bmatrix}.
+\end{equation}
+若 $A_{EE}$ 可逆，消去 $\bm u_E$ 得到
+\begin{equation}
+\boxed{
+\left(A_{II}-A_{IE}A_{EE}^{-1}A_{EI}\right)\bm u_I
+=
+\bm b_I-A_{IE}A_{EE}^{-1}\bm b_E.
+}
+\label{eq:discretization-dtn-schur}
+\end{equation}
+这就是 DtN 非局部性的离散来源：即使 $A_{EE}$ 本身是稀疏局部算子，$A_{EE}^{-1}$ 一般仍是全局的。
+
+\subsection{节点型有限差分作为通量闭合的等价表示}
+
+在规则均匀网格上，有限体积和守恒型有限差分常常生成相同的代数系数，因此把边界通量闭合改写成边界节点或 ghost value 关系非常有用。但顺序应该是\textbf{先知道要闭合什么物理/数值通量，再选择怎样用节点值实现它}，而不是从“缺了一个节点值”推断边界条件的含义。
+
+回到一维 Poisson 的节点型网格。第一个内部节点满足
 \begin{equation}
 \frac{-u_0+2u_1-u_2}{h^2}=f_1.
 \label{eq:discretization-bc-first-row-open}
 \end{equation}
-如果 $u_0$ 既不是已知量，也没有包含在未知向量中，这一行就没有闭合。边界条件的数值作用正是补上关于 $u_0$ 的关系。
-
-有两种常见代数布局：
-\begin{enumerate}
-\item \textbf{消去边界自由度。}未知向量只保存内部点，用边界条件把 $u_0$ 写成内部未知量和已知数据，再代回式~\eqref{eq:discretization-bc-first-row-open}；
-\item \textbf{保留边界自由度。}把 $u_0$ 也放进未知向量，并把离散边界条件本身作为矩阵的一行。
-\end{enumerate}
-本章首先采用第一种方式，因为它与前面的一维未知向量定义一致。第二种方式在需要保留边界节点时也很常见，两者的区别是\textbf{未知量布局}，不是连续边界条件本身发生了变化。
-
-\subsection{Dirichlet 边界条件}
-
-左端 Dirichlet 条件直接给定
-\begin{equation}
-u_0=g_D.
-\end{equation}
-代入式~\eqref{eq:discretization-bc-first-row-open}：
+若左边界是 Dirichlet，$u_0=g_D$，直接得到
 \begin{equation}
 \boxed{
 \frac{2u_1-u_2}{h^2}
@@ -842,33 +1220,19 @@ u_0=g_D.
 }
 \label{eq:discretization-dirichlet-row}
 \end{equation}
-所以 Dirichlet 条件没有增加未知量，而是把原来 stencil 中的边界值移入右端。若边界自由度被保留，则还可以直接使用
-\begin{equation}
-u_0=g_D
-\end{equation}
-作为边界行；如果后续算法依赖矩阵对称性，强制单位行时还应同时处理对应矩阵列，或者直接消去该自由度。
+这可以理解为“边界节点已知并被消去”，也可以理解为规则网格下边界通量闭合在节点型代数中的等价结果。
 
-\subsection{Neumann 边界条件}
-
-Neumann 条件给定外法向导数
-\begin{equation}
-\frac{\partial u}{\partial n}=g_N.
-\label{eq:discretization-neumann-bc}
-\end{equation}
-左端点的外法向指向 $-x$，因此
-\begin{equation}
--u'(0)=g_N.
-\end{equation}
-用最简单的一阶差分
+若左端给 Neumann 条件~\eqref{eq:discretization-neumann-bc}，由于外法向为 $-x$，有 $-u'(0)=g_N$。使用最简单的一阶节点近似
 \begin{equation}
 u'(0)\approx\frac{u_1-u_0}{h}
 \end{equation}
 得到
 \begin{equation}
-u_0=u_1+h g_N.
+\boxed{
+u_0=u_1+h g_N.}
 \label{eq:discretization-neumann-eliminate-uzero}
 \end{equation}
-代回第一行：
+代入式~\eqref{eq:discretization-bc-first-row-open}，得到
 \begin{equation}
 \boxed{
 \frac{u_1-u_2}{h^2}
@@ -876,9 +1240,7 @@ u_0=u_1+h g_N.
 }
 \label{eq:discretization-neumann-first-row}
 \end{equation}
-与 Dirichlet 相比，第一行的对角系数已经发生变化。边界条件因此不仅改变右端，也可能改变矩阵本身。
-
-例如左端取 Neumann、右端取 Dirichlet $u_{N+1}=g_R$。未知向量仍由内部值 $u_1,\ldots,u_N$ 组成，此时矩阵变为
+若左端是 Neumann、右端是 Dirichlet $u_{N+1}=g_R$，矩阵为
 \begin{equation}
 \frac1{h^2}
 \begin{bmatrix}
@@ -898,46 +1260,17 @@ f_1+g_N/h\\f_2\\\vdots\\f_{N-1}\\f_N+g_R/h^2
 \label{eq:discretization-mixed-neumann-dirichlet-matrix}
 \end{equation}
 
-\paragraph{纯 Neumann 情形。}
-若两端都给 Neumann 条件，矩阵两端的对角元都变成 $1/h^2$。齐次情形下常数向量满足
-\begin{equation}
-A\bm 1=0,
-\end{equation}
-因此解只确定到一个加法常数。连续方程相应要求兼容条件
-\begin{equation}
-\boxed{
-\int_\Omega f\,\mathrm d\Omega
-+\int_{\partial\Omega}g_N\,\mathrm dS=0.
-}
-\label{eq:discretization-neumann-compatibility}
-\end{equation}
-这里的零空间不是求解器制造出来的，而是边值问题本身的一部分；后面的迭代方法必须尊重这一结构。
-
-\subsection{Robin 边界条件}
-
-Robin 条件给定函数值与外法向导数的局部线性组合：
+Robin 条件在左端写成
 \begin{equation}
 a u+b\frac{\partial u}{\partial n}=g.
-\label{eq:discretization-robin-general}
 \end{equation}
-仍看左端。用
-\begin{equation}
-\frac{\partial u}{\partial n}
-\approx
-\frac{u_0-u_1}{h}
-\end{equation}
-得到
-\begin{equation}
-(ah+b)u_0-bu_1=gh,
-\end{equation}
-于是
+用 $\partial_nu\approx(u_0-u_1)/h$ 得到
 \begin{equation}
 \boxed{
-u_0=\frac{b}{ah+b}u_1+\frac{gh}{ah+b}.
-}
+u_0=\frac{b}{ah+b}u_1+\frac{gh}{ah+b}.}
 \label{eq:discretization-robin-boundary-value}
 \end{equation}
-代回式~\eqref{eq:discretization-bc-first-row-open}：
+代回第一行后
 \begin{equation}
 \boxed{
 \frac{2ah+b}{h^2(ah+b)}u_1
@@ -946,337 +1279,17 @@ u_0=\frac{b}{ah+b}u_1+\frac{gh}{ah+b}.
 }
 \label{eq:discretization-robin-matrix-row}
 \end{equation}
-当 $b=0$ 时得到 Dirichlet 型闭合；当 $a=0$ 时得到 Neumann 型闭合。这个极限检查比死记 Robin 行更重要，因为它能直接发现符号或法向约定写错的问题。
+这仍然只是同一边界状态--通量关系在节点型布局中的一种低阶实现。
 
-到这里，一维中最常见的三种局部边界条件已经完成了同一件事：\textbf{把缺失的边界信息转化成一条闭合的矩阵行。}
-
-\begin{warningbox}
-\textbf{边界闭合的精度必须单独检查。}
-
-上面的 Neumann 和 Robin 推导刻意使用一阶单边导数，只为了让“边界关系怎样进入矩阵行”完全透明。它并不自动与内部二阶中心差分组成整体二阶格式。若目标是保持二阶精度，应改用二阶单边差分、与目标阶数一致的边界闭合，或在有限体积中采用与目标阶数一致的边界通量重构。\textbf{内部 stencil 的阶数不能替代边界离散的阶数检查。}
-\end{warningbox}
-
-\subsection{二维边界段与角点}
-
-二维新增的困难不是“多写一个 $y$ 方向导数”，而是\textbf{不同边界段会在角点相遇}。先继续使用前面的节点型有限差分布局。设矩形区域的西、东、南、北四条边分别记为
+为了保留前面 DtN 模型与节点型矩阵之间的桥梁，再取 $x_i=ih$、$L=Nh$，令 $u_N$ 本身位于截断边界。式~\eqref{eq:discretization-dtn-one-dimensional-exact} 用一阶后向差分写成
 \begin{equation}
-\Gamma_W,\quad\Gamma_E,\quad\Gamma_S,\quad\Gamma_N.
+\frac{u_N-u_{N-1}}{h}=-\kappa u_N,
 \end{equation}
-每一条开放边界段内部都可以使用前面的一维法向离散；真正的新问题出现在边界段的交界。
-
-\paragraph{两个 Dirichlet 边界相交。}
-若西边给
-\begin{equation}
-u(0,y)=g_W(y)
-\end{equation}
-而南边给
-\begin{equation}
-u(x,0)=g_S(x),
-\end{equation}
-那么左下角只有一个几何点 $(0,0)$。如果要求连续解具有连续的边界迹（trace，即把域内解限制到边界后得到的值），自然需要
-\begin{equation}
-g_W(0)=g_S(0).
-\label{eq:discretization-dirichlet-corner-compatibility}
-\end{equation}
-在节点型离散中，角点也只对应一个节点，因此程序最终必须给它一个唯一值。需要注意的是：如果只要求积分意义上的弱解，单个几何角点的数据不一定像整段边界数据那样决定域内解；本章不展开这一函数空间问题。对离散程序而言，只要网格显式保存该角点，就仍然必须给它一个唯一、明确的离散值。
-
-\paragraph{Dirichlet 与 Neumann 相交。}
-若西边是 Dirichlet、南边是 Neumann，一个常见的节点型约定是：角点值由 Dirichlet 条件确定，而 Neumann 条件施加在南边界除该角点以外的边界节点上。比如南边界外法向为 $-y$，用一阶法向差分时，对 $i\ge1$ 的南边界节点可写
-\begin{equation}
-u_{i,0}=u_{i,1}+h\,g_S(x_i),
-\end{equation}
-而左下角直接取
-\begin{equation}
-u_{0,0}=g_W(0).
-\end{equation}
-这样不会给同一个角点未知量同时写两条独立边界行。这个规则是\textbf{离散约定}，不是所有方法都必须采用的唯一处理方式；有限元、有限体积或不同的边界辅助点构造可以采用不同布局。
-
-\paragraph{边界类型改变与解的光滑性。}
-即使每条边界数据本身合法，Dirichlet--Neumann 或 Dirichlet--Robin 的切换点也可能降低局部正则性（也就是解的光滑程度）；几何再入角会进一步加强这种效应。第一章不展开椭圆正则性理论，只保留一个数值后果：\textbf{内部 stencil 是二阶的，并不自动保证含边界交界的整个问题仍表现出理想的二阶全局收敛。}验证时必须把交界附近误差也包含在网格收敛测试中。
-
-三维的结构是同一问题的进一步提升：边界条件定义在二维面上，两个面在棱上相遇，三个面在角点相遇。节点型离散若显式保存这些棱/角节点，就必须给出一致的交界约定；这不是把二维角点规则逐字复制三遍，而是同一个未知量可能同时落在更多边界片段的闭包上。
-
-\begin{figure}[htbp]
-\centering
-\begin{tikzpicture}[scale=0.88,font=\small]
-  % nodal panel
-  \begin{scope}[xshift=0cm]
-    \draw[very thick] (0,0)--(0,2.2);
-    \draw[very thick] (0,0)--(2.2,0);
-    \foreach \x in {0,0.8,1.6}{
-      \foreach \y in {0,0.8,1.6}{\fill (\x,\y) circle (2pt);}
-    }
-    \draw[gray] (0,0.8)--(1.6,0.8) (0,1.6)--(1.6,1.6)
-                (0.8,0)--(0.8,1.6) (1.6,0)--(1.6,1.6);
-    \filldraw[fill=white,draw=black,thick] (0,0) circle (3.4pt);
-    \node[above left] at (0,0) {角节点};
-    \node[left] at (0,1.25) {$\Gamma_D$};
-    \node[below] at (1.2,0) {$\Gamma_N$};
-    \node at (0.8,-0.65) {节点型：保存角节点};
-  \end{scope}
-  % cell-centered panel
-  \begin{scope}[xshift=5.4cm]
-    \draw[very thick] (0,0)--(0,2.2);
-    \draw[very thick] (0,0)--(2.2,0);
-    \draw[gray] (0,1)--(2,1) (1,0)--(1,2) (0,2)--(2,2) (2,0)--(2,2);
-    \foreach \x/\y in {0.5/0.5,1.5/0.5,0.5/1.5,1.5/1.5}{\fill (\x,\y) circle (2.2pt);}
-    \node[above right] at (0.5,0.5) {$P$};
-    \node[above right] at (1.5,0.5) {$E$};
-    \node[above right] at (0.5,1.5) {$N$};
-    \node[left] at (0,0.5) {$f_W$};
-    \node[below] at (0.5,0) {$f_S$};
-    \node at (1.0,-0.65) {cell-centered：边界面闭合};
-  \end{scope}
-\end{tikzpicture}
-\caption{同一个二维物理角在两种离散布局中的不同代数对象。左：节点型有限差分显式保存角节点；右：cell-centered 有限体积没有角点未知量，角部控制体 $P$ 通过西、南两个边界面接收边界贡献。}
-\label{fig:discretization-corner-layouts}
-\end{figure}
-
-\begin{center}
-\footnotesize
-\begin{tabularx}{0.92\textwidth}{>{\bfseries}p{3.0cm}X X}
-\toprule
-二维交界 & 节点型离散需要决定什么 & 连续/数值上应检查什么\\
-\midrule
-Dirichlet--Dirichlet & 同一个角节点只能取一个值 & 经典连续 trace 是否一致；离散数据冲突时必须给出唯一约定\\
-Dirichlet--Neumann/\newline Robin & 常见做法是由 Dirichlet 固定角节点，另一条件作用于开放边界段 & 交界附近正则性与整体收敛阶\\
-Neumann--Neumann & 两条边给出不同法向分量，角节点仍需具体 closure & 全局兼容条件、角部离散精度与零空间\\
-Robin--Robin /\newline Neumann--Robin & 一个节点同时邻接两条局部边界关系 & 采用何种角点方程必须由离散布局明确，而不能机械叠加两条矩阵行\\
-\bottomrule
-\end{tabularx}
-\end{center}
-
-\subsection{cell-centered 有限体积中的边界面}
-\label{sec:discretization-cell-centered-boundary}
-
-对边界 cell，连续精确通量仍定义为
-\begin{equation}
-Q_{P,f}=-\int_f\beta\frac{\partial u}{\partial n}\,\mathrm dA,
-\end{equation}
-其中法向始终取\textbf{相对于控制体 $P$ 的外法向}。边界条件的作用，是给这个缺少相邻 cell 的面提供一个数值通量 $\widehat Q_{P,f}$。为了避免符号混乱，下面所有 Neumann 数据 $g_N$ 均定义为
-\begin{equation}
-\frac{\partial u}{\partial n}=g_N
-\end{equation}
-中的\textbf{外法向导数}；因此对应的连续外向扩散通量是 $-\beta g_N$，不是 $+\beta g_N$。
-
-\paragraph{Dirichlet 面：一侧两点闭合。}
-若边界面给定 $u_f=g_D$，cell center 到边界面的法向距离为 $\delta_f$，最简单的两点闭合是
-\begin{equation}
-\widehat Q_{P,f}
-=T_f(u_P-g_D),
-\qquad
-T_f=\frac{\beta_fA_f}{\delta_f}.
-\label{eq:discretization-bc-dirichlet-numerical-flux}
-\end{equation}
-这只是一个数值通量定义。若 $u_P$ 解释为中心点值，则 $(g_D-u_P)/\delta_f$ 对边界法向导数通常只有一阶一致性；因此不能仅凭内部二阶 stencil 宣称整个边值问题二阶收敛。高阶边界闭合必须另行构造和分析。
-
-\paragraph{Neumann 面：通量由边界数据直接给出。}
-若 $\partial_nu=g_N$，并以面中点值代表边界数据，则
-\begin{equation}
-\boxed{
-\widehat Q_{P,f}=-\beta_fA_fg_N.
-}
-\label{eq:discretization-bc-neumann-numerical-flux}
-\end{equation}
-若 $g_N$ 或 $\beta$ 沿面变化，更严格的表达应是对 $-\beta g_N$ 的面求积；上式本身包含中点求积近似。
-
-考虑二维左下角控制体 $P$：西面为 Dirichlet $u=g_D$，南面为 Neumann $\partial_nu=g_N$，东、北分别邻接内部 cell $E,N$。将四个面的数值通量代入
-\begin{equation}
-\sum_f\widehat Q_{P,f}+\alpha_PV_Pu_P=f_PV_P
-\end{equation}
-得到
-\begin{equation}
-\boxed{
-\begin{aligned}
-&\left(T_{PE}+T_{PN}+T_W+\alpha_PV_P\right)u_P
--T_{PE}u_E-T_{PN}u_N\\
-&\qquad =f_PV_P+T_Wg_D+\beta_SA_Sg_N.
-\end{aligned}
-}
-\label{eq:discretization-mixed-corner-row}
-\end{equation}
-右端出现 $+\beta_SA_Sg_N$ 的原因不是人为规定符号，而是 Neumann 面的外向数值通量为 $-\beta_SA_Sg_N$，移到方程右端后符号改变。
-
-\paragraph{一般仿射边界闭合。}
-若边界面数值关系可写成
-\begin{equation}
-u_f=c_fu_P+s_f,
-\label{eq:discretization-bc-affine-closure}
-\end{equation}
-并仍采用
-\begin{equation}
-\widehat Q_{P,f}
-=T_f(u_P-u_f),
-\qquad
-T_f=\frac{\beta_fA_f}{\delta_f},
-\label{eq:discretization-bc-transmissibility}
-\end{equation}
-则代数上严格有
-\begin{equation}
-\widehat Q_{P,f}
-=T_f(1-c_f)u_P-T_fs_f.
-\end{equation}
-把已知项移到右端后，该边界面对矩阵与右端的贡献为
-\begin{equation}
-\boxed{
-\Delta A_{PP}=T_f(1-c_f),
-\qquad
-\Delta b_P=T_fs_f.
-}
-\label{eq:discretization-bc-general-matrix-contribution}
-\end{equation}
-这只是给定离散边界闭合后的代数恒等式；其准确度由 $u_f=c_fu_P+s_f$ 本身的截断误差决定。
-
-对 Robin 条件
-\begin{equation}
-a_fu_f+b_f\frac{\partial u}{\partial n}=g_f,
-\end{equation}
-若使用一阶法向近似
-\begin{equation}
-\frac{\partial u}{\partial n}
-\approx\frac{u_f-u_P}{\delta_f},
-\end{equation}
-且 $a_f\delta_f+b_f\ne0$，则
-\begin{equation}
-u_f
-=\frac{b_f}{a_f\delta_f+b_f}u_P
-+\frac{g_f\delta_f}{a_f\delta_f+b_f},
-\end{equation}
-从而
-\begin{equation}
-\boxed{
-\Delta A_{PP}
-=\frac{\beta_fA_fa_f}{a_f\delta_f+b_f},
-\qquad
-\Delta b_P
-=\frac{\beta_fA_fg_f}{a_f\delta_f+b_f}.
-}
-\label{eq:discretization-robin-matrix-contribution}
-\end{equation}
-令 $b_f=0$ 可检查 Dirichlet 极限，令 $a_f=0$ 可检查 Neumann 极限；但这种极限检查只能验证代数与符号的一致性，不能替代边界截断误差分析。
-
-对一个控制体 $P$，记 $\mathcal N(P)$ 为内部面邻居集合，$\Gamma(P)$ 为物理边界面集合，则
-\begin{equation}
-\boxed{
-\begin{aligned}
-&\left(
-\alpha_PV_P
-+\sum_{N\in\mathcal N(P)}T_{PN}
-+\sum_{f\in\Gamma(P)}\Delta A_f
-\right)u_P\\
-&\qquad
--\sum_{N\in\mathcal N(P)}T_{PN}u_N
-=
-f_PV_P
-+\sum_{f\in\Gamma(P)}\Delta b_f.
-\end{aligned}
-}
-\label{eq:discretization-general-boundary-row}
-\end{equation}
-该式是给定内部数值通量与边界数值通量之后的装配公式。它本身不提供收敛阶；收敛阶必须结合内部一致性、边界一致性、稳定性以及问题正则性共同判断。
-
-\begin{keybox}
-\textbf{FV 边界面的符号规则只有一条：先固定外法向，再定义外向数值通量。}
-
-Dirichlet、Neumann、Robin 的矩阵符号都应从 $\widehat Q_{P,f}$ 推导，而不是分别背诵。特别地，若 Neumann 数据定义为 $\partial_nu=g_N$，则外向扩散通量为 $-\beta g_N$；将该已知通量移到右端后才出现 $+\beta A g_N$。
-\end{keybox}
-
-\subsection{周期边界条件}
-
-周期条件不是给定一个已知边界值或通量，而是把一侧的未知量与另一侧对应位置识别为同一个周期邻居。对一维周期网格，令
-\begin{equation}
-u_0=u_N,
-\qquad
-u_{N+1}=u_1.
-\end{equation}
-则矩阵成为循环三对角结构：
-\begin{equation}
-\frac1{h^2}
-\begin{bmatrix}
-2&-1&0&\cdots&-1\\
--1&2&-1&&0\\
-0&\ddots&\ddots&\ddots&\vdots\\
-\vdots&&-1&2&-1\\
--1&0&\cdots&-1&2
-\end{bmatrix}.
-\label{eq:discretization-periodic-matrix}
-\end{equation}
-所以周期条件的代数特征是\textbf{新增跨边界的未知量耦合}，而不是把已知数据移到右端。没有零阶项时，周期 Poisson 与纯 Neumann 一样具有常数零空间。
-
-二维若只在 $x$ 方向周期，每一条固定 $j$ 的网格线都在左右边界之间建立邻接；若 $x,y$ 两个方向都周期，则角部邻接同时跨越两个方向。三维中，一个周期面要按两个切向坐标与对侧面逐点配对；当两个或三个方向同时周期时，来自不同方向的映射还必须在棱和角处组成一致的等价关系。这里的核心仍然是“修改邻接关系”；具体跨边界数据访问与通信实现留到\chapref{ch:parallel-model}之后的并行章节。
-
-\subsection{Dirichlet-to-Neumann 算子}
-
-前面的 Dirichlet、Neumann 和 Robin 都是局部边界关系。DtN 不同：它来自被截去的外部区域，一般把\textbf{整段或整个边界上的函数值}映射为相应的法向响应，因此通常是非局部算子。本小节属于扩展内容；第一次阅读只需掌握“外域可以被消去，并在边界上留下一个矩阵算子”这一点。
-
-为了避免导数与物理扩散通量之间的符号混乱，这里把离散 DtN 直接定义成\textbf{边界值到外向扩散通量}的映射：
-\begin{equation}
-\bm q_\Gamma
-=K_\Gamma\bm u_\Gamma+\bm q_\Gamma^{(0)}.
-\label{eq:discretization-discrete-dtn-flux}
-\end{equation}
-若 $C_\Gamma\bm u$ 提取全局未知量在边界上的 trace，而 $B_\Gamma$ 把边界通量装配进相邻方程，则
-\begin{equation}
-A_{int}\bm u+B_\Gamma\bm q_\Gamma=\bm b_{int}
-\end{equation}
-变成
-\begin{equation}
-\boxed{
-\left(A_{int}+B_\Gamma K_\Gamma C_\Gamma\right)\bm u
-=
-\bm b_{int}-B_\Gamma\bm q_\Gamma^{(0)}.
-}
-\label{eq:discretization-dtn-matrix-form}
-\end{equation}
-如果 $K_\Gamma$ 只是逐点乘法，这个边界修改看起来像局部 Robin；一般二维、三维外域中，$K_\Gamma$ 会耦合多个边界自由度，因此边界块可以明显宽于原来的局部 stencil。
-
-\paragraph{一个可精确求出的模型外域。}
-为把 DtN 从抽象矩阵变成可手算对象，考虑内部区域 $0<x<L$，
-\begin{equation}
--u''=f,
-\qquad
-u(0)=g_0,
-\end{equation}
-而外部半直线 $x>L$ 满足
-\begin{equation}
--v''+\kappa^2v=0,
-\qquad
-v(x)\to0\quad(x\to\infty),
-\qquad
-v(L)=u(L),
-\end{equation}
-其中 $\kappa>0$。这个 modified Helmholtz 外域被选来作为教学模型，是因为它具有显式衰减解；\textbf{它不是一般静电 Poisson 外域的普遍 DtN 公式。}
-
-外域解为
-\begin{equation}
-v(x)=u(L)e^{-\kappa(x-L)},
-\end{equation}
-于是内部区域右端外法向为 $+x$ 时
-\begin{equation}
-\boxed{
-\frac{\partial u}{\partial n}(L)=-\kappa u(L).
-}
-\label{eq:discretization-dtn-one-dimensional-exact}
-\end{equation}
-若扩散系数为 $\beta$，对应外向扩散通量为 $q=\beta\kappa u(L)$，因此在前面“值到通量”的定义下，这个一维 DtN 只是标量 $K_\Gamma=[\beta\kappa]$。
-
-下面为了得到一个完整矩阵，\textbf{切换回节点型有限差分}，并让 $u_N$ 本身位于截断边界 $x=L$。取 $x_i=ih$、$L=Nh$，未知向量为
-\begin{equation}
-\bm u=(u_1,\ldots,u_N)^T.
-\end{equation}
-内部节点 $i=1,\ldots,N-1$ 使用
-\begin{equation}
--u_{i-1}+2u_i-u_{i+1}=h^2f_i,
-\end{equation}
-而边界导数用一阶后向差分：
-\begin{equation}
-\frac{u_N-u_{N-1}}{h}=-\kappa u_N.
-\end{equation}
-因此最后一行是
+于是最后一行是
 \begin{equation}
 -u_{N-1}+(1+\kappa h)u_N=0,
 \end{equation}
-完整系统为
+完整系统可写为
 \begin{equation}
 \boxed{
 \begin{bmatrix}
@@ -1296,68 +1309,44 @@ h^2f_1+g_0\\h^2f_2\\\vdots\\h^2f_{N-1}\\0
 }
 \label{eq:discretization-dtn-one-dimensional-matrix}
 \end{equation}
-这个例子说明：外部半无限区域已经从未知量中消失，但它留下了一个边界矩阵行。这里 DtN 恰好具有 Robin 形式，不是因为 DtN 与 Robin 一般等价，而是因为这个一维外域的消去结果恰好是局部标量关系。
 
-\paragraph{外域消元与 Schur 补。}
-一般情况下，可以把完整离散系统按内部未知量和外部未知量分块：
-\begin{equation}
-\begin{bmatrix}
-A_{II}&A_{IE}\\
-A_{EI}&A_{EE}
-\end{bmatrix}
-\begin{bmatrix}
-\bm u_I\\\bm u_E
-\end{bmatrix}
-=
-\begin{bmatrix}
-\bm b_I\\\bm b_E
-\end{bmatrix}.
-\end{equation}
-消去 $\bm u_E$ 得到
-\begin{equation}
-\boxed{
-\left(A_{II}-A_{IE}A_{EE}^{-1}A_{EI}\right)\bm u_I
-=
-\bm b_I-A_{IE}A_{EE}^{-1}\bm b_E.
-}
-\label{eq:discretization-dtn-schur}
-\end{equation}
-这就是 DtN 非局部性的离散来源：即使 $A_{EE}$ 本身稀疏，$A_{EE}^{-1}$ 一般仍是全局的。
+\begin{warningbox}
+\textbf{ghost value 是构造边界闭合的辅助表示，不是边界条件本身。}
+
+同一个 Dirichlet、Neumann 或 Robin 条件可以通过消去边界节点、引入 ghost cell、直接装配边界面通量或保留边界自由度等多种方式实现。判断两个实现是否等价，应该比较它们最终生成的数值通量、矩阵行和截断误差，而不是比较是否使用了同一种 ghost 公式。
+\end{warningbox}
+
+上面的 Neumann 与 Robin 节点推导刻意使用一阶法向近似，只为了使代数关系透明。它们并不自动与内部二阶中心差分组成整体二阶格式。若目标是二阶，应采用相应的二阶单边/ghost 闭合，或者直接构造二阶一致的边界数值通量，并用制造解和网格收敛实验验证。
 
 \begin{checkpointbox}
-\textbf{即时检查：DtN 的一维模型}
+\textbf{即时检查：同一个边界条件的两种表示}
 
-只把式~\eqref{eq:discretization-dtn-one-dimensional-exact} 看成边界算子族 $u'(L)+\kappa u(L)=0$，考察 $\kappa\to0^+$ 时最后一行趋向什么局部条件。注意：这只是边界算子族的代数极限；把原来的衰减外域方程直接设成 $\kappa=0$ 会使“任意非零边界值并在无穷远衰减”这一外域问题退化。
+对一维左端 Neumann 条件，先从 $\widehat Q=-\beta A g_N$ 写出 cell-centered FV 的边界通量贡献；再在均匀节点网格上用式~\eqref{eq:discretization-neumann-eliminate-uzero}消去 $u_0$。比较两种推导中真正由边界条件给定的量，以及由离散布局额外引入的辅助量。若把 $g_N$ 的符号改成内法向定义，哪些式子必须同时改变？
 \end{checkpointbox}
 
 \subsection{边界条件对线性系统的影响}
 
-现在可以把本节压缩成一张代数地图：
+从通量闭合出发，各类边界对 $A\bm u=\bm b$ 的作用可以压缩为下表：
 \begin{center}
 \small
 \begin{tabularx}{0.96\textwidth}{>{\bfseries}p{2.5cm}X X}
 \toprule
-边界类型 & 闭合机制 & 对 $A\bm u=\bm b$ 的主要影响\\
+边界类型 & 通量闭合机制 & 对 $A\bm u=\bm b$ 的主要影响\\
 \midrule
-Dirichlet & 给定边界值 & 消去后修改相邻行与右端；保留边界节点时可写边界约束行。\\
-Neumann & 给定外法向导数/通量 & 通常改变边界附近行并引入已知通量；纯 Neumann 保留常数零空间。\\
-Robin & 值与法向导数的局部线性组合 & 同时改变边界附近矩阵系数和右端。\\
-Periodic & 把对侧位置识别为邻居 & 新增跨边界 off-diagonal coupling；多方向周期还要求角/棱映射一致。\\
-DtN & 用外域消元得到边界算子 & 一般产生非局部边界耦合，可理解为外域 Schur 补。\\
+Dirichlet & 给定边界面状态，由状态差重构通量 & 增加边界 cell 的对角贡献并修改右端；节点型实现可等价为消去边界值。\\
+Neumann & 直接给定法向导数/通量 & 主要提供已知通量到右端；纯 Neumann 在无零阶项时保留常数零空间并要求兼容条件。\\
+Robin & 给定边界状态与法向导数的局部线性关系 & 消去边界面状态后同时改变边界 cell 的对角系数和右端。\\
+Periodic & 将两个几何边界面识别成内部共享面 & 新增跨边界 off-diagonal coupling；多方向周期还要求棱/角映射一致。\\
+DtN & 外域消元得到边界状态到通量的映射 & 一般产生非局部边界耦合，可理解为外域 Schur complement。\\
 \bottomrule
 \end{tabularx}
 \end{center}
 
 \begin{keybox}
-\textbf{边界条件最终必须回答两个问题：}
+\textbf{第一章以后判断边界离散的统一顺序：}
 
-第一，连续边界信息怎样闭合靠近边界的离散方程？
-
-第二，闭合以后究竟修改了哪些未知量、矩阵系数、右端项、零空间或邻接关系？
-
-二维和三维真正新增的难点，是多个边界片段会在角、棱处相遇，而且不同离散布局对这些几何对象的表示不同。
+先固定控制体外法向与连续通量定义；再判断当前面是内部共享面、物理边界面还是周期识别面；若是物理边界面，用边界关系闭合 $\widehat Q_{P,f}$；最后才把这一通量装配成矩阵系数和右端。节点型 FD、ghost cell 或单边差分属于最后一步的具体表示，而不是推理的起点。
 \end{keybox}
-
 
 
 \section{离散线性系统的结构性质}
@@ -1624,10 +1613,10 @@ stencil & 一个网格点的离散方程依赖哪些邻居，以及这些邻居�
 有限体积（FV） & 从控制体积分恒等式出发，以数值面通量和体积分求积闭合 cell-centered 离散方程。\\
 transmissibility & 在给定网格与通量闭合下，把面面积、中心距离和面系数组合成数值面通量权重；其适用性必须由几何与一致性条件保证。\\
 稀疏矩阵 & 大部分矩阵元素为零；PDE 局部离散天然产生这种结构。\\
-Dirichlet 条件 & 在边界给定函数值。\\
-Neumann 条件 & 在边界给定法向导数。\\
-Robin 条件 & 在同一边界点给定函数值与法向导数的局部线性组合。\\
-DtN 算子（扩展） & 把整个边界上的 Dirichlet 数据映射为相应的 Neumann 数据；一般是非局部边界算子。\\
+Dirichlet 条件 & 给定边界面状态；在 FV 主视角下，再由状态差重构边界面通量。\\
+Neumann 条件 & 给定外法向导数，因此可直接转换为已知边界通量；纯 Neumann 问题伴随兼容条件与常数零空间。\\
+Robin 条件 & 给定边界状态与法向导数的局部线性关系；消去边界面状态后得到局部通量闭合。\\
+DtN 算子（扩展） & 把整个边界上的状态映射为外向通量；一般是非局部边界算子，可由外域 Schur complement 理解。\\
 SPD & 矩阵同时对称且正定。\\
 零空间 & 所有满足 $A\bm z=0$ 的向量组成的集合。\\
 显式稀疏矩阵 & 保存已经组装好的非零系数及其稀疏位置；CSR 是一种常见表示。\\
@@ -1637,7 +1626,7 @@ Matrix-free（工程扩展） & 不显式保存完整矩阵，而是保存生成
 \end{tabularx}
 \end{center}
 
-到这里，读者应能够完成五件可以直接检验的工作。第一，从一维 Poisson 方程推导节点型有限差分并组装小型矩阵；第二，从二维小网格解释五点邻接怎样形成块三对角结构，并把三维看成二维切片之间的进一步耦合；第三，对同一个 Poisson 方程区分精确面通量与数值面通量，从控制体积分恒等式推导 cell-centered FV，并证明共享面数值通量的反对称装配如何给出离散局部守恒；第四，对一般算子 $-\nabla\cdot(\beta\nabla u)+\alpha u=f$，在明确的光滑性、椭圆性与规则网格假设下分别建立 FD 与 FV，并用截断误差说明二阶一致性成立的条件；第五，针对 Dirichlet、Neumann、Robin、周期以及扩展的 DtN，先固定法向与未知量布局，再从离散关系推导矩阵行、右端与零空间，而不是依据直观判断符号和阶数。
+到这里，读者应能够完成五件可以直接检验的工作。第一，从一维 Poisson 方程推导节点型有限差分并组装小型矩阵；第二，从二维小网格解释五点邻接怎样形成块三对角结构，并把三维看成二维切片之间的进一步耦合；第三，对同一个 Poisson 方程区分精确面通量与数值面通量，从控制体积分恒等式推导 cell-centered FV，并证明共享面数值通量的反对称装配如何给出离散局部守恒；第四，对一般算子 $-\nabla\cdot(\beta\nabla u)+\alpha u=f$，在明确的光滑性、椭圆性与规则网格假设下分别建立 FD 与 FV，并用截断误差说明一致性成立的条件；第五，把物理边界理解成“缺少域内邻居的控制体面”，对 Dirichlet、Neumann、Robin、周期以及扩展的 DtN 先构造边界面通量闭合，再推导矩阵、右端、邻接和零空间，并能把同一闭合转换成节点型 FD 或 ghost-value 表示。
 
 在此基础上，变系数算子不再只是“把常数换成数组”：空间变化的 $\beta$ 进入面/半点连接权重，零阶项 $\alpha u$ 则主要增加本地对角贡献。显式矩阵与 matrix-free 一节进一步说明这些数学对象在程序中分别保存什么。具体界面离散、复合网格、迭代求解器、多重网格粗化和并行框架将在后续章节逐步引入。
 
@@ -1655,15 +1644,15 @@ Matrix-free（工程扩展） & 不显式保存完整矩阵，而是保存生成
 取 $h=1/4$。以三个内部节点值为未知量，写出完整的 $A\bm u=\bm b$，并用消元法求出离散解。将结果与连续精确解在三个节点处比较。
 \item 对
 \[
--u''=x,\qquad u(0)=1,\qquad u'(1)=2,
+-u''=x,\qquad 0<x<1,\qquad u(0)=1,\qquad u'(1)=2,
 \]
-取 $h=1/4$。内部点使用二阶中心差分，右端 Neumann 条件使用一阶后向差分。以 $u_1,u_2,u_3,u_4$ 为未知量，逐行写出 $4\times4$ 矩阵和右端向量。
+采用 $4$ 个等宽 cell 的 cell-centered FV。先分别写出左端 Dirichlet 面、右端 Neumann 面和三个内部共享面的数值通量，再逐 cell 装配 $A\bm u=\bm b$。最后把所有四个控制体方程求和，检查内部面通量是否严格抵消。
 \item 对右端 Robin 条件
 \[
 2u(1)+3u'(1)=5,
 \]
-取 $h=1/4$，用一阶后向差分离散导数。把边界方程写成矩阵最后一行；再分别令 Robin 系数退化到纯 Dirichlet 与纯 Neumann，检查矩阵最后一行怎样变化。
-\item 对一维截断外域问题，已知精确 DtN 为 $u'(L)=-\kappa u(L)$。取 $L=1$、$h=1/3$、$\kappa=2$、左端 $u(0)=0$，内部方程为 $-u''=1$。写出完整离散线性系统并求解。
+设最右 cell center 到边界面的距离为 $\delta=1/8$、$\beta A=1$。从式~\eqref{eq:discretization-robin-flux-closure}推导该边界面的 $\widehat Q_f$、$\Delta A_{PP}$ 与 $\Delta b_P$；再分别令 Robin 系数退化到纯 Dirichlet 与纯 Neumann，检查通量闭合的两个极限。
+\item 对一维截断外域问题，已知精确 DtN 为 $u'(L)=-\kappa u(L)$。取 $L=1$、$\kappa=2$、$\beta=1$。先把该 DtN 写成右边界外向扩散通量 $q_n=K_\Gamma u(L)$，明确 $K_\Gamma$；再使用式~\eqref{eq:discretization-dtn-one-dimensional-matrix}写出节点型离散矩阵。解释为什么前一步是边界算子的物理/数值闭合，而后一步只是同一闭合在节点布局中的一种表示。
 \item 在一维均匀网格的某个内部位置，给定 $h=1/2$、$\beta_{i-1/2}=2$、$\beta_{i+1/2}=5$、$\alpha_i=3$。分别从式~\eqref{eq:discretization-fd-variable-row}和 FV 的逐面收支写出该位置的离散行，并比较左右邻居系数、对角系数和右端缩放。
 \item 对 $4\times4$ 个内部节点的二维 Poisson 五点离散，采用 lexicographic ordering。写出矩阵的 block-tridiagonal 结构，明确主块和相邻块；计算矩阵阶数与非零元数量。
 \item 对一个二维左下角 cell-centered 控制体，西侧给 Dirichlet $u=2$，南侧给外法向 Neumann $\partial_nu=3$，东、北 transmissibility 均为 1，西侧 transmissibility 为 2，南侧 $\beta A=4$，且 $fV=5$。使用式~\eqref{eq:discretization-mixed-corner-row}写出该矩阵行的数值系数和右端。
@@ -1682,14 +1671,14 @@ Matrix-free（工程扩展） & 不显式保存完整矩阵，而是保存生成
 =\frac{1}{h^2}\sum_i (v_i-v_{i-1})^2>0
 \]
 对任意非零内部向量成立，从而证明 $A$ 对称正定。
-\item 对纯 Neumann Poisson，证明常数向量属于离散矩阵零空间；再从矩阵行求和得到离散兼容条件，并与连续积分兼容条件对应。
+\item 对纯 Neumann Poisson，从所有控制体的离散通量平衡求和出发，先证明内部共享面严格抵消并得到式~\eqref{eq:discretization-neumann-discrete-compatibility}；再说明齐次边界下为什么 $A\bm1=0$。最后把离散兼容条件与连续积分兼容条件对应。
 \item 从一般边界闭合关系 $u_f=c_fu_P+s_f$ 出发，推导边界面对矩阵对角元与右端项的贡献，并说明 Dirichlet、Neumann、Robin 分别如何落入这一统一形式。
 \item 从分块离散系统消去外域自由度，推导 Schur complement，并说明为什么一般 DtN 离散边界块可能是非局部的。
 \end{enumerate}
 
 \subsection*{编程与上机题}
 \begin{enumerate}[label=\arabic*.]
-\item 编写一维 Poisson/扩散装配器，至少支持 Dirichlet、Neumann 和 Robin。对一个有解析解的问题依次取 $N=16,32,64,128$，报告 $L_2$ 与 $L_\infty$ 误差及实验收敛阶。对 Neumann/Robin 边界分别比较一阶单边闭合与二阶边界闭合，判断边界离散是否限制整体收敛阶。
+\item 编写一维 cell-centered Poisson/扩散 FV 装配器，内部面统一通过数值通量接口处理，物理边界面至少支持 Dirichlet、Neumann 和 Robin。对一个有解析解的问题依次取 $N=16,32,64,128$，报告 $L_2$ 与 $L_\infty$ 误差及实验收敛阶。随后再实现一个节点型 FD 边界版本，验证在选定的规则网格和相同低阶闭合下，两种表示是否生成预期的等价代数关系；不要把这种等价推广到一般网格。
 \item 分别实现二维五点 Poisson 的显式稀疏矩阵乘和 matrix-free stencil apply。对随机向量验证两种实现输出一致，并报告误差范数。
 \item 给定一组周期的一维 face-centered 系数 $\beta_{i+1/2}$ 和 cell/node-centered $\alpha_i$，分别实现守恒型 FD 与 cell-centered FV 的内部算子装配。让两种实现读取同一组面系数，数值验证它们生成的局部矩阵系数一致；再解释为什么这个实验只验证了规则网格上的代数重合，而没有证明两种方法普遍等价。
 \item 构造一个纯 Neumann 离散矩阵，数值验证 $A\bm1\approx0$；再人为给一个不满足兼容条件的右端，观察直接/迭代求解器的表现并解释原因。
