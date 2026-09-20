@@ -1,0 +1,220 @@
+\chapter{并行计算的基本模型}
+\label{ch:parallel-model}
+
+\begin{keybox}
+\textbf{本章先建立与 OpenMP、CUDA、MPI 无关的并行心智模型。}一个数值算法能否并行，不由 API 决定，而由任务之间的依赖、数据归属、读写集合与同步关系决定。本章只回答“怎样分析一个算法的并行结构”；具体硬件映射从\chapref{ch:mg-parallel-operations}之后开始。
+\end{keybox}
+
+\section{任务、数据与依赖}
+
+考虑一个串行程序。把它写成一串语句并不能直接告诉我们哪里可以并行；更有用的表示是把计算拆成若干\textbf{逻辑任务（task）}。每个 task 具有读集合 $R_t$、写集合 $W_t$ 和计算规则。如果两个任务之间不存在必须保持先后顺序的数据依赖，它们原则上就可以并发执行。
+
+最基本的依赖来自同一数据位置的冲突：
+\begin{itemize}
+\item read--read：两个任务都只读同一数据，不产生顺序约束；
+\item write--read：后一个任务需要前一个任务刚写出的结果，必须保持顺序；
+\item write--write：两个任务会写同一位置，需要确定唯一顺序或改写算法；
+\item reduction：多个任务产生局部贡献，最后需要按结合规则合并。
+\end{itemize}
+
+把 task 作为节点、必须满足的先后依赖作为有向边，就得到\textbf{依赖 DAG（directed acyclic graph）}。并行算法的第一步不是“创建多少线程”，而是先确定这张 DAG。
+
+\begin{equation}
+\boxed{
+\text{算法}
+\rightarrow
+\text{task}
+\rightarrow
+(R_t,W_t)
+\rightarrow
+\text{dependency DAG}
+\rightarrow
+\text{可并行集合}
+}
+\label{eq:parallel-analysis-chain}
+\end{equation}
+
+例如向量更新
+\begin{equation}
+y_i\leftarrow a x_i+y_i
+\end{equation}
+中，第 $i$ 个 task 只读 $x_i,y_i$ 并写 $y_i$；不同 $i$ 的写集合互不相交，所以所有元素更新可以并行。相反，前缀和
+\begin{equation}
+y_i=y_{i-1}+x_i
+\end{equation}
+按最直接写法存在链式依赖，不能通过“给每个 $i$ 一个线程”消除依赖。
+
+\section{Work、Span 与可用并行度}
+
+并行复杂度需要同时描述“总共做多少工作”和“最短依赖链有多长”。记
+\begin{equation}
+W=\text{所有 task 工作量之和},
+\qquad
+S=\text{依赖 DAG 上的关键路径工作量}.
+\end{equation}
+$W$ 常称 work，$S$ 常称 span 或 critical-path length。即使拥有无限多处理单元，执行时间也不可能短于 $S$；因此算法自身提供的平均并行度为
+\begin{equation}
+\boxed{
+\mathcal P=\frac{W}{S}.
+}
+\label{eq:parallel-average-parallelism}
+\end{equation}
+如果硬件有 $P$ 个执行单元，理想时间至少满足
+\begin{equation}
+T_P\ge\max\left(\frac{W}{P},S\right).
+\label{eq:parallel-lower-bound}
+\end{equation}
+这条式子解释了一个后面反复出现的现象：当问题规模变小、task 数下降以后，即使每个 task 本身仍然很快，span 不再能被更多硬件隐藏，并行效率也会下降。
+
+Amdahl 定律是同一思想的另一种表达。若总时间中比例 $s$ 必须串行，其他部分可以无限并行，则最大加速比满足
+\begin{equation}
+S_{\max}=\frac1s.
+\end{equation}
+它不是说“并行没有意义”，而是提醒我们：固定同步、串行粗层和全局归约都会在规模变大时成为硬上限。
+
+\section{工作分解与数据分解}
+
+把 task 识别出来以后，还必须决定它们如何分配到执行单元。这里有两种相关但不同的分解。
+
+\subsection{工作分解}
+
+工作分解回答“哪个执行单元负责哪些 task”。最细可以一 task 一执行单元，最粗可以一个大块由单个执行单元完成。粒度太细会增加调度和同步成本；粒度太粗则会降低并行度并放大负载不均。
+
+\subsection{数据分解与所有权}
+
+数据分解回答“哪个执行单元拥有或主要负责哪部分数据”。对网格算法，常见做法是按连续空间子区域切分。无论底层是线程、GPU block 还是 MPI rank，都可以先用一个抽象所有权映射表示：
+\begin{equation}
+\operatorname{owner}(i)=p,
+\end{equation}
+表示数据项 $i$ 由执行单元 $p$ 负责写回最终结果。
+
+\textbf{所有权首先是一条写入规则。}只要每个输出位置有唯一 owner，就可以避免 write--write 冲突；读取则可能跨越所有权边界。共享内存中跨边界读取仍然是普通 load，分布式内存中则需要通信。这个差别会在\chapref{ch:shared-memory}与\chapref{ch:mpi}分别具体化。
+
+\section{基本并行计算模式}
+
+数值程序中的许多 kernel 可以归入少数稳定模式。认识模式比记住某个 API 更可迁移。
+
+\subsection{Map 与 Stencil}
+
+Map 的典型形式是
+\begin{equation}
+y_i=F(x_i),
+\end{equation}
+每个输出只依赖同位置输入。Stencil 则允许读取一个局部邻域：
+\begin{equation}
+y_i=F\bigl(\{x_j:j\in\mathcal N(i)\}\bigr).
+\end{equation}
+只要所有 task 写不同 $y_i$，stencil 仍然可以并行；但它比 map 更依赖数据局部性，并在数据分区边界产生额外读取需求。
+
+\subsection{Gather、Scatter 与 Reduction}
+
+Gather 由一个输出 task 主动读取多个输入：
+\begin{equation}
+y_i=\sum_{j\in\mathcal S(i)}w_{ij}x_j.
+\end{equation}
+如果每个 $y_i$ 只有一个 writer，通常没有写冲突。Scatter 则由一个输入 task 向多个输出贡献：
+\begin{equation}
+y_j\mathrel{+}=g_{ij}x_i,
+\end{equation}
+多个输入可能同时更新同一个 $y_j$，因此需要原子操作、分段累加或重新组织成 gather。
+
+Reduction 把很多局部值合并成少量全局值，例如
+\begin{equation}
+\|r\|_2^2=\sum_i r_i^2.
+\end{equation}
+它具有大量局部并行工作，但最终必须沿 reduction tree 合并，因而具有非零 span；在分布式系统中还会变成全局通信。
+
+\section{同步、通信与局部性}
+
+如果某一批 task 的输出是下一批 task 的输入，就需要建立阶段边界。共享内存中这通常表现为 barrier、lock、atomic 或 task dependency；分布式内存中则表现为 point-to-point message 或 collective communication。
+
+通信成本常用最小的 $\alpha$--$\beta$ 模型表示：
+\begin{equation}
+T_{\mathrm{msg}}\approx\alpha+\beta m,
+\label{eq:parallel-alpha-beta}
+\end{equation}
+其中 $\alpha$ 是启动延迟，$m$ 是消息字节数，$\beta$ 是每字节传输时间。小消息常被 $\alpha$ 主导，大消息更接近带宽项 $\beta m$。
+
+即使没有跨节点通信，数据位置也会影响速度。缓存层次、NUMA、GPU global/shared memory 都说明同一个规律：\textbf{并行度不是唯一目标，任务还应尽量重复使用靠近自己的数据。}因此划分必须同时考虑负载均衡和 locality。
+
+\section{性能成本的统一分解}
+
+对一个并行阶段，可以先用概念模型
+\begin{equation}
+\boxed{
+T\approx T_{\mathrm{compute}}
++T_{\mathrm{memory}}
++T_{\mathrm{sync}}
++T_{\mathrm{comm}}
++T_{\mathrm{launch/schedule}}.
+}
+\label{eq:parallel-cost-decomposition}
+\end{equation}
+这不是要求五项严格相加而没有重叠，而是用于诊断“时间主要受哪一类资源约束”。
+
+对内存密集 kernel，算术强度
+\begin{equation}
+I=\frac{\text{FLOPs}}{\text{bytes transferred}}
+\end{equation}
+可以与硬件峰值计算率 $F_{\max}$ 和内存带宽 $B_{\max}$ 组成 Roofline 上界：
+\begin{equation}
+P\le\min(F_{\max},I B_{\max}).
+\label{eq:parallel-roofline}
+\end{equation}
+但 Roofline 只覆盖 compute/memory 竞争；它不能替代 barrier、kernel launch、MPI latency 和全局 reduction 的分析。
+
+\section{并行模型与硬件实现的分离}
+
+到这里仍然没有指定线程、warp 或 rank。统一模型只包含 task、数据、依赖、所有权与通信。后续硬件只是把这些抽象对象映射到不同执行机制：
+\begin{center}
+\small
+\begin{tabularx}{0.96\textwidth}{>{\bfseries}p{2.6cm}XXX}
+\toprule
+抽象对象 & 共享内存 & GPU & 分布式内存\\
+\midrule
+task & loop chunk / task & thread / block & rank-local loop\\
+数据所有权 & shared array + 写区间 & device array + thread/block mapping & owned subdomain\\
+跨边界读取 & 普通共享 load & global/shared-memory load & ghost/halo communication\\
+阶段同步 & barrier/task dependency & kernel boundary / device sync & message completion / collective\\
+reduction & thread tree reduction & block/device reduction & local reduction + global collective\\
+\bottomrule
+\end{tabularx}
+\end{center}
+\chapref{ch:mg-parallel-operations}将先把多重网格每个操作放进这套抽象模型，再从\chapref{ch:shared-memory}开始具体映射到硬件。
+
+\section{本章小结}
+
+并行算法的第一性对象不是 API，而是 task、读写集合、依赖 DAG、工作量、关键路径和数据所有权。Map、stencil、gather/scatter、reduction 与 communication 是后面反复出现的基本模式。硬件优化的本质，是在不破坏依赖与所有权语义的前提下，提高可用并行度、改善 locality，并降低同步与通信固定成本。
+
+\section*{习题}
+
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 一个 DAG 有 64 个单位工作 task，关键路径长度为 8。计算 $W,S,W/S$，并分别给出 $P=4,8,32$ 时由式~\eqref{eq:parallel-lower-bound}得到的时间下界。
+\item 某程序串行比例为 $s=0.04$。计算无限并行度下的 Amdahl 加速上限，并计算 $P=8,32,128$ 时理想并行部分完全线性缩放下的加速比。
+\item 用 $T=\alpha+\beta m$，取 $\alpha=2\,\mu s$、带宽 $1/\beta=20\,\mathrm{GB/s}$，计算 $m=1\,\mathrm{KB},1\,\mathrm{MB},100\,\mathrm{MB}$ 的消息时间，并判断各自更受 latency 还是 bandwidth 主导。
+\item 一个 kernel 每个元素做 18 FLOPs，主存实际读写 64 B。计算 arithmetic intensity；若内存带宽为 $200\,\mathrm{GB/s}$、峰值算力为 $4\,\mathrm{TFLOP/s}$，求 Roofline 上界。
+\end{enumerate}
+
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 证明任何调度都必须满足 $T_P\ge W/P$ 与 $T_P\ge S$，从而得到式~\eqref{eq:parallel-lower-bound}。
+\item 证明若每个输出位置具有唯一 writer，且所有输入在阶段开始前已经就绪，则纯 gather kernel 不需要为输出写入设置互斥锁。
+\item 对二叉 reduction tree 推导 $N$ 个输入的 work 与 span，并与串行 reduction 比较。
+\item 给出一个 scatter kernel 存在 write--write race 的具体例子，并证明把它改写成等价 gather 可以消除该 race。
+\end{enumerate}
+
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 实现 map、stencil 和 reduction 三个最小 kernel，记录它们的读写集合并画出 dependency DAG。
+\item 为一维三点 stencil 实现两种分块粒度，测量单线程和多线程的内存带宽与调度开销。
+\item 实现 tree reduction 与串行 reduction，比较不同数组长度下的临界规模。
+\item 使用 profiler 或硬件计数器测一个低算术强度 kernel，比较实测带宽与 Roofline 预测。
+\end{enumerate}
+
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item 给定一个新数值 kernel，设计一张检查表：task 是什么、读写什么、谁拥有输出、是否需要 barrier/reduction/communication、怎样判断粒度是否过细。
+\item 某优化把 FLOPs 降低 30\%，却使内存流量增加 2 倍。用 Roofline 与式~\eqref{eq:parallel-cost-decomposition}讨论它可能在哪些机器上更慢。
+\item 比较“按数据块固定 owner”和“动态抢 task”两种调度在 locality 与 load balance 上的取舍。
+\end{enumerate}

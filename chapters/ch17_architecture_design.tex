@@ -1,0 +1,118 @@
+\chapter{并行架构选择与求解器设计}
+\label{ch:architecture}
+
+\begin{keybox}
+\textbf{本章不是给 OpenMP、MPI 或 GPU 排名，而是建立选型过程。}输入是问题规模、网格结构、求解频率、机器拓扑和维护约束；输出才是 rank/thread/GPU 配置、solver hierarchy 与底层求解策略。\[
+\boxed{
+\text{问题画像}\rightarrow\text{内存可行性}\rightarrow\text{局部工作粒度}
+}
+\]
+\[
+\boxed{
+\text{通信/同步拓扑}\rightarrow\text{候选执行模型}\rightarrow\text{benchmark 验证}
+}
+\]
+前面各执行模型章节提供机制，本章只负责把机制组合成决策流程；最终选择必须用\chapref{ch:benchmarking}的公平基准和\chapref{ch:diagnosis}的诊断流程验证。
+\end{keybox}
+
+\section{问题画像与架构筛选}
+
+\subsection{问题特征描述}
+在选择框架前，至少记录：全局 unknown 数、每层 box/patch 数、是否 AMR、系数是否强跳变、同一 hierarchy 会重复求解多少次、单节点内存是否足够、节点中 CPU socket 与 GPU 数量、节点间网络特征。没有这张画像，“应该用 MPI 还是 OpenMP”通常没有稳定答案。
+
+
+\subsection{架构与算法匹配}
+
+给定问题，先回答：
+\begin{equation}
+\{N,\text{geometry},\text{coefficient},\text{AMR},\text{solve frequency},\text{hardware}\}.
+\end{equation}
+然后再决定并行模型。多重网格的关键不是把所有框架都叠上去，而是减少不必要的层级。
+
+\paragraph{一个不做“架构排名”的选型例子。}
+设某规则三维 Poisson 问题需要反复求解同一 hierarchy，单节点内存足够容纳全部数据。这个信息只能把候选范围缩小到“单节点 CPU shared memory”与“单 GPU/多 GPU 中能够完整驻留数据的方案”，还不能直接选出赢家。接下来分别检查：CPU 端是否已接近内存带宽上限；GPU 端最粗层是否出现严重 small-kernel；setup 是否可复用；数据是否需要频繁往返 host/device。最后用\chapref{ch:benchmarking}的相同数学路径做规模扫描，再用\chapref{ch:diagnosis}解释 crossover。这个例子体现本章的原则：\textbf{架构选择是约束逐步筛选，不是先验打分。}
+
+\section{候选架构路径}
+
+\subsection{单节点 CPU}
+
+如果问题能够装入单节点内存，优先研究 shared-memory bandwidth、NUMA 和 vectorization；这些机制已经在\chapref{ch:shared-memory}建立。此时 MPI 仍可能有优势，例如现有 domain decomposition 已高度成熟，但应明确\chapref{ch:mpi}所描述的 rank 数据复制、halo 与同步成本是否值得。
+
+一个合理实验矩阵是：
+\begin{equation}
+(1\ \text{rank}\times C\ \text{threads}),
+(2\times C/2),
+(4\times C/4),
+\ldots,
+(C\times1).
+\end{equation}
+用同一节点比较，找到 memory bandwidth 与 MPI overhead 的平衡点。
+
+\subsection{多节点 CPU}
+
+多节点 CPU 上，分布式内存机制通常不可避免；基础通信模型见\chapref{ch:mpi}。节点内仍可选择纯 MPI 或 MPI+OpenMP。粗网格上减少 ranks 尤其重要：若每个 rank 的 boxes 很少，OpenMP 线程可能没有足够 tile；若 ranks 太多，coarse-grid halo 与 Allreduce 又会过重。
+
+\subsection{单 GPU}
+
+GPU 是否划算不存在脱离硬件和算法的固定 unknown 阈值。\chapref{ch:gpu}已经解释：问题太小时，kernel launch、setup 和数据迁移等固定成本可能占主导；问题足够大以后，规则 stencil 才更有机会把 HBM 带宽和设备并行度发挥出来。这个 crossover 必须通过\chapref{ch:benchmarking}的规模扫描测出来，而不能写成通用常数。无论规模如何，整个 hierarchy 与 bottom solver 是否尽量 device resident 都是首先要检查的条件。
+
+\subsection{多 GPU}
+
+核心设计从“GPU kernel”升级为“GPU+NIC pipeline”。每 GPU 一 rank 是常见起点，但最粗层不应机械保留所有 ranks。GPU-aware MPI、rank consolidation 和 coarse solver 策略往往比进一步手调 fine-grid kernel 更重要。
+
+\subsection{跨厂商 GPU}
+
+若必须同时覆盖 NVIDIA/AMD/Intel，CUDA-only 的维护成本会升高。可以考虑 HIP/SYCL/Kokkos/OpenMP target，或者像 AMReX 那样在高层保持统一 API、底层使用原生后端\cite{amrexGPUdocs2026}。但任何 performance-portability 选择都应配套跨架构 benchmark，而不是把“编译成功”当作完成。
+
+\subsection{纯 MPI 与 MPI+OpenMP}
+
+设节点有 $C$ CPU cores。纯 MPI 使用 $C$ ranks；混合模型使用 $R$ ranks，每 rank $T=C/R$ threads。
+
+纯 MPI 的优点：
+\begin{itemize}
+\item 内存访问局部性和 ownership 清晰；
+\item MPI runtime 负责 rank 间并行；
+\item 每 rank 单线程，线程安全问题少。
+\end{itemize}
+缺点：
+\begin{itemize}
+\item rank 数多，halo messages 与 metadata 增加；
+\item coarse level 上活跃 ranks 过多；
+\item 每 rank 复制的 solver 数据结构可能增加内存。
+\end{itemize}
+
+MPI+OpenMP 可以减少 rank 数和网络 endpoints，但需要处理 NUMA、thread scaling、barrier 与 MPI thread level。对于 memory-bound stencil，一个 socket 上 32 threads 未必比 8--16 threads 更快；最佳组合必须测量。
+
+\section{本章小结}
+本章把前面各章组合成工程决策：shared-memory、distributed-memory、accelerator、hybrid model、rank/thread mapping 与 bottom solver strategy。这里不存在脱离问题规模和机器结构的“最佳框架”。
+
+\section*{习题}
+
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 一个三维问题有 $800^3$ cells，每 cell 核心数据 96 byte。计算单份数据内存；若 V-cycle hierarchy 额外放大 $8/7$、工作区再乘 2.5，估算总内存并判断 80 GiB GPU 是否可容纳。
+\item 全局 $512^3$ 网格在 8、64、512 ranks 下立方分解。计算 local cube 边长、每 rank unknowns 和 surface/volume，作为架构候选的局部粒度输入。
+\item CPU 路径每 cycle 30 ms、convergence factor 0.12；GPU 路径每 cycle 8 ms，但每 solve 有 40 ms 数据搬运。分别计算做 1、5、50 次重复 solve 的总时间。
+\item 两种配置 A/B：A setup=1 s、solve=0.08 s，B setup=0.2 s、solve=0.11 s。求 break-even reuse 次数，并结合内存限制判断何时配置 A 即使更快也不可选。
+\end{enumerate}
+
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 建立架构选择的约束链：memory capacity、minimum local work、communication cost、setup amortization。把它写成一组必要条件，并说明任何一个不满足都可淘汰候选配置。
+\item 推导“重复求解次数”怎样改变昂贵 setup 与快速 solve 方案之间的 break-even 条件。
+\item 证明不存在脱离问题规模和机器参数的“MPI 总比 OpenMP 快”或“GPU 总比 CPU 快”的普适排序：构造两个参数场景使排序相反。
+\end{enumerate}
+
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 写一个配置扫描脚本，对 rank/thread/GPU 数组合运行固定 benchmark，收集内存、cycle time、iteration count 与 setup time，输出 Pareto 候选。
+\item 对同一节点比较纯 MPI、MPI+OpenMP、单 GPU（若可用），确保数值路径一致并绘制 time breakdown。
+\item 实现一个简单 architecture advisor：输入 unknowns、bytes/cell、节点内存、GPU 数、网络参数，先排除内存不可行配置，再按 benchmark 数据排序剩余候选。
+\end{enumerate}
+
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item 给定一个假想问题画像（规模、AMR/规则网格、重复求解次数、节点/GPU 数），按“内存可行性 $\rightarrow$ 局部粒度 $\rightarrow$ 通信拓扑 $\rightarrow$ benchmark”完成架构决策，不允许用经验口号直接排名。
+\item 对粒子--场耦合应用，场求解器适合 MPI 但粒子阶段难以分布。设计至少两种整体架构，并分析 idle resources、内存复制和同步成本。
+\item 一个 GPU 方案单次 solve 最快，但 setup 和数据迁移使短任务更慢。说明产品环境中应如何依据任务生命周期而不是单 kernel 峰值做选择。
+\end{enumerate}

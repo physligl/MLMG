@@ -1,0 +1,278 @@
+\chapter{局部 Fourier 分析与两网格收敛分析}
+\label{ch:lfa}
+
+\begin{keybox}
+\textbf{本章的任务不是第一次学习 multigrid，而是给\chapref{ch:iterative-smoothing}至\chapref{ch:mg-cycles}已建立的多重网格直觉加上定量分析。}我们将把网格误差分解为不同空间频率，计算平滑器对每个频率的放大因子，并解释为什么 two-grid 分析必须同时考虑会在粗网格上发生 aliasing 的 harmonic 子空间。
+\end{keybox}
+
+\section{Fourier 模态与离散符号}
+\label{sec:lfa-fourier}
+
+先把\chapref{ch:iterative-smoothing}里已经见过的两个误差形状重新写一遍。交替误差
+\begin{equation}
+e_j=(-1)^j
+\end{equation}
+可以写成 $e^{\mathrm i\pi j}$，因此对应频率 $\theta=\pi$；而缓慢变化的误差 $e_j=\sin(\theta j)$ 在 $|\theta|\ll1$ 时相邻点差异很小。LFA 只是把“振荡快/慢”这一直觉换成一个可计算的频率参数。
+
+在均匀网格 $x_j=jh$ 上，误差可以包含不同振荡尺度。例如
+\begin{equation}
+e_j=\sin(\theta j)
+\end{equation}
+中，$\theta$ 越接近 $\pi$，相邻点变化越快；$\theta$ 越接近 0，变化越慢。为了让代数更方便，通常使用复指数
+\begin{equation}
+\varphi_j(\theta)=e^{\mathrm i j\theta},
+\qquad \theta\in[-\pi,\pi).
+\end{equation}
+正弦和余弦都可以由复指数的实部、虚部得到，所以这不是改变问题，只是采用更方便的基函数。
+
+如果一个平移不变的离散算子 $A_h$ 作用在 Fourier 模态后只乘上一个数：
+\begin{equation}
+A_h\varphi(\theta)=\widetilde A_h(\theta)\varphi(\theta),
+\end{equation}
+这个乘数 $\widetilde A_h(\theta)$ 称为算子的\textbf{Fourier symbol}。Local Fourier Analysis（LFA）就是利用这种表示来研究不同空间频率的误差传播。\begin{warningbox}
+\textbf{LFA 的心智边界必须先建立。}经典 LFA 依赖均匀、平移不变的局部离散，并通常借助无限网格或周期网格把 Fourier 模态当作特征方向。物理边界、AMR coarse--fine interface、强系数跳变都会破坏全局平移不变性，因此 LFA 在这些问题上主要是\textbf{局部机制分析工具}，不能直接当作完整复合系统的精确谱分解。AMR 离散结构见\chapref{ch:amr-discretization}。
+\end{warningbox}
+
+从\chapref{ch:iterative-smoothing}的误差传播式~\eqref{eq:error_prop_general}出发，LFA 所做的事情可以概括为：在平移不变模型上，用 Fourier 模态把矩阵 $S$ 的作用化成每个频率上的标量或小矩阵放大因子。
+
+\section{一维 Poisson 的加权 Jacobi 分析}
+
+一维离散 Poisson 为
+\begin{equation}
+(A_hu)_j=\frac{-u_{j-1}+2u_j-u_{j+1}}{h^2}.
+\end{equation}
+代入 $\varphi_j(\theta)=e^{\mathrm i j\theta}$：
+\begin{align}
+(A_h\varphi)_j
+&=\frac{-e^{-\mathrm i\theta}+2-e^{\mathrm i\theta}}{h^2}\varphi_j\\
+&=\frac{2-2\cos\theta}{h^2}\varphi_j.
+\end{align}
+所以
+\begin{equation}
+\widetilde A_h(\theta)
+=\frac{2-2\cos\theta}{h^2}
+=\frac{4}{h^2}\sin^2\frac{\theta}{2}.
+\end{equation}
+
+Weighted Jacobi 的误差传播算子是
+\begin{equation}
+S_\omega=I-\omega D^{-1}A,
+\end{equation}
+而一维 Poisson 的 $D=2h^{-2}I$，因此
+\begin{equation}
+\widetilde{D^{-1}A}(\theta)=1-\cos\theta,
+\end{equation}
+得到放大因子
+\begin{equation}
+\widetilde S_\omega(\theta)
+=1-\omega(1-\cos\theta).
+\label{eq:lfa-wj-one-dimensional-symbol}
+\end{equation}
+
+对 $2h$ 粗化，通常把 $|\theta|<\pi/2$ 看作粗网格可表示的低频区，而
+\begin{equation}
+\frac{\pi}{2}\le |\theta|\le\pi
+\end{equation}
+是相对于粗网格的高频区。此时
+\begin{equation}
+1-\cos\theta\in[1,2].
+\end{equation}
+希望最坏高频放大因子尽量小，就得到 minimax 问题
+\begin{equation}
+\min_\omega\max_{\lambda\in[1,2]}|1-\omega\lambda|.
+\end{equation}
+让区间两端等幅反号：
+\begin{equation}
+1-\omega=-(1-2\omega),
+\end{equation}
+所以
+\begin{equation}
+\boxed{\omega_\star=\frac23},
+\qquad
+\boxed{\mu=\frac13}.
+\end{equation}
+这里 $\mu$ 称为\textbf{smoothing factor}：一次加权 Jacobi 后，最坏高频模态最多保留原幅值的 $1/3$。而当 $\theta\to0$ 时，$\widetilde S_\omega(\theta)\to1$，低频误差几乎不动。这严格验证了\chapref{ch:iterative-smoothing}的“平滑”直觉。
+
+\section{二维与三维 Poisson 的平滑分析}
+
+二维 Fourier 模态不再由一个频率描述，而是
+\begin{equation}
+\varphi_{i,j}(\bm\theta)
+=e^{\mathrm i(i\theta_x+j\theta_y)},
+\qquad
+\bm\theta=(\theta_x,\theta_y).
+\end{equation}
+二维五点 Poisson 的 symbol 为
+\begin{equation}
+\widetilde A_h(\theta_x,\theta_y)
+=\frac{4-2\cos\theta_x-2\cos\theta_y}{h^2},
+\end{equation}
+Jacobi 对角元为 $4/h^2$，所以
+\begin{equation}
+\widetilde{D^{-1}A}
+=1-\frac12(\cos\theta_x+\cos\theta_y).
+\end{equation}
+这里“高频”已经不是一维区间 $[\pi/2,\pi]$，而是二维频率平面中低频方形
+\begin{equation}
+\Theta_{low}^{2D}=(-\pi/2,\pi/2]^2
+\end{equation}
+的补集。一个模式只要至少一个方向相对于 $2h$ 网格不可解析，就属于 high-frequency set。于是 $(\pi,0)$、$(0,\pi)$ 和 $(\pi,\pi)$ 都是高频，但它们代表的几何振荡方向不同。
+
+在该高频集合上，$\widetilde{D^{-1}A}$ 覆盖区间 $[1/2,2]$，因此仅针对 point Jacobi smoother 的 minimax 权重为
+\begin{equation}
+\omega_\star=\frac45,
+\qquad
+\mu_\star=\frac35.
+\end{equation}
+这已经说明维数增加会改变“最坏高频模式”的集合，因此不能把一维最优参数 $2/3$ 不加分析地沿用到二维。
+
+三维模态为
+\begin{equation}
+\varphi_{i,j,k}(\bm\theta)
+=e^{\mathrm i(i\theta_x+j\theta_y+k\theta_z)}
+\end{equation}
+并有
+\begin{equation}
+\widetilde{D^{-1}A}
+=1-\frac13(\cos\theta_x+\cos\theta_y+\cos\theta_z).
+\end{equation}
+低频区域成为三维立方体 $(-\pi/2,\pi/2]^3$，高频集合是其补集；对应范围为 $[1/3,2]$，从而
+\begin{equation}
+\omega_\star=\frac67,
+\qquad
+\mu_\star=\frac57.
+\end{equation}
+
+\begin{keybox}
+\textbf{维数提升改变的是频率空间的几何，而不只是 symbol 里多一个 cosine。}
+一维 high/low frequency 是区间划分；二维是频率平面区域；三维是频率体区域。后面的 coarse-grid aliasing 因而也从两个 harmonics 扩展为四个和八个 harmonics。
+\end{keybox}
+
+\section{粗网格混叠与多维 harmonic 子空间}
+
+一维细网格模态
+\begin{equation}
+\varphi_h(\theta;j)=e^{\mathrm i j\theta}
+\end{equation}
+只在粗网格点 $j=2I$ 上采样时，$\theta$ 与 $\theta+\pi$ 变得不可区分。因此一维 two-grid LFA 必须在二维子空间
+\begin{equation}
+\mathcal E_\theta^{1D}
+=\operatorname{span}\{\varphi_h(\theta),\varphi_h(\theta+\pi)\}
+\end{equation}
+中分析。
+
+二维 full coarsening 时，$x,y$ 两个方向都存在是否加 $\pi$ 的二元选择。对一个基本低频 $\bm\theta=(\theta_x,\theta_y)$，粗网格无法区分四个细网格 harmonics：
+\begin{equation}
+(\theta_x,\theta_y),\quad
+(\theta_x+\pi,\theta_y),\quad
+(\theta_x,\theta_y+\pi),\quad
+(\theta_x+\pi,\theta_y+\pi).
+\label{eq:lfa-two-dimensional-harmonics}
+\end{equation}
+因此 two-grid symbol 不再是 $2\times2$，而是在四维 harmonic 子空间中形成 $4\times4$ 小矩阵。三维有三个方向的二元选择，共得到 $2^3=8$ 个 harmonics，对应 $8\times8$ symbol。
+
+这就是维数提升对 two-grid 理论真正的新影响：\textbf{coarse grid aliasing 的耦合子空间维数按 $2^d$ 增长}。所以二维、三维 two-grid 分析不能被描述成“一维公式再加几个方向”。
+
+\section{两网格 Fourier 符号与收敛因子}
+
+由\chapref{ch:two-grid}的式~\eqref{eq:two_grid_error}，two-grid 误差传播算子为
+\begin{equation}
+E_{TG}
+=S_{\mathrm{post}}^{\nu_2}
+\left(I-PA_H^{-1}RA_h\right)
+S_{\mathrm{pre}}^{\nu_1}.
+\end{equation}
+在 harmonic 子空间中，把各算子换成对应的小矩阵 Fourier symbol：
+\begin{equation}
+\widetilde E_{TG}(\bm\theta)
+=\widetilde S_{\mathrm{post}}^{\nu_2}
+\left[I-\widetilde P
+\widetilde A_H^{-1}
+\widetilde R
+\widetilde A_h\right]
+\widetilde S_{\mathrm{pre}}^{\nu_1}.
+\end{equation}
+最终关注
+\begin{equation}
+\rho_{TG}
+=\sup_{\bm\theta\in\Theta_{low}}
+\rho\left(\widetilde E_{TG}(\bm\theta)\right).
+\end{equation}
+这解释了一个重要现象：单独让 Jacobi 的 smoothing factor 最优，不一定让完整 two-grid 的收敛因子最优，因为 $R,P,A_H$ 和预/后平滑次数都会共同作用。
+
+\section{Chebyshev 多项式平滑器}
+
+到这里已经有足够的谱概念理解 Chebyshev smoother。它不再只做一次
+\begin{equation}
+u\leftarrow u+\omega D^{-1}r,
+\end{equation}
+而是用一个低阶多项式 $p_m(A)$ 在目标谱区近似 $A^{-1}$ 的作用。实现上主要由重复的算子应用、向量更新和少量标量递推组成，不需要 Gauss--Seidel 那样的点间顺序依赖，因此在 GPU 与大规模 MPI 中很有吸引力。
+
+它的代价是需要估计目标谱区，且一次 smoothing phase 可能包含多次 operator apply。于是评价标准仍然是
+\begin{equation}
+\text{time-to-solution}
+=\text{cycles}\times\text{cost per cycle},
+\end{equation}
+而不是单看某一步的理论收敛强度\cite{baker2011smoothers,bergervergiat2021twostage,hypreBoomer2026}。
+
+\section{各向异性与半粗化}
+
+前面的 Fourier 分析默认各方向具有相近的离散尺度与耦合强度。若算子存在强各向异性，例如
+\begin{equation}
+-\epsilon u_{xx}-u_{yy}=f,\qquad \epsilon\ll1,
+\end{equation}
+full coarsening 可能破坏 coarse space 对“难消误差”的表示能力。semicoarsening 只沿部分方向 coarsen，例如
+\begin{equation}
+(h_x,h_y)\rightarrow(h_x,2h_y),
+\end{equation}
+并常与 line smoother 配合。
+
+从并行角度，semicoarsening 还有一个副作用：问题规模下降更慢。例如三维只 coarsen 两个方向时，每层 unknowns 约减为 $1/4$ 而非 $1/8$。这虽然增加总 work，却保留更多 coarse-level parallelism。因此数值鲁棒性和硬件利用率有时会朝同一方向改善。
+
+
+\section{本章小结}
+
+本章建立了 Fourier mode、symbol、smoothing factor、high/low frequency region、aliasing、harmonic subspace 与 two-grid convergence factor。维数提升在频率空间中产生了真正的新结构：二维 high/low frequency 是平面区域，full coarsening 形成四维 harmonic 子空间；三维则形成八维 harmonic 子空间。因此多维 LFA 不是在一维 symbol 中机械增加 cosine。LFA 依赖无限或周期局部模型来分析局部行为；复杂边界、强变系数和非规则网格需要更谨慎地解释其预测能力。
+
+\section*{习题}
+
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 从 $\varphi_j(\theta)=e^{\mathrm i j\theta}$ 出发，逐步计算一维 Poisson stencil 作用后的 Fourier symbol $\widetilde A(\theta)$。
+\item 对 weighted Jacobi 推导并计算
+\[
+\widetilde S_\omega(\theta)=1-\omega(1-\cos\theta)
+\]
+在 $\theta=\pi/4,\pi/2,3\pi/4,\pi$、$\omega=1/2,2/3,1$ 时的放大因子。
+\item 在高频区 $\theta\in[\pi/2,\pi]$ 上求解 minimax 问题
+\[
+\min_\omega\max_\theta |\widetilde S_\omega(\theta)|,
+\]
+用端点等振幅条件求出最优 $\omega$ 与 smoothing factor。
+\item 推导二维五点 Poisson 的 $\widetilde A(\theta_x,\theta_y)$ 与 $\widetilde{D^{-1}A}$，并计算模式 $(\pi,0)$、$(\pi,\pi)$、$(\pi/2,\pi/2)$ 的数值。
+\item 取 fine-grid 模式 $e^{ij\theta}$ 与 $e^{ij(\theta+\pi)}$，在偶数节点 $j=2J$ 上计算其值，显式验证二者在 $2h$ 网格上的 aliasing。
+\item 给定一维 full-weighting restriction 与 linear interpolation，写出它们的 Fourier symbols；在一组指定 $\theta$ 上数值计算 transfer factor。
+\end{enumerate}
+
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 证明在无限/周期均匀网格上，常系数平移不变 stencil 的 Fourier modes 是特征函数。
+\item 严格证明一维 weighted Jacobi 在高频区的最优权重为 $2/3$。
+\item 推导一维 two-grid 在 harmonics pair 上的 $2\times2$ symbol，并说明 coarse-grid correction 为什么必须同时考虑 aliasing 的两个 fine-grid modes。
+\item 解释为什么 LFA 的结论不能无条件推广到物理边界、强变系数和 AMR coarse--fine interface；给出其建模假设的边界。
+\end{enumerate}
+
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 编程扫描 $\theta\in[0,\pi]$ 和若干 $\omega$，画出 weighted Jacobi amplification curve，并数值确认高频 minimax 权重。
+\item 对二维五点 Poisson 绘制 $|\widetilde S_\omega(\theta_x,\theta_y)|$ 的二维图，区分 smooth 与 oscillatory 区域。
+\item 编程构造 small periodic Poisson matrix，数值求其 Jacobi eigenvectors/eigenvalues，与 Fourier 解析结果逐一匹配。
+\item 将 LFA 预测的 smoothing/two-grid factor 与实际有限 Dirichlet 网格实验比较，分析有限边界造成的偏差。
+\end{enumerate}
+
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item 一个 smoother 的 LFA smoothing factor 更小，但每 sweep 成本高 60\%。设计 time-to-solution 比较指标，判断何时值得采用它。
+\item 对强各向异性算子，观察 LFA symbol 中哪类模式难以被 point smoother 抑制，并据此解释 line smoother 或 semicoarsening 的动机。
+\item 说明 LFA 在参数筛选中的正确角色：哪些结论可以先由 LFA 预测，哪些仍必须由真实边界/AMR benchmark 验证？
+\end{enumerate}

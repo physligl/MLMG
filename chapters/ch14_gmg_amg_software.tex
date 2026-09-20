@@ -1,0 +1,361 @@
+\chapter{几何多重网格、代数多重网格与软件实现}
+\label{ch:software}
+
+\begin{keybox}
+\textbf{本章先分类算法，再看软件。}如果层级关系来自已知网格几何，这是 GMG；如果主要从矩阵的非零图和数值耦合构造层级，这是 AMG。只有先理解两类 hierarchy 如何产生，比较 AMReX、hypre、PETSc、MueLu、Ginkgo 与 AmgX 才不会变成 API 名词表。
+\end{keybox}
+
+\section{多重网格层次的构造}
+\label{sec:hierarchy-construction}
+
+\chapref{ch:two-grid}和\chapref{ch:mg-cycles}一直默认“粗网格已经知道怎样构造”。这一假设在几何多重网格中很自然：规则 Poisson 已知每个未知量的空间位置，所以可以直接把 $h$ 网格变成 $2h$ 网格，并写出 $R$、$P$ 和粗网格 stencil。代数多重网格（algebraic multigrid, AMG）面对的输入却可能只有一个稀疏矩阵 $A$；它必须从 $A$ 自己恢复出“哪些未知量应该共同形成一个粗尺度表示”。
+
+\begin{keybox}
+\textbf{AMG setup 的核心心智链：}
+\[
+\boxed{
+A\rightarrow\text{matrix graph}\rightarrow\text{strong connections}
+}
+\]
+\[
+\boxed{
+\text{coarse variables / aggregates}\rightarrow P,R\rightarrow A_c=RAP
+}
+\]
+然后对 $A_c$ 重复同样过程，直到问题足够小。Setup 结束后，solve 阶段才在这个层级上执行已经熟悉的 smooth--restrict--coarse solve--prolong 循环。
+\end{keybox}
+
+\subsection{矩阵图}
+
+先把\chapref{ch:discretization}的稀疏矩阵重新解释成图。给定 $A\in\mathbb R^{n\times n}$，为每个未知量 $u_i$ 建一个顶点；若 $a_{ij}\neq0$ 且 $i\neq j$，就在顶点 $i,j$ 之间建立一条代数连接。这样得到的图称为\textbf{矩阵图（matrix graph）}。
+
+一维 Poisson 的三对角矩阵
+\begin{equation}
+A=\frac1{h^2}
+\begin{bmatrix}
+2&-1&&&\\
+-1&2&-1&&\\
+&\ddots&\ddots&\ddots&\\
+&&-1&2&-1\\
+&&&-1&2
+\end{bmatrix}
+\end{equation}
+对应的矩阵图就是一条链：$1-2-3-\cdots-n$。在 GMG 中，我们知道这条链来自一维空间相邻关系；在 AMG 中，算法只看到矩阵，却仍能从非零结构恢复“谁和谁直接耦合”。
+
+\subsection{强连接}
+
+仅知道 $a_{ij}\neq0$ 还不够。若某条耦合极弱，让它与最强耦合同等重要会使粗空间过度复杂。因此经典 AMG 会进一步定义\textbf{强连接（strong connection）}。对 Poisson 一类具有负非对角元的 M-matrix 型问题，一个常见示意准则是
+\begin{equation}
+-a_{ij}
+\ge
+\theta\max_{k\ne i}(-a_{ik}),
+\qquad 0<\theta<1.
+\label{eq:amg-strength-example}
+\end{equation}
+满足条件的 $j$ 被认为与 $i$ 强耦合。
+
+式~\eqref{eq:amg-strength-example}不是所有 AMG 的统一定义；不同矩阵类型、符号结构和算法会采用不同 strength measure。这里需要建立的心智模型只有一个：\textbf{AMG 不把所有非零元等价看待，而是试图从数值系数中识别哪些连接主导“难消误差”的传播。}
+
+\subsection{粗变量与聚合}
+
+知道强连接以后，需要决定粗层保留什么自由度。常见路线有两类。
+
+\textbf{Classical AMG} 常把 fine-level unknowns 分成 coarse variables（C-points）和 fine variables（F-points）。C-points 直接成为下一层未知量，F-points 则通过附近 C-points 插值得到。
+
+\textbf{Aggregation AMG} 不一定显式做 C/F splitting，而是把若干强连接顶点组成 aggregate，每个 aggregate 再产生一个或多个粗层自由度。二者实现不同，但认知目标相同：
+\begin{equation}
+\boxed{
+\text{用更少的粗自由度保留细层中难以被 smoother 消掉的误差形态。}
+}
+\end{equation}
+这正是\chapref{ch:two-grid}“粗空间必须能表示光滑误差”的代数版本。
+
+\subsection{插值矩阵与限制矩阵}
+
+假设一个一维问题选择细点 $1,3,5$ 作为三个粗变量。最简单的线性插值矩阵可以写成
+\begin{equation}
+P=
+\begin{bmatrix}
+1&0&0\\
+\tfrac12&\tfrac12&0\\
+0&1&0\\
+0&\tfrac12&\tfrac12\\
+0&0&1
+\end{bmatrix}.
+\label{eq:amg-simple-P}
+\end{equation}
+若粗向量为 $e_c$，则 $Pe_c$ 给出一个细层误差表示。这个矩阵恰好长得像几何线性插值，是因为这个例子本身来自规则一维 Poisson；一般 AMG 的插值权重会根据矩阵耦合计算，而不是根据坐标距离直接写出。
+
+对对称问题常取 $R=P^T$ 或其缩放形式；其他 AMG 也可以独立构造 restriction。重要的是：从此以后，粗空间不再需要显式的 $2h$ 几何网格，只要有 $P$ 和 $R$，就已经知道怎样在细、粗代数空间之间传递向量。
+
+\subsection{Galerkin 粗算子与 RAP}
+
+粗算子仍使用\chapref{ch:two-grid}的 Galerkin 关系式~\eqref{eq:galerkin}：
+\begin{equation}
+A_c=RAP.
+\end{equation}
+区别只在于：GMG 中 $R,P$ 多由几何规则直接给出；AMG 中它们来自前面的 matrix graph、strength 与 coarse-space construction。
+
+在显式稀疏矩阵实现中，应用 $A$ 到向量称为\textbf{SpMV（sparse matrix-vector product）}；形成 $RAP$ 通常涉及\textbf{SpGEMM（sparse matrix-matrix multiplication）}。因此 AMG setup 往往比规则 GMG setup 昂贵：它不仅要选择粗层结构，还要真正构造新的稀疏矩阵。
+
+\paragraph{把 $RAP$ 真正算一次。}
+忽略统一的 $1/h^2$ 因子，取具有 5 个内部未知量的一维 Poisson 矩阵
+\begin{equation}
+A=
+\begin{bmatrix}
+2&-1&0&0&0\\
+-1&2&-1&0&0\\
+0&-1&2&-1&0\\
+0&0&-1&2&-1\\
+0&0&0&-1&2
+\end{bmatrix},
+\end{equation}
+并使用式~\eqref{eq:amg-simple-P}的 $P$ 与 $R=P^T$。直接相乘得到
+\begin{equation}
+A_c=P^TAP=
+\begin{bmatrix}
+\tfrac32&-\tfrac12&0\\
+-\tfrac12&1&-\tfrac12\\
+0&-\tfrac12&\tfrac32
+\end{bmatrix}.
+\label{eq:amg-small-rap}
+\end{equation}
+这个小例子说明 coarse operator 不是“把原矩阵每隔一行一列抽出来”，而是由细层算子和 transfer operators 共同决定。这里刻意取 $R=P^T$ 来展示代数乘积；若采用\chapref{ch:two-grid}中与线性插值配对的缩放 full-weighting restriction，则 $R$ 还会带额外比例因子。因此不能脱离 $R/P$ 的归一化约定，把式~\eqref{eq:amg-small-rap}的数值系数直接与某个 $2h$ 重离散 stencil 逐项比较。这个规则一维例子仍保持三对角结构；一般 AMG 中 $P$ 的支撑更宽，$RAP$ 可能产生新的远邻耦合，这正是 operator complexity 会增长的来源。
+
+\subsection{网格复杂度与算子复杂度}
+
+AMG 不能只看“层数”。设第 $\ell$ 层未知量数为 $n_\ell$，非零元数为 $\mathrm{nnz}(A_\ell)$。定义\textbf{网格复杂度（grid complexity）}
+\begin{equation}
+C_g=\frac{\sum_{\ell=0}^{L}n_\ell}{n_0},
+\label{eq:grid-complexity}
+\end{equation}
+以及\textbf{算子复杂度（operator complexity）}
+\begin{equation}
+C_o=\frac{\sum_{\ell=0}^{L}\mathrm{nnz}(A_\ell)}{\mathrm{nnz}(A_0)}.
+\label{eq:operator-complexity}
+\end{equation}
+$C_g$ 回答“整个 hierarchy 一共保存多少未知量”；$C_o$ 则进一步回答“所有粗算子一共保存多少非零耦合”。即使 $n_\ell$ 下降很快，若 RAP 让粗矩阵越来越稠，$C_o$ 仍可能很高，于是内存、SpMV 和通信成本都会上升。
+
+这两个量把 AMG setup 与后面的性能工程连接起来：\chapref{ch:benchmarking}评测 hierarchy 时，不应只记录层数，还应记录每层 unknowns、nonzeros 与 operator complexity。
+
+\subsection{几何多重网格与代数多重网格}
+
+现在再比较 GMG 与 AMG 就不会停留在名称层面。GMG 把“邻接、粗化、插值”主要从几何中得到；AMG 把同一组问题转化为 matrix graph、strength、coarse variables/aggregates 和 algebraic interpolation。二者进入 solve 阶段以后仍共享\chapref{ch:mg-cycles}的 V-cycle 骨架。
+\chapref{ch:portability}已经从执行模型角度介绍过 MueLu、Tpetra 和 Ginkgo，把它们视为多后端求解软件体系。本节进一步转向求解器内部结构：逐一考察这些框架怎样构造 hierarchy、存储 $P/R/A_c$、选择 smoother，并把这些算法对象映射到具体执行后端。
+
+在软件实现中，\textbf{setup} 指构造 hierarchy、传递算子和粗网格算子的阶段；\textbf{solve} 指复用已建立 hierarchy 执行一个或多个多重网格循环。GMG 通常 setup 更轻、operator 更规则；AMG 更通用，但 setup 可能包含 graph coarsening、interpolation construction 与 RAP/SpGEMM。是否值得付出这些成本，取决于几何信息是否可用、矩阵是否重复求解以及目标硬件上的 setup/solve 比例。
+
+\section{Solver 与 Preconditioner 的软件组合}
+
+数学上，\secref{sec:mg-preconditioner}已经把一次 multigrid apply 写成 $z=B_{MG}r$。软件接口通常也围绕同一边界组织：外层 solver 负责 residual、搜索空间和停止准则，preconditioner 只负责把输入 residual 映射成近似修正。
+
+因此一个可维护的求解器接口应至少区分：
+\begin{itemize}
+\item \textbf{setup}：构造 hierarchy、transfer、coarse operator、smoother 与 coarse solver；
+\item \textbf{apply}：给定 $r$，执行一次固定或受控的 multigrid cycle，返回 $z$；
+\item \textbf{outer solve}：CG/GMRES/FGMRES 等维护 Krylov 历史、dot products、norm 与停止准则；
+\item \textbf{update/rebuild}：当网格、系数或 sparsity pattern 改变时，决定哪些 setup 数据可复用。
+\end{itemize}
+
+这里最容易犯的错误是把“inner MG solve tolerance”设得极严，再把它称为 preconditioner。若外层 Krylov 只需要一个稳定的近似逆，过度求解 inner problem 可能浪费大量 work；反之，若每次 inner solve 的停止位置变化很大，则预条件器变成可变算子，外层算法也应相应选择 flexible 形式。
+
+从并行角度，软件 profiler 最好把一次 outer iteration 至少拆成
+\begin{equation}
+T_{iter}
+=T_{A\text{-apply}}+T_{reductions}+T_{MG\text{-apply}}+T_{vector},
+\label{eq:software-preconditioned-iteration-cost}
+\end{equation}
+而 $T_{MG\text{-apply}}$ 再按\chapref{ch:mg-parallel-operations}的 V-cycle 阶段细分。这样才能判断瓶颈来自 outer Krylov collective，还是 MG coarse level。
+
+\section{典型软件体系}
+
+\subsection{AMReX MLMG}
+
+AMReX 是 block-structured AMR 框架，MLMG 面向几何多重网格线性求解。当前 GPU 路径覆盖 CUDA/HIP/SYCL，整体采用 MPI+X；CPU 上 X 通常为 OpenMP，GPU 上 X 为设备后端\cite{zhang2019amrex,zhang2021amrex,amrexGPUdocs2026}。
+
+值得重点研究的实现机制：
+\begin{itemize}
+\item MultiFab/BoxArray/DistributionMapping 数据模型；
+\item Box 与 GPU thread 的映射；
+\item coarse/fine boundary；
+\item agglomeration / consolidation；
+\item bottom solver 切换；
+\item GPU memory arena、stream 与 asynchronous kernel；
+\item AMR regridding 后 solver hierarchy 的重建成本。
+\end{itemize}
+
+对于规则或 block-structured Poisson，这是最接近“从 PDE 几何直接构造高性能 GMG”的代表。
+
+\paragraph{Patch 几何与执行粒度。}
+
+均匀网格可用一个大 box 产生巨大 kernel。AMR 则可能有许多尺寸不同的 Boxes：
+\begin{equation}
+\mathcal B=\{B_1,B_2,\ldots,B_K\}.
+\end{equation}
+如果每个 $B_k$ 都很小且单独 launch：
+\begin{equation}
+T\approx\sum_k(T_{launch}+T_{kernel}(B_k)),
+\end{equation}
+固定 launch 成本会被放大。
+
+在 GPU 上，块结构框架通常倾向于使用比 CPU 更大的执行粒度，并支持把同一 level 的多个网格块组织成较大的设备任务，以降低过多 kernel launch 的风险\cite{amrexGPUdocs2026}。
+
+这给出一个普遍结论：\textbf{AMR gridding 参数不仅决定数值分辨率，也决定 GPU execution granularity。}
+
+
+\paragraph{Agglomeration 与 Consolidation。}
+
+AMReX MLMG 的粗层优化包含两个极重要概念\cite{amrexMLMGdocs2026}：
+\begin{itemize}
+\item \textbf{agglomeration}：把粗层数据组织为更少、更大的 boxes；
+\item \textbf{consolidation}：把粗层问题转移到更少 MPI ranks。
+\end{itemize}
+
+这两个动作分别针对两类塌缩：
+\begin{equation}
+\text{box too small}\Rightarrow\text{kernel/thread granularity poor},
+\end{equation}
+\begin{equation}
+\text{rank local work too small}\Rightarrow\text{communication dominates}.
+\end{equation}
+
+当前 AMReX 文档指出 GPU build 的默认 agglomeration grid-length threshold 与 CPU build 不同，说明粗层 box 尺寸本身就是架构相关参数，而非纯数值参数\cite{amrexMLMGdocs2026}。
+
+
+\paragraph{嵌入边界算子。}
+
+Embedded Boundary（EB）会让 stencil 系数、邻接关系和控制流变得不规则。GPU 上可能出现：
+\begin{itemize}
+\item regular cells 走快速固定 stencil；
+\item cut cells 走复杂几何分支；
+\item 一个 warp 内 regular/cut 混合导致 divergence；
+\item coarse levels 上 EB 几何信息限制可继续 coarsen 的深度。
+\end{itemize}
+工程上常把 regular 与 irregular work 分流，避免让极少数 cut cells 拖慢全部 warp。AMReX 的线性算子也包含 EB-aware 类型，并允许限制 coarsening 深度\cite{amrexMLMGdocs2026}。
+
+
+\subsection{hypre 与 BoomerAMG}
+
+hypre 同时覆盖 structured 与 algebraic 路线。其 BoomerAMG 是大规模并行 AMG 的代表，历史上就是为 distributed-memory HPC 设计\cite{falgout2002hypre}。当前 BoomerAMG GPU 路径支持 PMIS coarsening、多种 interpolation、Jacobi/$\ell_1$-Jacobi、two-stage GS、Chebyshev 等，并支持 CUDA/HIP/SYCL/device OpenMP 的 device memory model\cite{hypreBoomer2026}。
+
+对 GPU，重点不是“把 CSR SpMV 放到 device”这么简单，而是 setup 阶段：
+\begin{equation}
+\text{coarsening}\rightarrow P,R\rightarrow RAP
+\end{equation}
+也必须 device-native，否则 solve 很快但 setup 反复退回 host，瞬态或动态网格场景会很吃亏。
+
+\subsection{PETSc PCMG 与 PCGAMG}
+
+PETSc 提供统一 KSP/PC 组合模型。几何 hierarchy 已知时可以使用 PCMG；未知时可用 PCGAMG。PCGAMG 提供 repartition 与 coarse-process reduction 参数，从软件接口层面直接承认 coarse-grid parallelism collapse 是一个必须管理的问题\cite{petscGAMG2026}。
+
+PETSc 的优势是 solver composition：同一个外层 Krylov 可以替换不同 PC、不同 Mat/Vec backend。当前 GPU 生态包含 CUDA、HIP、Kokkos 等路径，但具体矩阵类型和 solver 操作的 device 完整性要按版本与 backend 核实\cite{petscGPU2026}。
+
+\subsection{Trilinos/MueLu}
+
+MueLu 是 Trilinos 中的多重网格框架，可与 Tpetra、Belos、Ifpack2、Zoltan2 等组合。其价值在于模块化 coarsening、transfer、smoother、rebalancing，以及通过 Kokkos/Tpetra 走 performance-portable 路径\cite{mueluDocs2026}。
+
+对研究者而言，MueLu 特别适合作为“算法组件实验平台”：可以替换不同 factory 和 hierarchy 构造策略，而不是只把它当黑盒 AMG preconditioner。
+
+\subsection{Ginkgo}
+
+Ginkgo 以 accelerator-oriented、platform-portable sparse linear algebra 为核心。其 multigrid 使用后端化 kernel 结构，可在 NVIDIA、AMD、Intel GPU 上执行，并成为 mixed/three-precision AMG 研究的重要载体\cite{tsai2023mixed,tsai2023three,ginkgoMG2026}。
+
+Ginkgo 的研究意义在于把“每一级采用不同 precision”做成 solver architecture 的一等概念：coarse levels 对数值精度的需求可能不同，而低精度能同时降低 memory traffic 与提高硬件吞吐。
+
+\subsection{NVIDIA AmgX}
+
+AmgX 是 NVIDIA 面向 GPU 的 AMG/iterative solver library，支持 classical 与 aggregation-based AMG、各种 smoothers 和 Krylov 组合，并支持通过用户提供的 MPI 进行 distributed multi-GPU 求解\cite{naumov2015amgx,amgxRepo2026}。
+
+它的经典论文展示了 GPU AMG 设计中 graph matching、coloring、smoother 与 distributed hierarchy 的结合\cite{naumov2015amgx}。作为 vendor-optimized baseline，AmgX 常用于判断“自研 CUDA sparse solver 与成熟 NVIDIA 路径之间还差多少”。
+
+\section{软件体系比较}
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{1.65cm}
+                        >{\raggedright\arraybackslash}p{2.15cm}
+                        >{\raggedright\arraybackslash}p{2.25cm}
+                        >{\raggedright\arraybackslash}p{3.35cm}
+                        >{\raggedright\arraybackslash}p{3.45cm}@{}}
+\toprule
+框架 & 主路线 & 并行模型 & GPU/可移植性重点 & 最值得观察的粗层机制\\
+\midrule
+\endfirsthead
+\toprule
+框架 & 主路线 & 并行模型 & GPU/可移植性重点 & 最值得观察的粗层机制\\
+\midrule
+\endhead
+AMReX MLMG & block-structured GMG & MPI + OpenMP / MPI + GPU & CUDA / HIP / SYCL；Box-level kernels & agglomeration、consolidation、bottom solver\\
+\addlinespace
+hypre & Struct GMG + BoomerAMG & MPI + device backend & CUDA / HIP / SYCL / device OpenMP & parallel coarsening、RAP、GPU smoother\\
+\addlinespace
+PETSc & PCMG / GAMG & MPI + CUDA / HIP / Kokkos 等 & backend-neutral Mat/Vec/KSP/PC & repartition、process reduction\\
+\addlinespace
+MueLu & AMG / 多重网格框架 & MPI + Kokkos / Tpetra & performance portability & rebalancing、factory hierarchy\\
+\addlinespace
+Ginkgo & accelerator-oriented AMG & MPI + executor & CUDA / HIP / DPC++ 等 & mixed precision、distributed PGM\\
+\addlinespace
+AmgX & GPU AMG & CUDA + MPI & NVIDIA GPU 专用优化 & aggregation、coloring、distributed AMG\\
+\bottomrule
+\end{longtable}
+}
+
+这张表的目的不是排名，而是建立“阅读源码时应该看什么”的索引。
+
+\section{本章小结}
+本章把“粗层从哪里来”分成了两条路线。GMG 利用已知几何直接构造粗网格与传递算子；AMG 则从矩阵图和数值耦合出发，经 strong connection、coarse variables/aggregation、插值 $P$、限制 $R$ 与 Galerkin $RAP$ 构造层级。grid complexity 与 operator complexity 进一步把“层级是否过重”变成可测量的量。
+
+软件框架只是这条算法链的不同实现。读者不需要记住所有类名，而应能回答：hierarchy 在哪里构造？$P/R$ 从哪里来？粗算子如何生成？setup 与 solve 是否复用？粗层如何改变 box/rank/device 拓扑？
+
+\section*{习题}
+
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 对
+\[
+A=\begin{bmatrix}
+2&-1&0&0&0\\-1&2&-1&0&0\\0&-1&2&-1&0\\0&0&-1&2&-1\\0&0&0&-1&2
+\end{bmatrix}
+\]
+画出 matrix graph，并列出每个节点的邻接集合。
+\item 给定
+\[
+A=\begin{bmatrix}
+4&-3&-0.5&0\\
+-2&5&-1&-0.2\\
+-0.5&-0.4&3&-2\\
+0&-0.2&-1.5&2.5
+\end{bmatrix}.
+\]
+按式~\eqref{eq:amg-strength-example}逐行判断 $\theta=0.5$ 时哪些有向连接为 strong；再把 $\theta$ 改为 $0.8$，重新列出 strong graph，并说明哪些连接消失。
+\item 给定
+\[
+P=\begin{bmatrix}1&0\\1/2&1/2\\0&1\end{bmatrix},\qquad
+A=\begin{bmatrix}2&-1&0\\-1&2&-1\\0&-1&2\end{bmatrix},
+\]
+取 $R=P^T$，手算 $A_c=RAP$ 的全部条目。
+\item 对上一题任取 $e_c=(1,-1)^T$，计算 $Pe_c$；指出哪些 fine unknown 是直接继承、哪些是插值得到。
+\item 某 AMG hierarchy 的 unknown 数为 $[10^6,2.5\times10^5,6.25\times10^4]$，nnz 数为 $[7,9,14]$ 乘以对应 unknown 数。计算 grid complexity 与 operator complexity。
+\end{enumerate}
+
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 若 $A$ 对称正定且 $P$ 满列秩，证明 Galerkin coarse operator $A_c=P^TAP$ 仍对称正定。
+\item 从矩阵乘法定义说明为什么 RAP/SpGEMM 可能使 coarse matrix 的 stencil 比 fine matrix 更宽，从而导致 operator complexity 大于 grid complexity。
+\item 比较 classical C/F coarsening 与 aggregation：分别说明 coarse variables 的数学含义，以及 prolongation 构造需要满足的最低一致性要求。
+\item 证明规则 Cartesian Poisson 中几何 coarse grid 已知时，可以直接生成 coarse stencil，而一般 AMG 只能从矩阵关系构造 transfer/coarse operator。
+\end{enumerate}
+
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 编程验证上一组小矩阵的 $P^TAP$ 结果；再随机生成 SPD 三对角矩阵，检查 $A_c$ 的对称性和正定性。
+\item 实现一个最简 aggregation AMG setup：构造 matrix graph、简单聚合、piecewise-constant $P$、$R=P^T$ 与 RAP。对小 Poisson 问题输出每层矩阵。
+\item 用任一成熟库（hypre/PETSc/MueLu/Ginkgo/AmgX 中可用者）求解同一 Poisson 问题，记录 setup time、solve time、levels、operator complexity 与迭代次数。
+\item 对比 GMG 与 AMG：在规则 Poisson 上分别记录 hierarchy setup 与 solve；再加入随机变系数，观察两者的鲁棒性和 setup 变化。
+\end{enumerate}
+
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item 把 AMReX、hypre、PETSc、MueLu、Ginkgo、AmgX 任选五个映射到“setup--transfer--coarse operator--smoother--redistribution”统一链，指出各自最值得 profile 的阶段。
+\item 一个 AMG setup 很快但 operator complexity=3.5，另一个 setup 慢一倍但 operator complexity=1.4。设计重复求解场景下的总成本比较。
+\item 对仅知道稀疏矩阵、不知道原网格几何的问题，说明哪些 GMG 优势不再可用；反之若几何充分已知，为什么仍可能选择 AMG？
+\end{enumerate}

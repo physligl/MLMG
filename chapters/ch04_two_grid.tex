@@ -1,0 +1,273 @@
+\chapter{两网格方法与粗网格校正}
+\label{ch:two-grid}
+
+\begin{keybox}
+\textbf{本章先回答一个核心问题：}如果局部平滑器已经把高频误差消掉，却留下缓慢变化的光滑误差，为什么“换到更粗的网格”能够继续有效处理它？本章只研究两个网格层级，先把 multigrid 的核心机制完整走通一次。
+\end{keybox}
+
+\section{光滑误差与粗网格表示}
+
+取一维区间 $[0,1]$，细网格步长 $h=1/8$，考虑误差
+\begin{equation}
+e_j=\sin(\pi jh),\qquad j=0,1,\ldots,8.
+\end{equation}
+在细网格上，相邻节点的误差变化缓慢，所以\chapref{ch:iterative-smoothing}的局部平滑器并不擅长快速消掉它。现在只保留偶数节点，相当于换到步长
+\begin{equation}
+H=2h
+\end{equation}
+的粗网格。粗网格看到的仍是同一个物理波形，但用更少的节点表示，因此它相对于网格分辨率“不再那么低频”。这就是多重网格最重要的尺度转换。
+
+\begin{checkpointbox}
+如果一个误差在 64 个网格间隔上完成一次振荡，而粗化后只剩 32 个间隔，那么这个误差的物理波长没有改变，但它相对于网格尺度发生了什么变化？
+\end{checkpointbox}
+
+\section{残差方程}
+
+\chapref{ch:iterative-smoothing}已经建立了 $\bm r=A\bm e$：残差是不可见误差经过离散算子后的可计算表示。本节只把同一个关系写到细网格 $h$ 上。细网格线性系统为
+\begin{equation}
+A_hu_h=b_h.
+\end{equation}
+当前近似记为 $\tilde u_h$，误差与残差分别为
+\begin{equation}
+e_h=u_h-\tilde u_h,
+\qquad
+r_h=b_h-A_h\tilde u_h.
+\end{equation}
+利用 $A_hu_h=b_h$，立即得到
+\begin{equation}
+r_h=A_he_h,
+\end{equation}
+因此误差满足
+\begin{equation}
+A_he_h=r_h.
+\label{eq:error_equation}
+\end{equation}
+这一步非常关键：我们虽然不知道 $e_h$，但知道右端 $r_h$。所以可以尝试在更粗的空间里近似求这个误差方程。
+
+\section{网格间传递与粗网格误差}
+
+\subsection{限制算子}
+\label{sec:restriction}
+
+从细网格到粗网格的映射称为\textbf{限制（restriction）}，记作 $R$。最简单的注入（injection）只取偶数点：
+\begin{equation}
+(r_H)_I=(r_h)_{2I}.
+\end{equation}
+更常用的一维 full-weighting 会把邻近三个细网格点做加权平均：
+\begin{equation}
+(r_H)_I
+=\frac14(r_h)_{2I-1}+\frac12(r_h)_{2I}+\frac14(r_h)_{2I+1}.
+\label{eq:twogrid-full-weighting-one-dimensional}
+\end{equation}
+这里 $r_H=Rr_h$ 是粗网格误差方程的右端。restriction 的作用不是“把解缩小”，而是把细网格上与低频误差相关的信息表示到粗空间。先做一个可手算的例子。设细网格残差在连续七个点上为
+\begin{equation}
+\bm r_h=(0,2,4,2,0,-2,0)^T.
+\end{equation}
+对与细网格点 $j=2$ 对齐的粗点，full-weighting 给出
+\begin{equation}
+(r_H)_1=\frac14(2)+\frac12(4)+\frac14(2)=3;
+\end{equation}
+对与 $j=4$ 对齐的下一个粗点，
+\begin{equation}
+(r_H)_2=\frac14(2)+\frac12(0)+\frac14(-2)=0.
+\end{equation}
+所以这一小段数据经 restriction 后变成粗网格右端 $(3,0)^T$。这个例子应先形成一个直觉：$R$ 不是简单“每隔一个点抄一次”，而是在选择一种粗空间表示。
+
+\subsection{粗网格误差方程}
+
+在粗网格上求
+\begin{equation}
+A_He_H=r_H.
+\label{eq:coarse_error_eq}
+\end{equation}
+这里未知量 $e_H$ 不是原问题的解，而是\textbf{细网格误差在粗空间中的近似表示}。这正是 two-grid 与“在低分辨率上重新求一次原问题”的根本区别。
+
+如果粗网格足够小，式 \eqref{eq:coarse_error_eq} 可以精确求解；如果仍然很大，就会在\chapref{ch:mg-cycles}再次把同样思想递归应用到更粗层级。
+
+\subsection{延拓算子}
+\label{sec:prolongation}
+
+从粗网格到细网格的映射称为\textbf{延拓（prolongation）}或插值，记作 $P$。一维线性插值可以写成
+\begin{align}
+(Pe_H)_{2I}&=(e_H)_I,\\
+(Pe_H)_{2I+1}&=\frac12\left((e_H)_I+(e_H)_{I+1}\right).
+\end{align}
+得到细网格修正 $Pe_H$ 后更新
+\begin{equation}
+\tilde u_h^{\mathrm{new}}
+=\tilde u_h+Pe_H.
+\end{equation}
+注意这里是“加修正”，不是用粗网格插值直接覆盖细网格解。例如粗网格误差取
+\begin{equation}
+\bm e_H=(0,2,0)^T.
+\end{equation}
+线性 prolongation 后，细网格上的修正为
+\begin{equation}
+P\bm e_H=(0,1,2,1,0)^T.
+\end{equation}
+偶数位置直接继承粗点值，奇数位置由相邻粗点线性插值得到。这样读者可以把 $P$ 理解为“把粗空间中的一个误差形状重新表达回细空间”，而不是抽象矩阵记号。\begin{warningbox}
+\textbf{不要把 MG 的 restriction/prolongation 与 AMR 的层间数据操作混为一谈。}
+\chapref{ch:amr-discretization}中的 average-down 与 coarse-to-fine interpolation 服务于\textbf{物理离散层之间的数据一致性}；本章的 $R$ 与 $P$ 服务于\textbf{求解器内部的误差尺度转换}。二者在规则网格上可能采用相似的加权平均或线性插值公式，但数学角色不同，因此实现中不能因为“公式长得像”就当成同一个算子。
+\end{warningbox}
+
+\section{多维网格间传递}
+
+一维 restriction/prolongation 只需要决定一条线上相邻粗细点的关系。二维和三维的 transfer 则必须同时处理多个方向，而且 stencil 大小会迅速增长。对规则 Cartesian 网格，最清楚的组织方式是 tensor product。
+
+\subsection{二维 full-weighting 与双线性延拓}
+
+一维 full-weighting 权重为 $(1,2,1)/4$。二维 tensor-product full-weighting 因而得到九点模板
+\begin{equation}
+(Rr)_{I,J}
+=\frac1{16}
+\begin{bmatrix}1&2&1\\2&4&2\\1&2&1\end{bmatrix}
+:\,r_h,
+\label{eq:twogrid-two-dimensional-full-weighting}
+\end{equation}
+其中冒号表示以粗点对应的 fine point 为中心，对 $3\times3$ 邻域做加权和。与一维相比，restriction 已经从三个输入扩展到九个输入。
+
+二维线性 prolongation 对应双线性插值。粗点位置直接注入；只在一个方向位于粗点中间的 fine point 取两个粗值平均；同时位于 $x,y$ 两方向中点的 fine point 取四个粗角点的加权组合。其矩阵可以写成
+\begin{equation}
+P_{2D}=P_y\otimes P_x.
+\label{eq:twogrid-two-dimensional-prolongation-tensor}
+\end{equation}
+因此“二维 transfer”不是把一维公式复制两遍，而是由两个方向的插值共同决定一个二维 coarse basis function 在 fine grid 上的形状。
+
+\subsection{三维 tensor-product transfer}
+
+三维 full-weighting 为三个一维 full-weighting 的 tensor product，一个粗点最多涉及 $3^3=27$ 个 fine 点；三线性 prolongation 则由八个 coarse cell 角点共同决定一般 fine point 的值。形式上
+\begin{equation}
+R_{3D}=R_z\otimes R_y\otimes R_x,
+\qquad
+P_{3D}=P_z\otimes P_y\otimes P_x.
+\label{eq:twogrid-three-dimensional-transfer-tensor}
+\end{equation}
+维数提升因此同时改变 transfer 的运算量、内存访问邻域和 coarse basis 的支撑范围。后面的并行章节会把这些结构解释成 gather stencil 与数据局部性问题。
+
+\begin{checkpointbox}
+对二维 full-weighting，验证九个权重之和为 1；再说明三维 tensor-product full-weighting 的 27 个权重为什么也必然和为 1。这一性质与 AMR 插值中的“常数保持”有什么共同点，又为什么不能据此把 MG restriction 与 AMR average-down 视为同一个算子？
+\end{checkpointbox}
+
+\section{两网格循环}
+\label{sec:two-grid-cycle}
+
+到这里，two-grid 已经可以完整写出：
+\begin{algorithm}[htbp]
+\caption{Two-grid correction}
+\begin{algorithmic}[1]
+\State 在细网格上做 $\nu_1$ 次预平滑
+\State 计算残差 $r_h\gets b_h-A_hu_h$
+\State 限制到粗网格 $r_H\gets Rr_h$
+\State 解粗网格误差方程 $A_He_H=r_H$
+\State 延拓并修正 $u_h\gets u_h+Pe_H$
+\State 在细网格上做 $\nu_2$ 次后平滑
+\end{algorithmic}
+\end{algorithm}
+
+预平滑先把细网格高频误差削弱，使剩余误差更适合粗空间表示；粗网格校正主要处理这部分光滑误差；延拓回来后可能重新引入局部高频成分，所以通常再做后平滑。
+
+\section{粗网格算子}
+
+粗网格方程需要一个 $A_H$。在几何多重网格中有两种基本构造方式。
+
+第一种是\textbf{重新离散（rediscretization）}：直接在网格步长 $H=2h$ 上重新离散同一个 PDE。
+
+第二种是\textbf{Galerkin 构造}：
+\begin{equation}
+A_H=RA_hP.
+\label{eq:galerkin}
+\end{equation}
+它的含义可以按操作顺序读：把一个粗网格向量用 $P$ 放到细网格，在细网格施加 $A_h$，再用 $R$ 投回粗网格。这样得到的 $A_H$ 与选定的 $R$、$P$ 天然一致。
+
+若使用 Galerkin 构造，粗网格校正算子为
+\begin{equation}
+C_h=I-PA_H^{-1}RA_h.
+\label{eq:cgc}
+\end{equation}
+对任意粗网格向量 $v_H$，有
+\begin{align}
+C_hPv_H
+&=Pv_H-P(RA_hP)^{-1}RA_hPv_H\\
+&=0.
+\end{align}
+因此 Galerkin coarse-grid correction 能精确消除位于 $\operatorname{range}(P)$ 中的误差分量。这里 $\operatorname{range}(P)$ 指“能够由粗网格向量经 $P$ 表示出来的细网格向量集合”。
+
+\subsection{重新离散与 Galerkin 构造}
+
+对一维常系数 Poisson、标准线性 prolongation 与 full-weighting restriction，可以证明 Galerkin 构造恰好得到标准 $2h$ Poisson 离散；完整推导放在附录~\ref{app:galerkin}。对变系数、复杂边界或非结构问题，两种构造未必一致，这也是后面不同多重网格层次构造方式发生分化的重要原因。
+
+
+\section{两网格误差传播算子}
+
+\chapref{ch:iterative-smoothing}已经用 $S$ 表示一次平滑的误差传播。如果预平滑做 $\nu_1$ 次，后平滑做 $\nu_2$ 次，则整个 two-grid cycle 的误差传播为
+\begin{equation}
+E_{TG}
+=S_{\mathrm{post}}^{\nu_2}
+\left(I-PA_H^{-1}RA_h\right)
+S_{\mathrm{pre}}^{\nu_1}.
+\label{eq:two_grid_error}
+\end{equation}
+这个公式把 three pieces 连在一起：先平滑、再粗网格校正、再平滑。以后讨论“某个 smoother 是否好”时，最终关心的应是它与 coarse-grid correction 组合后的 $E_{TG}$，而不是孤立的一步迭代。
+
+\section{本章小结}
+
+本章建立的核心概念包括 two-grid、restriction、prolongation、coarse-grid correction、rediscretization 与 Galerkin coarse operator。二维/三维 transfer 进一步说明，网格间传递会从一维三点/两点关系扩展为二维九点 full-weighting、双线性延拓和三维 tensor-product stencil，因此 transfer 的支撑范围和数据访问结构都会随维数改变。这里还没有递归到很多层，也没有用 Fourier 模态定量分析 two-grid 收敛；分别留给\chapref{ch:mg-cycles}和\chapref{ch:lfa}。
+
+\section*{习题}
+
+本章习题要求真正完成一次 coarse-grid correction，而不是只复述 restriction 与 prolongation 的方向。
+
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 细网格残差取
+\[
+\bm r_h=(0,2,4,2,0,-2,0)^T.
+\]
+粗点分别与细点 $j=2,4$ 对齐。使用式~\eqref{eq:twogrid-full-weighting-one-dimensional}计算两个粗网格残差值。随后取粗网格误差
+\[
+\bm e_H=(0,2,0)^T,
+\]
+使用本章线性 prolongation 计算 $P\bm e_H$，并逐点说明偶数点与奇数点的来源。
+\item 给定
+\[
+A_h=\begin{bmatrix}2&-1&0\\-1&2&-1\\0&-1&2\end{bmatrix},\quad
+P=\begin{bmatrix}1/2\\1\\1/2\end{bmatrix},\quad R=\tfrac12P^T,
+\]
+计算 Galerkin coarse operator $A_H=RA_hP$。
+\item 在上一题中令 $\bm b=(1,0,1)^T$、$\bm u_h=(0,0,0)^T$。计算 fine residual、restricted residual、coarse error、prolongated correction 与更新后的 fine solution，完整走一遍不含平滑的 coarse-grid correction。
+\item 计算 coarse-correction matrix
+\[
+C_h=I-PA_H^{-1}RA_h,
+\]
+并分别作用到 $P$ 的列向量和一个与其线性无关的向量上。
+\item 对一维常系数 Poisson，分别通过直接在 $2h$ 网格重离散与 Galerkin $RA_hP$ 构造 coarse operator，核对二者在给定缩放约定下的关系。
+\item 二维 full-weighting 的九点权重为 $(1,2,1)^T(1,2,1)/16$。给定九个 fine residual 值
+\[
+\begin{bmatrix}1&2&1\\2&4&2\\1&2&1\end{bmatrix},
+\]
+计算对应 coarse residual。再给四个 coarse 角点值 $0,2,4,6$，计算中心 fine point 的双线性 prolongation 值。
+\end{enumerate}
+
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 从 residual equation 推导 coarse error equation，解释为什么 restriction 的对象是 residual 而不是直接把原右端“缩小”。
+\item 对 $A_H=RA_hP$ 证明 $C_hP=0$，即 coarse space 中的误差被精确 coarse correction 消除。
+\item 在 $A_H$ 可逆时证明 $C_h^2=C_h$。说明 coarse correction 为什么可以看成一个投影。
+\item 当 $A_h$ 对称正定且 $R=P^T$ 时，证明 Galerkin $A_H=P^TA_hP$ 也对称正定。
+\item 说明 rediscretization 与 Galerkin 何时可能一致；构造一个变系数或非均匀网格情形说明二者不应被默认等同。
+\end{enumerate}
+
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 实现 1D Poisson 的 restriction、prolongation 与 coarse-grid correction。对随机 smooth error 验证 coarse correction 后误差显著下降。
+\item 实现完整 two-grid：预平滑、residual、restriction、coarse solve、prolongation、correction、后平滑。报告每个阶段前后的 residual norm。
+\item 分别使用 injection/full-weighting restriction 与 piecewise-constant/linear prolongation，测量 two-grid convergence factor，解释差异。
+\item 对常系数和跳变系数问题分别比较 rediscretization 与 Galerkin coarse operator 的收敛表现。
+\end{enumerate}
+
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item 统计一次 two-grid 中 smoother、residual、transfer、coarse solve 的工作量和数据访问量。在哪个问题规模下 coarse solve 可能开始主导？
+\item 比较 MG restriction/prolongation 与第~\ref{ch:amr-discretization}章的 AMR average-down/coarse-to-fine interpolation。指出一个“数据流方向相同但数学含义完全不同”的具体例子。
+\item 若一种 transfer operator 数值上更强但内存访问更不规则，设计一个同时比较 convergence factor 与 cycle cost 的实验，而不是只比较迭代次数。
+\end{enumerate}

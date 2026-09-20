@@ -1,0 +1,4 @@
+MLMG v0.10
+Release date: 2026-09-20
+Public source release based on the current canonical manuscript state.
+Chapter 2 includes the mental-model review of composite DOFs, hierarchy storage, ghost extension, coarse-fine flux closure, and explicit AMR interpolation/average-down formulas.

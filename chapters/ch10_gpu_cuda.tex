@@ -1,0 +1,905 @@
+\chapter{GPU 执行模型与多重网格}
+\label{ch:gpu}
+
+\begin{keybox}
+\textbf{本章不从 CUDA API 开始，而从“一个数值 task 如何落到 GPU 上”开始。}
+
+\chapref{ch:parallel-model}已经把并行算法抽象为 task、读写集合、依赖与所有权；\chapref{ch:mg-parallel-operations}又把 Jacobi、残差、restriction、prolongation、归约和完整 V-cycle 写成了操作级 DAG。本章只增加一层新的问题：\textbf{GPU 这种吞吐型设备怎样执行这些 task，以及为什么同一个数值算法在 GPU 上会受到完全不同的内存、同步与粒度约束。}
+
+本章的主线是
+\[
+\boxed{
+\begin{aligned}
+&\text{host/device}
+\rightarrow
+\text{grid/block/warp/SM}
+\rightarrow
+\text{memory hierarchy}\\
+&\rightarrow
+\text{cell-to-thread mapping}
+\rightarrow
+\text{coalescing/latency hiding}
+\end{aligned}}
+\]
+\[
+\boxed{
+\text{streams/synchronization}
+\rightarrow
+\text{MG kernels}
+\rightarrow
+\text{V-cycle 与粗层}
+\rightarrow
+\text{profiling}
+}
+\]
+读完本章，读者应能够拿到一个新的 stencil 或 multigrid 操作，独立回答：数据放在哪里、一个 thread 算什么、warp 怎样访存、哪里需要同步、为什么会 memory-bound、粗层为何突然变慢，以及该用什么证据判断优化方向。
+\end{keybox}
+
+\section{GPU 执行层次与 Kernel 映射}
+\label{sec:gpu-task-to-kernel}
+
+\subsection{Host、Device 与 Kernel}
+
+GPU 程序首先是一个\textbf{异构程序}。CPU 一侧称为 host，GPU 一侧称为 device。Host 代码负责建立数据、提交 device 工作以及在必要时等待结果；真正运行在 GPU 上的函数称为 \textbf{kernel}。CUDA 的 kernel launch 对 host 通常是异步的：host 提交工作以后可以继续向前执行，直到某个后续操作真正需要 device 结果时才同步\cite{cudaProgramming2026}。
+
+这里最容易形成的错误心智模型是“GPU 就是一块有几千个 CPU core 的处理器”。更合适的模型是：
+
+\begin{equation}
+\boxed{
+\begin{aligned}
+\text{host 提交大量同构 logical tasks}
+&\rightarrow
+\text{GPU runtime 组织 threads/blocks}\\
+&\rightarrow
+\text{hardware 分批调度 blocks 到 SM}.
+\end{aligned}}
+\label{eq:gpu-submission-model}
+\end{equation}
+
+因此“一个 cell 对应一个 GPU thread”首先是一条\textbf{逻辑映射规则}，并不意味着所有 cell 对应的线程会同时驻留在硬件上。
+
+\subsection{独立元素更新的 Kernel 映射}
+
+先暂时不看 stencil，只考虑
+\begin{equation}
+y_i\leftarrow a x_i+y_i,
+\qquad i=0,\ldots,1023.
+\label{eq:gpu-axpy-micro}
+\end{equation}
+\chapref{ch:parallel-model}已经说明这是一个 map：不同 $i$ 之间没有数据依赖。假设每个 thread 负责一个 $i$，每个 block 含 256 threads，则逻辑上需要
+\begin{equation}
+N_{\mathrm{block}}=\left\lceil\frac{1024}{256}\right\rceil=4
+\end{equation}
+个 blocks。
+
+如果 GPU 只有 2 个 SM，这 4 个 blocks 可以分批执行；如果 GPU 有远多于 4 个 SM，则该 kernel 反而无法让全部 SM 都有工作。\textbf{grid 中 thread 数很大}与\textbf{硬件当前并发度很高}是两个不同概念。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small, node distance=4mm]
+  \node[draw,rounded corners,minimum width=2.7cm,minimum height=0.9cm] (host) {Host thread};
+  \node[draw,rounded corners,minimum width=2.7cm,minimum height=0.9cm,right=14mm of host] (grid) {Grid: 4 blocks};
+  \node[draw,minimum width=2.0cm,minimum height=0.75cm,right=12mm of grid,yshift=8mm] (sm0) {SM 0};
+  \node[draw,minimum width=2.0cm,minimum height=0.75cm,right=12mm of grid,yshift=-8mm] (sm1) {SM 1};
+  \draw[-{Latex}] (host)--node[above]{launch}(grid);
+  \draw[-{Latex}] (grid.east)--(sm0.west);
+  \draw[-{Latex}] (grid.east)--(sm1.west);
+  \node[below=2mm of grid,align=center] {block 是可调度单元；\\并不保证同时执行};
+\end{tikzpicture}
+\caption{逻辑 grid 与物理 SM 的关系。Grid 可以远大于硬件；block 由硬件分批调度。}
+\label{fig:gpu-grid-sm-model}
+\end{figure}
+
+\subsection{Grid、Block、Warp 与 SM}
+
+CUDA kernel 的 threads 组织成 thread blocks，blocks 再组成 grid。一个 block 的 threads 在同一个 SM 上执行，因此 block 内可以使用低成本同步与 shared memory；普通 kernel 中不同 blocks 的调度顺序没有保证，因此不能让一个 block 等待另一个尚未获得执行机会的 block。CUDA 新版本提供 cooperative launch、cluster 等扩展，但它们不是理解普通 stencil kernel 的前提\cite{cudaProgramming2026}。
+
+Block 内部的 threads 又按 32 个一组组织成 \textbf{warp}。Warp 是理解 GPU 性能最重要的执行粒度之一：一个 warp 的 active lanes 执行共同的指令流；当不同 lanes 走不同分支时，硬件需要对不同路径进行掩码执行，这就是通常所说的 \textbf{warp divergence}\cite{cudaProgramming2026}。
+
+\begin{warningbox}
+\textbf{不要把 thread、warp、block 和 SM 混成同一层。}
+\begin{itemize}
+\item thread：一个 logical lane，通常负责一个或少量输出项；
+\item warp：32 个 threads 的主要指令调度组；
+\item block：由若干 warps 组成，可共享 shared memory 并做 block-level synchronization；
+\item SM：真正承载若干 resident blocks/warps 的硬件单元。
+\end{itemize}
+“block size=256”只说明一个 block 有 8 个 warps，不说明一个 SM 上一定只有一个 block，也不说明整个 GPU 同时只能运行 256 threads。
+\end{warningbox}
+
+\section{内存层次与数据驻留}
+\label{sec:gpu-memory-hierarchy}
+
+GPU 的第二个核心差异不是算力，而是\textbf{不同数据位置具有不同作用域、生命周期和访问代价}。CUDA 当前编程模型区分 global/device memory、shared memory、register、local memory、constant memory 等空间\cite{cudaProgramming2026}。
+
+\begin{center}
+\small
+\begin{tabularx}{0.97\textwidth}{>{\raggedright\arraybackslash\bfseries}p{2.9cm}>{\raggedright\arraybackslash}p{1.6cm}>{\raggedright\arraybackslash}p{2.0cm}>{\raggedright\arraybackslash}X}
+\toprule
+存储 & 典型作用域 & 生命周期 & 在 MLMG 中的典型角色\\
+\midrule
+register & thread & kernel & 索引、局部标量、暂存 stencil 值\\
+local memory & thread & kernel & register spill 或较大 thread-local 对象；物理上通常仍由 device memory 支撑\\
+shared memory & block & kernel & block 内协作缓存、归约、显式 tile\\
+L1 / unified data cache & SM & 硬件管理 & 最近访问的局部数据、部分 global/shared 工作集\\
+L2 cache & device & 硬件管理 & 所有 SM 共享的较大缓存层\\
+global / device memory & device & 显式分配期 & $u,b,r,e$、系数、几何、层级数据\\
+constant memory/cache & device & 程序运行期 & 少量只读常量、kernel 参数\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[draw,rounded corners,minimum width=2.5cm,minimum height=0.8cm] (host) at (0,0) {Host DRAM};
+  \node[draw,rounded corners,minimum width=3.2cm,minimum height=0.8cm,align=center] (global) at (4.3,0) {Device global memory\\+ L2 cache};
+  \node[draw,rounded corners,minimum width=3.2cm,minimum height=0.95cm,align=center] (sm) at (8.8,0) {SM-local cache\\+ shared memory};
+  \node[draw,rounded corners,minimum width=2.6cm,minimum height=0.75cm] (thread) at (8.8,-1.55) {thread registers};
+  \draw[<->,{Latex}-{Latex}] (host)--(global);
+  \draw[<->,{Latex}-{Latex}] (global)--(sm);
+  \draw[-{Latex}] (sm)--(thread);
+  \node[below=4mm of global,align=center,font=\footnotesize] {跨 kernel 持久；\\所有 SM 可访问};
+  \node[right=3mm of thread,align=left,font=\footnotesize] {thread-scope\\最快但容量最小};
+\end{tikzpicture}
+\caption{GPU 数据位置的核心心智模型。大向量通常长期驻留 device global memory；kernel 执行时，硬件 cache、shared memory 与 registers 提供更局部的数据复用。}
+\label{fig:gpu-memory-hierarchy}
+\end{figure}
+
+\begin{warningbox}
+CUDA 里的 \texttt{local memory} 名称很容易误导。它是“逻辑上每个 thread 私有”，不等于“物理上位于快速片上存储”。当寄存器不足、编译器发生 register spill，数据可能落到 device memory 支持的 local address space，访问代价会明显上升。
+\end{warningbox}
+
+\subsection{数据驻留与 Host--Device 传输}
+
+对多重网格，最重要的内存决策通常不是“某个数组用哪个 CUDA API 分配”，而是\textbf{V-cycle 期间数据是否持续留在 device 上}。如果每个 smoother、residual 或 restriction 前后都把数据搬回 host，那么一次本来应当在 device 内完成的 stencil 会被扩展成
+\[
+\text{H2D copy}
+\rightarrow
+\text{kernel}
+\rightarrow
+\text{D2H copy},
+\]
+而传输很容易比 stencil 本身更贵。CUDA 官方文档也强调，性能通常最好出现在数据尽量停留在实际访问它的处理器所直连的内存中\cite{cudaProgramming2026}。
+
+因此对一个 GPU V-cycle，首先把 level 数据分成两类：
+\begin{itemize}
+\item \textbf{persistent data：} $u_\ell,b_\ell$、系数、geometry、必要的 coarse operator；
+\item \textbf{temporary data：} $r_\ell,e_\ell$、Jacobi ping-pong buffer、reduction workspace。
+\end{itemize}
+真正的设计目标是让这些对象的\textbf{生命周期与 V-cycle DAG 对齐}，而不是每次操作都临时申请和释放。
+
+\subsection{显式 Device Memory、Pinned Host Memory 与 Unified Memory}
+
+三类经常混淆的内存需要分清：
+
+\begin{itemize}
+\item \textbf{显式 device memory：}数据明确放在 GPU DRAM，适合 solve 期间长期驻留；
+\item \textbf{page-locked/pinned host memory：}仍然位于 host，但不能被操作系统随意换页，是高效异步 host--device copy 的重要条件；
+\item \textbf{unified/managed memory：}CPU 与 GPU 可通过统一地址访问，runtime/hardware 负责迁移或远程访问，极大简化编程，但 page migration 仍然是真实成本。
+\end{itemize}
+
+Unified Memory 解决的是\textbf{地址与数据管理复杂度}，不是“让 CPU/GPU 两边访问都自动等价于本地 DRAM”。当前 CUDA 文档明确指出，数据驻留在实际访问它的处理器所连接的物理内存中通常仍然最有利\cite{cudaProgramming2026}。因此在稳定、重复的 multigrid solve 中，显式 residency 或可控 prefetch 往往比频繁按需迁移更容易预测。
+
+\section{三维网格到线程的映射}
+\label{sec:gpu-grid-mapping}
+
+有了执行层次和内存层次以后，才适合问“一个三维 cell 到底怎样映射到 thread”。设数组按 $x$ 方向连续，零基索引写成
+\begin{equation}
+p(i,j,k)=i+n_x\bigl(j+n_y k\bigr).
+\label{eq:gpu-linear-index}
+\end{equation}
+如果连续 thread IDs 对应连续 $i$，则一个 warp 中相邻 lanes 会访问相邻的 $x$ cells。
+
+\subsection{Global Memory Coalescing}
+
+GPU global-memory 访问不是“每个 thread 单独发一个 DRAM 请求”。一个 warp 执行 load/store 时，hardware 会把各 lanes 的地址合并成尽量少的 memory transactions。当前 CUDA Programming Guide 以 32-byte transaction 为基础解释 coalescing；连续 threads 访问连续字时可以高效利用传输的数据，而大 stride 的 lane-to-lane 地址则可能产生大量额外 transaction\cite{cudaProgramming2026}。
+
+对双精度数组，32 个连续 threads 读取连续 8-byte 元素，一共需要 256 B 有效数据。理想情况下这些请求覆盖连续地址区间，因此可以被合并成少量连续 transactions。
+
+\begin{keybox}
+\textbf{一个非常常见的误解：三维 stencil 的 $y$、$z$ 邻居带有大 stride，所以一定不 coalesced。}
+
+若 lane $t$ 负责 $(i+t,j,k)$，则它们读取 $+y$ 邻居的地址是
+\[
+p(i+t,j+1,k)=p(i,j+1,k)+t,
+\]
+仍然彼此连续；$+z$ 邻居同理。\textbf{真正决定 coalescing 的是“同一个 warp 的 lanes 之间地址如何变化”，而不是单个 thread 从中心点跳到邻居时 stride 有多大。}
+\end{keybox}
+
+因此，对规则七点 stencil，只要 $x$ 是连续存储方向且一个 warp 不跨越 $x$ 行边界，center、$x\pm1$、$y\pm1$、$z\pm1$ 这几组 warp loads 都可以保持规则的连续访问模式。若 warp 跨过行边界，仍需结合真实线性地址和 alignment 检查 transaction；因此实际实现通常让 block 的 $x$ 尺寸与 warp 映射协调。相反，如果相邻 lanes 沿 $j$ 变化，而数组仍是 $x$-major，那么 lane-to-lane 地址会相差 $n_x$，这才是真正危险的访问模式。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.72cm,y=0.72cm,font=\small]
+  \foreach \x in {0,...,7}{
+    \draw (\x,0) rectangle +(0.8,0.55);
+    \node at (\x+0.4,0.275) {\x};
+    \draw (\x,-1.0) rectangle +(0.8,0.55);
+    \node at (\x+0.4,-0.725) {\x};
+  }
+  \node[left] at (-0.25,0.275) {center};
+  \node[left] at (-0.25,-0.725) {$+y$};
+  \draw[-{Latex},thick] (6.2,0.25)--(7.7,0.25) node[right]{连续地址};
+  \draw[-{Latex},thick] (6.2,-0.75)--(7.7,-0.75) node[right]{同样连续，只整体偏移 $n_x$};
+  \node[below] at (3.2,-1.45) {示意 8 lanes；真实 warp 为 32 lanes};
+\end{tikzpicture}
+\caption{当 lanes 沿连续 $x$ 方向映射时，读取 $+y$ 邻居并不会让 lane-to-lane 地址出现 $n_x$ stride；整个 warp 的地址区间只是整体平移。}
+\label{fig:gpu-coalescing-offset}
+\end{figure}
+
+\subsection{边界分支与 Warp Divergence}
+
+物理边界、AMR patch 边界和 embedded boundary 会让少量 cells 执行不同逻辑。如果一个 warp 中只有部分 lanes 进入边界分支，其余 lanes 会被掩码等待，形成 divergence。最直接的策略有两种：
+
+\begin{enumerate}
+\item 单 kernel 内部判断 boundary type；优点是 launch 少，缺点是热点路径有分支；
+\item interior 与 boundary 分成不同 kernels；优点是 interior kernel 简单，缺点是多一次或多次 launch。
+\end{enumerate}
+
+哪个更好取决于边界占比、分支复杂度和 kernel 是否已经很短。规则大网格上物理边界比例很小，单独 boundary kernel 往往合理；大量小 AMR patches 时，patch boundary 占比可能很高，结论就不能照搬。
+
+\subsection{多分量数据：AoS 与 SoA}
+
+若每个 cell 有多个分量，例如 $u,v,w$ 或多个系数，可以有两种常见布局：
+
+\begin{align}
+\text{AoS: }& [u_0,v_0,w_0,\;u_1,v_1,w_1,\ldots],\\
+\text{SoA: }& [u_0,u_1,\ldots],\ [v_0,v_1,\ldots],\ [w_0,w_1,\ldots].
+\end{align}
+
+若一个 warp 同时读取“所有 cells 的同一个分量”，SoA 更容易形成连续访问；若一个 thread 总是立刻消费一个 cell 的全部分量，AoS 可能减少地址计算并改善单 thread 的局部性。不存在脱离访问模式的绝对赢家。对于 stencil/field code，通常先从“warp 同时读什么”而不是从 C++ struct 形状判断布局。
+
+\section{Stencil Kernel 的性能模型}
+\label{sec:gpu-stencil-performance}
+
+GPU stencil 的性能问题可以压缩成三个层次：
+
+\[
+\boxed{
+\text{实际内存流量}
+\rightarrow
+\text{有多少 warps 可以隐藏延迟}
+\rightarrow
+\text{grid 是否有足够 blocks 填满整块 GPU}
+}
+\]
+
+这三个层次分别对应 bandwidth/cache、occupancy/resource pressure 和 coarse-level parallelism，不能混成一个“GPU utilization”。
+
+\subsection{七点 Residual 的算术强度}
+
+考虑常系数三维 Poisson residual：
+\begin{equation}
+r_{i,j,k}
+=b_{i,j,k}
+-\frac{6u_{i,j,k}-u_{i-1,j,k}-u_{i+1,j,k}-u_{i,j-1,k}-u_{i,j+1,k}-u_{i,j,k-1}-u_{i,j,k+1}}{h^2}.
+\label{eq:gpu-seven-point-residual}
+\end{equation}
+
+若只按源代码逐项数 global loads，一次输出可能读取 7 个 $u$、1 个 $b$，再写 1 个 $r$：双精度下约为
+\begin{equation}
+(7+1+1)\times8=72\ \text{B/output}.
+\end{equation}
+算术操作大约只有个位数到十几个 FLOPs，因此源代码层面的 arithmetic intensity 只有约 $0.1$--$0.2$ FLOP/B，很容易落在 memory-bound 区域。
+
+但 72 B 不是“必然的 DRAM 流量”。相邻输出共享大量 $u$ 值；L1/L2 cache 或 shared-memory tile 可以让一个从 DRAM 取回的值被多个 threads 重用。极端理想情况下，每个 $u$ 从 DRAM 只流过一次，再加 $b$ 和 $r$，DRAM bytes/output 可以明显低于 72 B。于是性能分析必须区分：
+
+\begin{equation}
+\boxed{
+\text{source-level loads}
+\neq
+\text{cache-line traffic}
+\neq
+\text{DRAM traffic}.
+}
+\label{eq:gpu-memory-traffic-levels}
+\end{equation}
+
+Roofline 中真正应该使用的是与所分析 memory level 对应的实际 traffic，而不是简单把源码 load 次数乘以 8\cite{nsightCompute2026}。
+
+\subsection{Occupancy 与 Latency Hiding}
+
+Global-memory load 往往具有很高延迟。GPU 的基本策略不是让单个 warp 像 CPU core 一样低延迟完成，而是当一个 warp 等数据时，SM 调度另一个 ready warp。于是需要足够多 resident warps 来隐藏延迟。
+
+Occupancy 通常定义为
+\begin{equation}
+\text{occupancy}
+=\frac{\text{active warps per SM}}
+{\text{maximum warps per SM}}.
+\label{eq:gpu-occupancy}
+\end{equation}
+
+一个 kernel 能驻留多少 warps，受 threads/block、register/thread、shared-memory/block 和硬件上限共同限制\cite{cudaProgramming2026}。因此增加 block size 并不会单调提高 occupancy；register 压力或 shared memory 过大反而可能减少同时驻留的 blocks。
+
+\begin{warningbox}
+\textbf{Occupancy 不是性能分数。}Nsight Compute 明确指出，更高 occupancy 不必然带来更高性能；低 occupancy 会削弱 latency hiding 能力，但当 kernel 已经达到带宽上限或具有足够 instruction-level parallelism 时，继续追求 100\% occupancy 可能没有收益\cite{nsightCompute2026}。
+\end{warningbox}
+
+还必须区分两个概念：
+
+\begin{itemize}
+\item \textbf{SM 内 occupancy：}一个已经获得工作的 SM 上能同时驻留多少 warps；
+\item \textbf{grid-level saturation：}整个 grid 有没有足够 blocks 让所有 SM 都获得工作。
+\end{itemize}
+
+粗网格经常不是“occupancy 太低”，而是\textbf{总 block 数已经少于 SM 数}；这时即使每个 block 的 theoretical occupancy 很高，也仍然有很多 SM 完全空闲。
+
+\subsection{Register Pressure 与 Spill}
+
+每个 thread 使用的 registers 越多，一个 SM 能同时容纳的 threads/blocks 越少。编译器若无法把 thread-local 数据保存在 registers 中，还可能 spill 到 local memory。于是一个看似“减少 global loads”的复杂 fused kernel，可能因为 register pressure 上升而降低 occupancy，甚至产生额外 local-memory traffic。
+
+这给出一个常见的性能权衡：
+\[
+\boxed{
+\begin{aligned}
+&\text{kernel fusion 减少 global-memory passes 与 launches}\\
+&\hspace{2.2cm}\updownarrow\\[-0.2em]
+&\text{更高 register pressure 与更复杂指令流}
+\end{aligned}}
+\]
+因此 fusion 必须通过 profile 验证，而不是默认“越多越好”。
+
+\subsection{Shared-Memory Tiling 与数据复用}
+
+设一个三维 block 计算 $B_xB_yB_z$ 个内部 cells，stencil 半径为 1。如果为了编程简单直接把完整 halo cuboid 搬进 shared memory，需要的 tile 大小为
+\begin{equation}
+(B_x+2)(B_y+2)(B_z+2),
+\end{equation}
+相对有效输出的加载放大因子是
+\begin{equation}
+\gamma_{\mathrm{cube}}
+=\frac{(B_x+2)(B_y+2)(B_z+2)}{B_xB_yB_z}.
+\label{eq:gpu-tile-amplification-cube}
+\end{equation}
+对于 $8^3$ tile，$\gamma_{\mathrm{cube}}\approx1.95$；对 $16^3$ tile，约为 $1.42$。
+
+但七点 stencil 实际只需要六个 halo faces，不需要 edge/corner halo values。如果实现只装入真正需要的 faces，立方 tile 的最低数据量近似为
+\begin{equation}
+B^3+6B^2,
+\qquad
+\gamma_{7pt}\approx1+\frac{6}{B}.
+\label{eq:gpu-tile-amplification-seven-point}
+\end{equation}
+27 点 stencil 才真正需要完整的边、角邻域。这个区别说明“shared-memory tile 要不要 halo”不能脱离 stencil footprint 讨论。
+
+Shared memory 还会引入：
+\begin{itemize}
+\item cooperative loading；
+\item block-level synchronization；
+\item shared-memory capacity 对 occupancy 的限制；
+\item bank conflicts；
+\item 更复杂的边界处理。
+\end{itemize}
+现代 GPU cache 已经能捕捉一部分规则 stencil reuse，因此 shared-memory tiling 是否有收益必须实测。对高阶 stencil、多次重用、多个场联合计算，它更可能值得；对简单七点 stencil，它未必胜过 cache-friendly global-memory kernel。
+
+\subsection{Shared-Memory Bank Conflict}
+
+Shared memory 并不是一块“任何地址都可同时访问”的理想 SRAM，而是划分为多个 banks。一个 warp 发起 shared-memory 指令时，如果不同 lanes 访问可以由不同 banks 同时服务，吞吐较高；如果多个 lanes 需要同一 bank 中的不同地址，请求可能被分解为多个阶段，从而形成 bank conflict\cite{cudaProgramming2026}。
+
+这与 global-memory coalescing 是两类完全不同的问题：
+\begin{itemize}
+\item coalescing 问的是：warp 的 global addresses 能否被少量 memory transactions 覆盖；
+\item bank conflict 问的是：已经进入 shared memory 的一次 warp access 能否由 banks 并行服务。
+\end{itemize}
+
+例如一个二维 shared tile 若每行 pitch 恰好让同一 warp 的多个 lanes 周期性映射到相同 bank，按列访问时就可能冲突；在 tile 行尾增加少量 padding 可以改变 bank mapping。这里的决策规则是：\textbf{先确认 shared-memory kernel 确实有收益，再用 profiler 检查 bank 行为；不要为了“预防冲突”盲目 padding 所有数组。}
+
+\section{异步执行、同步与 Kernel DAG}
+\label{sec:gpu-async-dag}
+
+GPU kernel launch 对 host 通常是异步的，因此下面两句代码在 host 时间线上相邻，并不意味着 kernel 已经完成。CUDA stream 是表达顺序和潜在并发的核心抽象：同一 stream 中操作按提交顺序执行；不同 streams 中独立工作在资源允许时可以重叠\cite{cudaProgramming2026}。
+
+\subsection{三种同步范围}
+
+对 multigrid，最实用的同步心智模型是按范围区分：
+
+\begin{enumerate}
+\item \textbf{block 内：}threads 可以通过 block-level barrier 协作，例如 shared-memory tile 或 block reduction；
+\item \textbf{kernel/stream 阶段：}普通 kernel 结束天然形成一个 grid-wide phase boundary，后续同一 stream kernel 可以依赖前一 kernel 的全部输出；
+\item \textbf{host/device：}只有 host 真正需要 device 结果，或跨 stream 依赖需要显式表达时，才应该使用 stream/event/device synchronization。
+\end{enumerate}
+
+一个非常昂贵的反模式是每个 kernel 后立即调用 device-wide synchronize。这样做不仅让 host 等待，还可能消除本来可以存在的 stream 并发。CUDA 官方指南建议尽量把同步推迟到真正需要的位置\cite{cudaProgramming2026}。
+
+\subsection{Streams 与 Patch 并发}
+
+假设一个 AMR level 有多个彼此独立的 boxes，每个 box 上都依次执行
+\[
+K_1\rightarrow K_2\rightarrow K_3.
+\]
+一种自然映射是每个 box 使用一个 stream：同一 box 内保持 $K_1,K_2,K_3$ 顺序，不同 boxes 在资源允许时重叠。但多 stream 不保证一定并发：如果一个 kernel 已经占满全部 SM/寄存器/带宽，其他 stream 仍然只能等待。
+
+因此 stream 是\textbf{表达 independence 的机制}，不是自动获得 speedup 的开关。
+
+\subsection{CUDA Graphs 与重复 V-Cycle}
+
+V-cycle 是高度重复的 kernel DAG。CUDA Graphs 允许先定义 kernel、copy 等节点和依赖，再实例化并重复 launch。官方文档明确指出，它的主要收益之一是把重复的 host-side launch/setup 开销集中到 graph construction/instantiation 阶段，从而降低短 kernel 工作流的提交成本\cite{cudaProgramming2026}。
+
+这对 multigrid 的粗层尤其相关：当某些 coarse-level kernels 只有几微秒甚至更短的 device 工作时，host launch cost 可能变成明显比例。但是
+
+\begin{equation}
+\boxed{
+\text{CUDA Graph 可以减少提交开销，不能创造粗层本来不存在的并行 task。}
+}
+\label{eq:gpu-graph-limit}
+\end{equation}
+
+因此 graphs 解决的是 DAG submission 问题，不是 coarse-grid parallelism collapse。
+
+\subsection{Allocation 与同步}
+
+频繁的 \texttt{cudaMalloc/cudaFree} 不是普通指针操作：allocation/free 可能进入 runtime/driver 的全局管理路径，并妨碍不同 streams 的并发。CUDA 提供 stream-ordered allocator（例如 \texttt{cudaMallocAsync/cudaFreeAsync}），把 allocation lifetime 与 stream 顺序联系起来，并允许 memory pool 在不同 operations 之间复用物理内存\cite{cudaProgramming2026}。
+
+对 multigrid 更简单、更稳健的原则通常是：\textbf{热路径不分配。}Hierarchy 构造或 solver setup 阶段一次性准备 persistent arrays 与最大所需 workspace，V-cycle 只改变内容和逻辑所有权。这样既降低 runtime overhead，也使显存峰值更容易预测。AMReX 的 Arena 体系就是一个具体实现，见\secref{sec:gpu-amrex-case}。
+
+\section{多重网格算子的 GPU 映射}
+\label{sec:gpu-mg-operators}
+
+现在回到\chapref{ch:mg-parallel-operations}的操作表。GPU 章的重点不再是重新介绍数值算法，而是说明每个 operation 的 dependency pattern 如何决定 kernel 形状、访存和同步。
+
+\subsection{Weighted Jacobi}
+
+Weighted Jacobi 的一个 sweep 可写成
+\begin{equation}
+u_i^{new}=u_i^{old}+\omega D_{ii}^{-1}
+\left(b_i-(Au^{old})_i\right).
+\label{eq:gpu-jacobi-fused}
+\end{equation}
+
+最自然的 kernel 是 one-thread-per-output-cell：thread 读取旧 $u$ 邻域、$b_i$ 和必要系数，直接写 $u_i^{new}$。这里不必显式形成完整 $r$ 数组，因为 residual 可以在 register 中即时计算。这样把
+\[
+\text{residual kernel}+\text{update kernel}
+\]
+融合成一个 kernel，减少一次 $r$ 的 global write/read。
+
+但这个 fusion 只有在后继操作不需要 $r$ 时才是免费的。如果本 sweep 后立刻要 restriction 或收敛检查，显式 residual 仍然有价值。于是“是否 fusion”取决于\textbf{数据生命周期}，而不是 kernel 数越少越好。
+
+Jacobi 需要 old/new 两套 $u$，通常通过 ping-pong buffers 交换角色。它牺牲一份向量存储，换来极规则的 dependency DAG，因此在 GPU 上很常见。
+
+\subsection{RBGS 的分阶段执行}
+
+RBGS 可以原地更新 $u$，但一个完整 sweep 至少包含
+\[
+\text{red update}
+\rightarrow
+\text{phase boundary}
+\rightarrow
+\text{black update}.
+\]
+一种最直接实现是两个 kernels。若每个 kernel 仍让全部 threads 启动后按颜色判断，一半 lanes 可能在当前颜色阶段闲置；另一种做法是只给当前颜色的 cells 建立索引映射，但索引计算和访存模式会更复杂。
+
+因此 RBGS 的 GPU 代价不是一句“有 barrier”就能概括，而是
+\begin{equation}
+\boxed{
+\text{更少 storage}
+\leftrightarrow
+\text{更多 kernel phases + 颜色映射复杂度}.
+}
+\end{equation}
+
+数值上更强的 smoother 不一定得到更短的 time-to-solution；应比较“每 cycle 收敛因子 × 每 cycle 成本”。这一原则与\chapref{ch:lfa}的数值分析闭合。
+
+\subsection{Chebyshev Smoother}
+
+Chebyshev smoother 通常由 repeated operator applications 与 vector recurrences 组成。它的优点是没有 GS 式点间顺序依赖，因此 GPU 并行性高；缺点是一个 degree-$m$ smoother 往往意味着 $m$ 次 operator application，加上若干向量 recurrence。如果每一步都分别落成 kernel，就会产生多次 memory passes 与 launches。
+
+实现时可以考虑把 recurrence 中只依赖同一点的 axpy-style 更新与 operator 输出融合，但 fusion 以后每 thread 需要保留更多局部标量，register pressure 可能上升。因此 Chebyshev 的 GPU 成本应拆成
+\[
+\text{operator traffic}\times m
++\text{vector traffic}
++\text{launch/sync cost}.
+\]
+Chebyshev 还依赖谱区间估计，因此它是一个很好的例子：\textbf{数值可并行性强，不代表实现自动高效；实现高效也不保证谱参数选得正确。}
+
+\subsection{Line/Plane Smoother 的并行结构}
+
+各向异性问题常需要 line/plane smoother。这里 logical task 不再自然等于一个 cell。假设沿 $z$ 方向每条 line 需要解三对角系统：
+\begin{itemize}
+\item 一个 thread/warp 独占一条 line 并执行 Thomas algorithm：实现简单，但 line 内串行，短 line 时 parallelism 尚可，长 line 时单 task latency 增大；
+\item 多 threads 协作一条 line：可以使用 cyclic reduction / parallel cyclic reduction 等方法暴露 line 内并行，但需要更多 stages、temporary storage 和同步；
+\item 大量独立 lines 组成 batched tridiagonal solve：把“line 数”变成主要并行度来源。
+\end{itemize}
+因此 line/plane smoother 是否适合 GPU，不取决于名字，而取决于\textbf{可同时存在多少独立 lines/planes，以及每个内部 solve 的 dependency depth}。这正是\chapref{ch:parallel-model}强调“先分析 dependency，再选硬件映射”的原因。
+
+\subsection{Residual Kernel}
+
+Residual 最适合用于建立 GPU stencil baseline。一个 thread 负责一个 $r_i$，读取邻域 $u$、$b_i$ 和系数，写唯一输出。最基础的伪代码是：
+
+\begin{algorithm}[htbp]
+\caption{GPU one-thread-per-cell residual}
+\begin{algorithmic}[1]
+\State $p\gets$ global thread id
+\If{$p<N$}
+  \State 由 $p$ 恢复 $(i,j,k)$
+  \State 读取 $u$ 的 stencil 邻域和局部系数
+  \State $r[p]\gets b[p]-(Au)[p]$
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+这个 kernel 的首要优化顺序通常是：先验证 thread-to-data mapping 与 coalescing，再看实际 DRAM/L2 traffic，再看 occupancy/registers，最后才考虑 shared-memory tile。
+
+\subsection{Restriction Kernel}
+
+Restriction 最自然的并行方式是每个 coarse output 一个 thread：
+\begin{equation}
+b_H(I)=\sum_{j\in\mathcal S(I)}w_{Ij}r_h(j).
+\end{equation}
+这样没有 atomic writes。问题在于 task 数在三维 full coarsening 后立刻减少到约 $1/8$，所以 restriction 本身常是第一个明显看到 grid-level parallelism 下降的操作。
+
+\subsection{Prolongation 与 Correction Kernel}
+
+对 prolongation，优先让每个 fine output thread gather 需要的 coarse values，而不是让 coarse threads scatter 到多个 fine outputs。这样保持唯一 writer。
+
+若 coarse correction 只用于
+\[
+u_h\leftarrow u_h+Pe_H,
+\]
+可以把 prolongation 与 correction 融合成一个 fine-output kernel，直接读取 coarse $e_H$ 并更新 $u_h$，省掉显式 $e_h$ 向量的一次 write/read。这是一个典型的\textbf{数值语义允许、内存流量驱动的 fusion}。
+
+\subsection{Reduction Kernel}
+
+Norm、dot product 和 Krylov 内积都需要 reduction。与 stencil 的“一输出一 thread”不同，reduction 的输出数量会不断收缩。设输入有 $N$ 个值、每个 block 处理约 $T$ 个元素，最常见的第一阶段是
+\[
+N\ \text{values}
+\longrightarrow
+\left\lceil\frac{N}{T}\right\rceil\ \text{block partials}.
+\]
+每个 block 内部再通过 warp shuffle、shared memory 或二者组合得到一个 partial；后续 kernel 继续归约这些 partials，直到只剩一个或少量标量。也可以在 partial 数已经很小时使用 atomic accumulation，但这时必须把原子竞争成本作为显式权衡，而不能把 atomic 当成“免费全局 reduction”。
+
+因此 reduction 有两个不同瓶颈：前几级仍有大量独立工作，通常受 memory traffic 限制；越接近末端，可并行 task 越少，固定 launch/synchronization 成本比例越高。这与粗网格的 grid-level parallelism collapse 是同一种结构性现象，只是 reduction 在一次 kernel chain 内主动把问题规模压缩。
+
+对预条件 Krylov 方法，这个问题尤其重要。一次 PCG/GMRES iteration 不只有 MG preconditioner，还包含 dot product/norm；在单 GPU 上它们表现为 reduction kernel 链，在多 GPU 上还会进一步变成设备间 collective，见\chapref{ch:distributed-gpu}。如果 host 每次都立即读取最终 scalar 做收敛判断，还会再增加一次 host--device synchronization。
+
+所以 convergence check 的正确问题不是“能不能少检查几次”，而是：\textbf{停止准则需要哪些标量、这些标量在哪一级产生、何时必须让 host 看见它们，以及能否在不改变数值语义的前提下延迟同步。}
+
+\subsection{物理边界、Ghost 与 Irregular Work}
+
+规则 interior kernel 最容易高效。物理边界、AMR coarse--fine ghost 和 EB/cut-cell 会增加分支、额外系数或不规则索引。一个常用架构是：
+\begin{itemize}
+\item 大的 regular interior 走简单 kernel；
+\item boundary/irregular region 单独处理；
+\item 只有在 irregular fraction 足够小时，这种分流才明显有利。
+\end{itemize}
+
+多 GPU 情形还需要等待 remote ghost 数据，见\chapref{ch:distributed-gpu}。
+
+\begin{center}
+\small
+\begin{tabularx}{0.98\textwidth}{>{\raggedright\arraybackslash\bfseries}p{2.4cm}>{\raggedright\arraybackslash}p{2.9cm}>{\raggedright\arraybackslash}p{2.5cm}>{\raggedright\arraybackslash}X}
+\toprule
+操作 & 推荐 logical mapping & 主要瓶颈 & 常见 GPU 决策\\
+\midrule
+Jacobi & fine cell / thread & bandwidth & ping-pong；可融合 residual/update\\
+RBGS & 按颜色的 cell / thread & phases + divergence & 两色 kernels 或显式颜色索引\\
+Chebyshev & cell / thread & 多次 memory pass & operator/vector fusion 需权衡 registers\\
+Residual & cell / thread & bandwidth & coalescing、cache、interior/boundary 分流\\
+Restriction & coarse cell / thread & task 数快速下降 & gather；注意粗层 block 数\\
+Prolongation & fine cell / thread & coarse reads & gather；可与 correction 融合\\
+Correction & fine cell / thread & bandwidth & 通常和 prolongation 融合\\
+Norm/dot & warp/block 分层归约 & tail + sync & warp/block reduction；避免不必要 host sync\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{完整 V-Cycle 的数据流与存储}
+\label{sec:gpu-vcycle-storage}
+
+单个 kernel 很快不等于 multigrid 很快。必须把完整 V-cycle 看成 device-resident DAG：
+\begin{equation}
+\boxed{
+\text{pre-smooth}
+\rightarrow
+\text{residual}
+\rightarrow
+\text{restriction}
+\rightarrow\cdots\rightarrow
+\text{coarse solve}
+\rightarrow
+\text{prolong/correct}
+\rightarrow
+\text{post-smooth}.
+}
+\label{eq:gpu-vcycle-dag}
+\end{equation}
+
+\subsection{数据生命周期}
+
+对每一层，常见数据可以按生命周期重新分类：
+\begin{itemize}
+\item $u_\ell$：跨多个 operations 持续存在；
+\item $b_\ell$：该层 solve 期间存在；
+\item $r_\ell$：residual 后被 restriction/收敛检查消费；
+\item $e_\ell$：coarse correction 阶段存在；
+\item Jacobi $u^{new}_\ell$：只在该 smoother 需要 ping-pong 时存在；
+\item reduction workspace：多个 norm/dot 可以复用同一池。
+\end{itemize}
+
+于是显存优化的第一原则不是“把所有数组都压成最小类型”，而是先画出 live ranges，找出不会同时活跃的 workspace，再做复用。
+
+\subsection{Hierarchy 的基础显存预算}
+
+三维 full coarsening 下，所有 levels 的 cell 总数近似
+\begin{equation}
+N_{\mathrm{hier}}
+=N_0\left(1+\frac18+\frac1{8^2}+\cdots\right)
+\approx\frac87N_0.
+\label{eq:gpu-hierarchy-size}
+\end{equation}
+
+如果只保存 $u,b,r$ 三个 double vectors，最低量级已经是
+\begin{equation}
+M_{ubr}
+\approx \frac87N_0\times3\times8\ \text{bytes}.
+\label{eq:gpu-basic-memory-budget}
+\end{equation}
+
+对 $512^3$ finest grid，这一项本身约为 $3.43$ GiB；还没有算 coefficients、geometry、Jacobi ping-pong、temporary reductions、AMR ghost cells 或 coarse operators。GPU 显存容量因此可能比 FLOP/s 更早成为规模上限。
+
+\subsection{Matrix-Free 与显式稀疏矩阵}
+
+对规则 Poisson stencil，显式 CSR 会额外存每个 nonzero 的 value/index 与 row pointers；matrix-free 则从规则几何和少量系数即时计算 stencil。GPU 上这常形成一个非常重要的交换：
+\[
+\boxed{
+\text{更多轻量 FLOPs}
+\leftrightarrow
+\text{更少 global-memory bytes 与更少显存容量}.
+}
+\]
+由于简单 stencil 往往 memory-bound，增加少量可预测 FLOPs 反而可能改善 arithmetic intensity。这也是近年 GPU multigrid 研究持续重视 matrix-free、data blocking 与 mixed precision 的原因之一\cite{antepara2024brick,stokesgpu2025}。
+
+但 matrix-free 不是免费：复杂 cut-cell、非结构几何或高阶 operator 可能需要更多几何数据和分支。是否值得必须回到实际 memory traffic 与 kernel complexity。
+
+\subsection{Kernel Fusion 的适用条件}
+
+两个 operations 是否适合 fusion，可以依次问：
+\begin{enumerate}
+\item 后一个 operation 是否立即消费前一个 operation 的完整输出？
+\item fusion 后能否避免一次 global-memory write/read 或 kernel launch？
+\item fusion 是否显著增加 registers、shared memory、branching 或重复计算？
+\end{enumerate}
+
+Prolongation+correction 通常满足前两条且代价较小；residual+restriction 则更复杂，因为一个 coarse output 需要多个 fine residuals，若不显式保存 $r_h$，可能需要重复 stencil 计算或 block-level cooperation。
+
+\section{粗层执行与 Bottom Solver}
+\label{sec:gpu-coarse-collapse}
+
+GPU multigrid 最重要、也最容易被“fine-grid kernel 很快”掩盖的问题，是粗化本身在消灭可并行 task。
+
+$d$ 维 full coarsening 下
+\begin{equation}
+N_{\ell+1}\approx\frac{N_\ell}{2^d}.
+\end{equation}
+如果一个 block 有 $T$ threads，一 cell/thread，则第 $\ell$ 层 block 数约为
+\begin{equation}
+B_\ell\approx\left\lceil\frac{N_\ell}{T}\right\rceil.
+\label{eq:gpu-block-count-per-level}
+\end{equation}
+
+\subsection{粗化与 Grid-Level Parallelism}
+
+取 $256^3$ cells、$T=256$ threads/block。Fine level 约有
+\[
+B_0=65536
+\]
+个 blocks。三维每粗化一层，block 数约除以 8：
+\[
+65536\rightarrow8192\rightarrow1024\rightarrow128\rightarrow16\rightarrow2\rightarrow1.
+\]
+假设一块 GPU 有 120 个 SM，那么到 $B_\ell=128$ 时已经只剩大约一个 block/SM；下一层 16 blocks 意味着绝大多数 SM 根本没有工作。
+
+这不是“block size 选错了”，也不是“theoretical occupancy 不够高”，而是\textbf{算法本身已经没有足够独立 task}。
+
+\subsection{粗层常见策略}
+
+处理粗层通常需要组合多种策略：
+
+\begin{itemize}
+\item \textbf{减少 launch 数：}融合短 kernels，或用 CUDA Graph 降低重复 DAG 提交成本；
+\item \textbf{增加单 task 工作：}让一个 thread/block 处理多个 coarse cells，减少调度开销；
+\item \textbf{改变 smoother/bottom solver：}粗层不必沿用 fine-grid kernel 形状；
+\item \textbf{agglomeration/consolidation：}把粗层数据聚成更少、更大的 boxes 或更少的 ranks/devices；
+\item \textbf{CPU handoff：}只有当 transfer/migration 成本低于 GPU 粗层低利用率损失时才值得；不能把“CPU latency 更低”当成无条件结论。
+\end{itemize}
+
+当前 AMReX MLMG 文档把 agglomeration/consolidation 明确作为粗层策略，并为 GPU build 使用与 CPU 不同的 grid-length threshold，这正说明粗层粒度是一个架构相关问题\cite{amrexMLMGdocs2026}。GPU multigrid 文献也长期把 coarse-level parallelism 与数据移动视为核心瓶颈，而不是单个 stencil kernel 的局部问题\cite{naumov2015amgx,antepara2024brick,stokesgpu2025}。
+
+\section{AMR Patch、Box 粒度与 AMReX 映射}
+\label{sec:gpu-amrex-case}
+
+到这里已经具备分析 block-structured AMR GPU 实现的全部基础。这里把 AMReX 作为\textbf{实现案例}，而不是把它当成 GPU 编程模型本身。
+
+\subsection{Patch 粒度与 GPU 利用率}
+
+若一个 AMR level 被切成大量很小的 boxes，每个 box 都可能对应独立 kernel work。问题包括：
+\begin{itemize}
+\item 单 box thread 数太少，grid-level saturation 不足；
+\item kernel launch 数增加；
+\item ghost/boundary cells 占比上升；
+\item 每个 box 的 metadata 与调度成本占比变大。
+\end{itemize}
+
+CPU 上把 box 再 tile 成更小块有助 cache/threads；GPU 上却可能反过来降低单次 launch 的 work。当前 AMReX GPU 文档因此说明 GPU 构建默认关闭传统 MFIter tiling，而更倾向在 Box level 提交较大的 kernel work\cite{amrexGPUdocs2026}。
+
+\subsection{ParallelFor、Array4 与数据映射}
+
+在 AMReX 中，\texttt{MultiFab/FArrayBox} 管理 block-structured data，\texttt{Array4} 提供轻量索引视图，\texttt{ParallelFor} 把 box 中独立 cell work 映射到 CPU/GPU 后端\cite{amrexGPUdocs2026}。理解这三个对象时可以直接对应本书前面的抽象：
+\begin{itemize}
+\item \texttt{MultiFab/FArrayBox}：数据所有权与存储容器；
+\item \texttt{Array4}：kernel 内部的索引到地址映射；
+\item \texttt{ParallelFor}：把独立 logical iterations 交给 execution backend。
+\end{itemize}
+GPU 情形通常让大量 threads 每个只处理少量 cells；CPU 情形则由普通嵌套 loop 或 OpenMP 执行。关键不是“一个 API 同时支持 CPU/GPU”本身，而是\textbf{cell-level 数值语义与 execution policy 被分开}。如果一个 loop 含真正的 iteration dependency，就不能因为写进 \texttt{ParallelFor} 而自动变成合法 GPU kernel；AMReX 文档也专门区分了适合独立 iterations 的 \texttt{ParallelFor} 与更一般的 \texttt{For} 用法\cite{amrexGPUdocs2026}。
+
+\subsection{Streams、Arena 与 Residency}
+
+AMReX 当前文档描述了几项与本章直接对应的 GPU 策略\cite{amrexGPUdocs2026}：
+\begin{itemize}
+\item mesh/particle data 尽量长期保留在 GPU；
+\item 不同 MFIter iterations 可以分配到多个 GPU streams，以暴露 boxes 间独立性；
+\item Arena 提供 device/managed/pinned 等 memory pools，避免频繁 allocation；
+\item GPU 应用通常采用 MPI+X，并常见一个 MPI rank 对应一个 GPU。
+\end{itemize}
+
+这些是当前 AMReX 的具体工程选择，不应被误认为 CUDA 的一般定律。它们的价值在于展示：前面建立的 residency、stream independence、memory pool 和 task granularity 最终怎样进入真实 block-structured AMR 软件。
+
+\section{Profiling 与性能诊断}
+\label{sec:gpu-profiling}
+
+GPU 优化最危险的做法是“从源码猜瓶颈”。本章建议固定使用两级证据链：
+
+\begin{equation}
+\boxed{
+\text{先看 end-to-end timeline}
+\rightarrow
+\text{再看单 kernel microarchitecture metrics}.
+}
+\label{eq:gpu-profiling-chain}
+\end{equation}
+
+Nsight Systems 适合回答“时间到底花在哪个阶段、有没有 host gap、copy、同步、很多短 kernel、stream 是否真正重叠”；Nsight Compute 则适合进入某个具体 kernel，看 launch configuration、memory workload、occupancy、warp states 和 Roofline\cite{nsightSystems2026,nsightCompute2026}。
+
+\subsection{Timeline 级诊断}
+
+对完整 V-cycle，先标记每个 MG level 和操作（例如用 NVTX ranges），然后检查：
+\begin{itemize}
+\item 是否存在意外 H2D/D2H copies；
+\item 是否每个 kernel 后都有 host/device synchronization；
+\item coarse levels 是否出现大量几微秒短 kernels；
+\item 多 streams 是否真的有 overlap；
+\item reduction/collective 是否在时间线上形成明显 barrier；
+\item memory allocation/free 是否出现在迭代热路径。
+\end{itemize}
+
+如果 timeline 已经显示 40\% 时间消耗在 host gap/launch/sync，再去把 residual kernel 从 80\% DRAM bandwidth 优化到 90\% 通常不是第一优先级。
+
+\subsection{Kernel 级诊断}
+
+对真正占时的 kernel，再看 Nsight Compute。特别有用的几组信息包括\cite{nsightCompute2026}：
+\begin{itemize}[nosep,leftmargin=*]
+\item \textbf{LaunchStats：}grid/block 配置与资源；
+\item \textbf{SpeedOfLight/Roofline：}更接近 compute-bound 还是 memory-bound；
+\item \textbf{MemoryWorkloadAnalysis：}DRAM/L2/L1 traffic 与带宽利用；
+\item \textbf{Occupancy：}theoretical/achieved occupancy 与资源限制；
+\item \textbf{WarpStateStats：}warp 为什么没有 ready issue，但只有在 scheduler issue rate 确实不足时才应过度解读 stall 原因。
+\end{itemize}
+
+\subsection{症状--假设映射}
+
+\begin{center}
+\small
+\begin{tabularx}{0.98\textwidth}{>{\raggedright\arraybackslash\bfseries}p{3.2cm}>{\raggedright\arraybackslash}p{3.8cm}>{\raggedright\arraybackslash}X}
+\toprule
+症状 & 首先检查 & 更可能的解释\\
+\midrule
+fine-grid residual 慢 & DRAM/L2 traffic、coalescing、Roofline & memory traffic 过高或访问不合并\\
+理论 occupancy 高但 kernel 仍慢 & achieved bandwidth、warp issue、cache & occupancy 已足够，真正限制不在 resident warps\\
+粗层 GPU 利用率低 & grid blocks/SM、kernel duration & task 数不足而非 block 内 occupancy\\
+streams 没有 overlap & resource saturation、隐式 sync、依赖 & kernels 已占满 GPU 或存在实际依赖\\
+shared-memory 版本更慢 & shared bytes、registers、occupancy、bank conflicts & tile overhead/同步超过 reuse 收益\\
+Graph 收益很小 & 单 kernel duration、host launch gap & device work 远大于 host submission cost\\
+Unified Memory 抖动 & UM page faults/migration timeline & 工作集在 CPU/GPU 间迁移\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{keybox}
+\textbf{GPU 调优的基本闭环：}
+\[
+\boxed{
+\begin{aligned}
+\text{观察 timeline}
+&\rightarrow
+\text{提出瓶颈假设}
+\rightarrow
+\text{用 kernel metrics 验证}\\
+&\rightarrow
+\text{做一个可证伪的改动}
+\rightarrow
+\text{重新测 end-to-end time}
+\end{aligned}}
+\]
+单个 kernel 指标变好而完整 solve 变慢，仍然是失败的优化。
+\end{keybox}
+
+这一工作流与\chapref{ch:benchmarking}、\chapref{ch:diagnosis}中的一般性能方法相互闭合。
+
+\section{高级机制与适用边界}
+\label{sec:gpu-advanced-features}
+
+本章 Core path 到 profiling 已经完整。下面三类机制值得知道，但不应在第一次学习时反过来支配基本设计。
+
+\paragraph{Asynchronous global-to-shared copy.}
+CUDA cooperative groups 等接口支持把 global-to-shared 数据移动异步化，在 tile reuse 足够高时可以让数据搬运与计算形成 pipeline\cite{cudaProgramming2026}。使用它之前必须先回答两个问题：tile 是否已经证明能降低实际 DRAM/L2 traffic；以及一个 tile 内是否有足够计算可以覆盖搬运延迟。若七点 stencil 已经被 cache 很好地服务，增加 double buffering、barrier 和 pipeline state 可能只会提高复杂度。
+
+\paragraph{Thread-block cluster 与 distributed shared memory.}
+较新的 CUDA 编程模型提供 thread-block clusters 与 distributed shared memory，使同一 cluster 中多个 blocks 可以在受支持硬件上协作和同步\cite{cudaProgramming2026}。这扩展了普通 block-local shared memory 的作用域，理论上可用于更大的协作 tile 或跨 block reduction；代价是更强的硬件/版本依赖和更复杂的调度约束。本书把它视为 Extension，而不是实现普通 multigrid stencil 的默认起点。
+
+\paragraph{Dynamic Parallelism 与设备端递归.}
+GPU 可以从 device 侧启动子 kernels，但这并不意味着“递归 V-cycle 就应该在 device 上递归 launch”。Multigrid hierarchy 通常在 setup 后已知，host 侧 stream/graph replay 更容易观察、调试和控制依赖。Device-side launch 更适合工作结构必须在 device 运行时动态生成的情形。选择它的依据应是\textbf{减少 host round trip 是否足以抵消设备端 launch 与调试复杂度}，而不是代码形式上是否递归。
+
+\section{本章小结}
+
+GPU 多重网格可以沿一条统一因果链重建：
+
+\begin{enumerate}
+\item GPU 接收的是大量 logical threads，blocks 被分批调度到 SM；thread 数不等于物理 core 数。
+\item Warp 是理解分支与 global-memory transaction 的关键粒度；coalescing 看的是同 warp lanes 的地址关系。
+\item Multigrid 数据应尽量长期驻留 device；pinned/unified/device memory 解决的是不同问题。
+\item 简单 stencil 常受 memory traffic 限制；Roofline、cache traffic、occupancy 与 grid saturation 必须分层分析。
+\item Shared memory、kernel fusion、streams 和 CUDA Graph 都是有条件的优化，不是默认必胜策略。
+\item Jacobi、residual、restriction、prolongation、reduction 的 dependency pattern 直接决定 kernel 形状。
+\item V-cycle 粗化会快速消灭 blocks，最终产生 coarse-grid parallelism collapse；这是 multigrid/GPU 结合的核心结构性问题。
+\item AMR patch 大小、box 数、ghost/boundary 比例和 memory residency 会直接改变 GPU 效率。
+\item 调优必须从 end-to-end timeline 开始，再进入 kernel metrics，最终回到完整 solve time 验证。
+\end{enumerate}
+
+因此“会写 CUDA kernel”只是起点。真正的目标是能够从数值依赖、数据布局和层级结构推导 GPU 执行行为，并用 profiler 证据验证这套推导。
+
+\section*{习题}
+
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 一个 kernel 处理 $N=10^7$ 个 cells，采用 256 threads/block。计算 block 数。若 GPU 有 120 个 SM，平均每个 SM 最少要处理多少 blocks 才能完成整个 grid？说明这不是 resident-block 数。
+\item 一个 warp 的 32 个 threads 分别读取连续的 double 元素。计算有效数据字节数。若每个 lane 的地址改为相隔 32 bytes，比较两种模式需要覆盖的地址跨度，并解释哪一种更容易产生额外 transactions。
+\item 对式~\eqref{eq:gpu-seven-point-residual}，按“7 个 $u$ loads + 1 个 $b$ load + 1 个 $r$ store”的源代码模型计算 double arithmetic intensity。再假设 cache 使每个 $u$ 平均只从 DRAM 读取一次，给出一个更低的 DRAM bytes/output 下界估算。解释为什么两个答案都不是 profiler 实测值的替代品。
+\item 计算 $8^3,16^3,32^3$ tile 的完整 cuboid halo 放大因子~\eqref{eq:gpu-tile-amplification-cube}，再计算七点 stencil 只加载六个 halo faces 时的近似放大因子~\eqref{eq:gpu-tile-amplification-seven-point}。
+\item 对 $256^3$ finest grid、256 threads/block，计算连续六个 full-coarsened 3D levels 的 block 数。若 GPU 有 120 个 SM，从哪一层开始出现 $B_\ell<120$？
+\item 使用式~\eqref{eq:gpu-basic-memory-budget}计算 $512^3$ finest grid 的 $u,b,r$ 三个 double vectors 在完整三维 hierarchy 上的 GiB。再加入一份 Jacobi ping-pong $u^{new}$，重新计算。
+\item 某 V-cycle 有 40 个短 kernels，每个 device execution 为 $4\,\mu s$，host-side submission 平均等效为 $2\,\mu s$ 且无法完全重叠。估算 submission 在该简化模型中的比例；若 Graph 将每 kernel 的重复 submission 成本摊薄为原来的 $1/4$，重新估算。
+\item 某 kernel 每 block 使用 256 threads、每 thread 64 registers；另一个版本每 thread 96 registers。设某设备每 SM 有 65536 个 32-bit registers，忽略其他限制，分别估算单 SM 最多能同时容纳多少完整 blocks，并讨论 register pressure 对 occupancy 的影响。
+\end{enumerate}
+
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 设 warp lane $t$ 负责 $(i+t,j,k)$。利用式~\eqref{eq:gpu-linear-index}证明 center、$+y$、$-y$、$+z$、$-z$ 五组 loads 中，同一组内的 lane-to-lane 地址差都为 1。说明这为什么反驳“大 stride 邻居一定不 coalesced”的说法。
+\item 推导一般 $B_x\times B_y\times B_z$ tile 的完整 radius-one halo 放大因子，并分析 $B_x,B_y,B_z\rightarrow\infty$ 时的极限。
+\item 证明在普通 CUDA kernel 中，若算法要求 block A 等待 block B 的中间结果，而 B 可能尚未被调度，则仅依赖 block-local barrier 无法保证正确性。说明为什么拆成两个 kernels 可以恢复一个全 grid 的 phase boundary。
+\item 对 fine-output gather prolongation，证明每个输出只有唯一 writer 时不需要 atomic。再构造一个 coarse-output scatter 实现的 write--write conflict 例子。
+\item 从 $N_{\ell+1}=N_\ell/8$ 推导三维 V-cycle 的 grid block 数几何衰减，并证明即使总 work 仍为 $\Oh(N)$，最粗若干层仍可能严重 under-utilized。
+\item 比较 weighted Jacobi 与 RBGS 的 GPU dependency DAG：证明 Jacobi 可以在一个 sweep 内完全点并行，而 RBGS 至少需要 red/black 两个有序阶段。
+\end{enumerate}
+
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 实现一个 one-thread-per-cell 七点 residual baseline。先验证数值正确性，再分别测试 128、256、512 threads/block；记录时间、achieved bandwidth、registers/thread 与 occupancy。
+\item 在同一 residual kernel 中交换 thread mapping：版本 A 让相邻 lanes 沿 $x$，版本 B 让相邻 lanes 沿 $y$。用 Nsight Compute 的 memory workload 指标验证两种布局的 global-memory transaction 差异。
+\item 实现 cache-only 与 shared-memory tiled 两个七点 stencil 版本。至少测试两种 tile size，并同时记录 DRAM bytes、shared-memory 使用量、occupancy 和总时间。解释为何“shared memory 版本”可能更慢。
+\item 实现 weighted Jacobi 的“显式 residual + update”与“fused residual/update”两个版本。比较 global-memory traffic、register pressure 和完整 smoother 时间。
+\item 实现 trilinear prolongation 与 fused prolongation+correction。比较显式 $e_h$ workspace 与 fused 版本的显存/带宽开销。
+\item 为一个三层 V-cycle 加 NVTX ranges，用 Nsight Systems 记录 timeline。标出 kernel launches、copies、同步和 coarse-level gaps，再选一个真正占时 kernel 进入 Nsight Compute。
+\item 将重复的 V-cycle kernel sequence 用 CUDA Graph 或 stream capture 表达，比较细网格大问题与小问题/粗层占比高问题的 end-to-end 改善。
+\item 若使用 AMReX，分别测试不同 Box size 或 max grid size，记录 box 数、kernel 数、GPU utilization 和 MLMG solve time；解释为什么 CPU 上较好的 tile/box 粒度未必适合 GPU。
+\end{enumerate}
+
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item 给定一个三维 variable-coefficient Poisson operator，设计 device 数据布局：$u,b,r$、三个方向 face coefficients、boundary metadata 与 temporaries 分别如何组织？说明 AoS/SoA 决策依据。
+\item 某 Nsight Systems timeline 显示大量 $5$--$10\,\mu s$ kernels，中间有明显 host gaps，但单 kernel Nsight Compute 已接近 DRAM roof。提出三个优先级有序的优化假设，并说明每个假设需要什么证据证伪。
+\item 某 kernel theoretical occupancy 为 100\%，achieved occupancy 为 90\%，但只达到 35\% 峰值 DRAM bandwidth。说明为什么“继续提高 occupancy”不是充分的优化方向，并设计下一步 profiling 过程。
+\item 某 shared-memory stencil 版本 DRAM traffic 下降 25\%，但 kernel 时间上升 15\%。从 register pressure、shared-memory capacity、barrier、bank conflict 与 instruction count 五个方向设计排查顺序。
+\item 为 $1024^3$ finest grid 的 GPU V-cycle 设计 persistent/temporary memory plan，明确哪些 buffers 可以跨 levels 复用、哪些必须同时存活，并给出 OOM 风险控制方案。
+\item 比较 Jacobi、RBGS、Chebyshev 和 line smoother 在 GPU 上的“每 sweep 数值效果、并行度、memory passes、同步阶段、workspace”五维权衡。不要给单一赢家，而是针对各向同性 Poisson 与强各向异性 diffusion 分别给出选择依据。
+\item 设计一套 coarse-grid 策略：给定 SM 数、每层 block 数、单 kernel 时间、host-device transfer time 和 bottom solver 性能，决定何时继续 GPU、何时融合、何时 agglomerate/consolidate、何时考虑 CPU handoff。要求给出可测量的阈值，而不是固定经验数字。
+\end{enumerate}

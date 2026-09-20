@@ -1,0 +1,44 @@
+\chapter{变系数有限体积离散与对称性}
+\label{app:variable-coeff}
+
+\begin{keybox}
+\textbf{目的：}把\chapref{ch:discretization}只做概念预告的变系数扩散完整离散一次，说明为什么 face flux、共享 face coefficient 与 harmonic average 会影响守恒性、对称性和后续 solver 选择。
+\end{keybox}
+
+
+考虑一维
+\begin{equation}
+-\frac{d}{dx}\left(\beta(x)\frac{d\phi}{dx}\right)=f.
+\end{equation}
+对 cell center $i$，先在 face 定义通量
+\begin{equation}
+F_{i+1/2}
+=-\beta_{i+1/2}\frac{\phi_{i+1}-\phi_i}{h}.
+\end{equation}
+再做守恒散度：
+\begin{equation}
+-\frac{F_{i+1/2}-F_{i-1/2}}{h}=f_i.
+\end{equation}
+整理得到
+\begin{equation}
+(A\phi)_i
+=\frac{1}{h^2}
+\left[
+(\beta_{i-1/2}+\beta_{i+1/2})\phi_i
+-\beta_{i-1/2}\phi_{i-1}
+-\beta_{i+1/2}\phi_{i+1}
+\right].
+\end{equation}
+若所有 face coefficient $\beta_{i+1/2}>0$，并且相邻 cell 共享同一 face coefficient，则离散矩阵保持对称并通常正定（适当边界条件下）。
+
+当材料界面系数跳变时，face coefficient 常使用 harmonic average：
+\begin{equation}
+\beta_{i+1/2}
+=\frac{2\beta_i\beta_{i+1}}{\beta_i+\beta_{i+1}},
+\end{equation}
+因为它更符合串联扩散/导电阻抗的物理关系。对 GPU 而言，代价是每次 stencil 需要加载额外 coefficient fields；对 AMG 而言，强跳变还会改变 strength graph 与 coarse-space 需求。
+
+\section*{推导检查}
+\begin{checkpointbox}
+为什么相邻两个 cell 必须共享同一个 face coefficient 才容易保持矩阵对称？若 $\beta$ 跨界面跳变很大，算术平均与 harmonic average 分别隐含什么物理假设？
+\end{checkpointbox}

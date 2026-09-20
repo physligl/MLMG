@@ -1,0 +1,238 @@
+\chapter{多重网格操作的并行结构}
+\label{ch:mg-parallel-operations}
+
+\begin{keybox}
+\textbf{本章把同一个多重网格算法翻译成并行计算语言。}在讨论 OpenMP、GPU 或 MPI 之前，先固定每个 MG level 的数据对象，再逐个分析 smoother、算子/残差、restriction、prolongation、correction、norm 与 ghost fill 的读写集合和依赖。后面的硬件章节只改变“这些 task 在哪里执行”，不改变本章建立的算法语义。
+\end{keybox}
+
+\section{每个 MG Level 的数据模型}
+
+对最常见的线性多重网格，一个 MG level $\ell$ 至少需要以下逻辑对象：
+\begin{equation}
+\boxed{
+u_\ell,\quad b_\ell,\quad r_\ell,\quad e_\ell,\quad A_\ell,\quad \text{geometry/coefficient data}.}
+\label{eq:mg-parallel-level-data}
+\end{equation}
+其中 $u_\ell$ 是当前近似，$b_\ell$ 是当前层右端，$r_\ell=b_\ell-A_\ell u_\ell$ 是残差，$e_\ell$ 用于粗层误差修正。若采用 matrix-free 算子，$A_\ell$ 不一定以 CSR 形式存在，但 stencil 系数、面系数或几何信息仍然必须驻留。
+
+在二维/三维结构网格中，数组通常采用某个方向连续的一维存储。以三维 $x$ 连续布局为例：
+\begin{equation}
+p(i,j,k)=i+n_x\bigl[(j-1)+n_y(k-1)\bigr],
+\end{equation}
+与\chapref{ch:discretization}的三维离散编号一致。并行任务划分不能脱离这个布局：沿连续方向访问通常更容易形成连续 cache line 或 coalesced device transaction。
+
+\section{统一的操作分析框架}
+
+以后每看到一个数值操作，都固定回答六个问题：
+\begin{enumerate}
+\item 输入和输出分别是什么？
+\item 数据如何存储，哪个对象拥有输出？
+\item 一个 logical task 计算什么？
+\item task 之间有什么数据依赖？
+\item 最大并行度与合理粒度是什么？
+\item 需要什么同步、通信或 reduction？
+\end{enumerate}
+
+这六个问题把“数值算法”与“硬件实现”分开。下面逐个应用。
+
+\section{平滑器}
+
+\subsection{Jacobi：点独立更新}
+
+Weighted Jacobi 可以写成
+\begin{equation}
+u_i^{new}=u_i+\omega D_{ii}^{-1}r_i.
+\end{equation}
+若 $r_i$ 直接由邻域 stencil 计算，则一个 task 对应一个输出点 $u_i^{new}$；它读取旧 $u$ 的邻域、$b_i$ 与系数，只写自己的新值。因此
+\begin{equation}
+R_i=\{u_j:j\in\mathcal N(i)\}\cup\{b_i,\text{coefficients}\},
+\qquad
+W_i=\{u_i^{new}\}.
+\end{equation}
+不同输出 task 没有 write--write 冲突，同一 sweep 可以完全并行。代价是通常需要 old/new 两套状态，或把 residual 与 update 分成两个阶段。
+
+\subsection{Gauss--Seidel 与着色}
+
+Lexicographic GS 的 task 会读取本 sweep 已经更新的邻居，因此 dependency DAG 含有长链。RBGS 则把五点/七点 stencil 图二着色：红色 task 之间没有直接耦合，黑色同理，但
+\begin{equation}
+\text{red phase}\rightarrow\text{barrier}\rightarrow\text{black phase}
+\end{equation}
+形成两个强制阶段。这里算法上的 barrier 是后面共享内存线程同步、GPU kernel 边界或设备同步的来源。
+
+\section{算子应用与残差}
+
+对
+\begin{equation}
+r_i=b_i-(Au)_i,
+\end{equation}
+一个 logical task 负责一个 $r_i$。它只写自己的 residual，但读取 $u$ 的 stencil 邻域，因此属于\textbf{stencil gather}。二维五点和三维七点都具有点级并行性；区别在于三维邻域跨度更大、单位体积边界面积不同，并且数组工作集更大。
+
+若子域只保存自己的 owned cells，靠近分区边界的 residual task 还需要邻区值。这一“缺少邻居数据”的事实在共享地址空间只是跨块 load，在分布式内存中则演化成 ghost/halo 交换，见\chapref{ch:mpi}。
+
+\section{Restriction 与 Prolongation}
+
+\subsection{Restriction：fine-to-coarse gather}
+
+把 restriction 写成 gather 最容易并行：每个 coarse task 负责一个 $b_H(I)$，读取一组 fine residual：
+\begin{equation}
+b_H(I)=\sum_{j\in\mathcal S(I)}w_{Ij}r_h(j).
+\end{equation}
+每个 coarse 输出具有唯一 writer，因此无需原子操作。二维 full-weighting 读取最多九点，三维 tensor-product full-weighting 读取最多二十七点；维数提升直接扩大每个 task 的输入 footprint。
+
+\subsection{Prolongation：优先选择 gather 形式}
+
+若让每个 coarse task 把贡献 scatter 到多个 fine cells，就可能出现多个 coarse tasks 同时更新同一个 fine output。更适合并行实现的方式是反过来：每个 fine task 主动读取需要的 coarse neighbors，计算
+\begin{equation}
+e_h(i)=\sum_{I\in\mathcal C(i)}p_{iI}e_H(I).
+\end{equation}
+这样仍然保持一个输出一个 writer。对 GPU 和线程并行，这种 gather 形式通常比原子 scatter 更自然。
+
+\section{Correction、Norm 与 Ghost Fill}
+
+Correction
+\begin{equation}
+u_h\leftarrow u_h+e_h
+\end{equation}
+是纯 map：每个点只读同位置两个向量并写一个输出。
+
+残差范数
+\begin{equation}
+\|r\|_2^2=\sum_i r_i^2
+\end{equation}
+则是 reduction。局部平方可以完全并行，但最终需要 reduction tree；如果数据分布在多个 rank，还需要全局 collective。这就是 Krylov 方法与收敛检查中“全局归约成本”的算法来源。
+
+Ghost fill 的语义是：在执行依赖邻居的 stencil task 之前，使本地辅助区域保存足够的邻居状态。共享内存通常不需要复制 ghost；block/patch 数据结构为了保持规则 stencil 仍可能显式保存 ghost。MPI 中 ghost 必须由 owner 的最新数据刷新。AMR coarse--fine ghost 则还可能需要\chapref{ch:amr-discretization}中的插值，而不只是同层复制。
+
+\section{完整 V-Cycle 的 Task Graph}
+
+一次 V-cycle 可以写成阶段 DAG：
+\begin{equation}
+\boxed{
+\begin{aligned}
+&\text{ghost/boundary readiness}
+\rightarrow\text{pre-smooth}
+\rightarrow\text{residual}
+\rightarrow\text{restriction}\\
+&\rightarrow\text{coarse solve}
+\rightarrow\text{prolongation}
+\rightarrow\text{correction}
+\rightarrow\text{post-smooth}.
+\end{aligned}}
+\label{eq:mg-parallel-vcycle-dag}
+\end{equation}
+如果某个阶段内部有大量独立 task，它可以高度并行；但阶段之间仍存在真实数据依赖。例如 restriction 必须等待 fine residual 就绪，prolongation 必须等待 coarse error 可用。于是 V-cycle 的并行优化不只是“把每个 loop parallelize”，还包括减少阶段边界、重叠独立工作和避免不必要的全局同步。
+
+\subsection{数据生命周期与临时向量复用}
+
+并不是每个 level 的所有向量在整个 solve 期间都必须保持独立存储。典型生命周期是：
+\begin{itemize}
+\item $u_\ell,b_\ell$ 在该层活跃期间长期存在；
+\item $r_\ell$ 在 residual 后被 restriction 消费，之后可以复用其存储；
+\item coarse error 在 prolongation 完成后可以释放或复用；
+\item Jacobi 的 old/new buffer 可以通过 ping-pong 复用，而 GS/RBGS 可原地更新。
+\end{itemize}
+因此“怎么算”和“怎么存”必须一起设计。减少临时向量可以降低内存，但过度复用也可能制造额外同步或破坏并发。
+
+\section{作为预条件器时的嵌套执行图}
+
+\secref{sec:mg-preconditioner}把一次固定 V-cycle 记为近似逆 $B_{MG}$。当它嵌入 Krylov 方法以后，V-cycle 不再是最外层循环，而成为一个\textbf{preconditioner apply 子图}：
+\begin{equation}
+\boxed{
+\text{Krylov operator/reduction}
+\rightarrow
+\underbrace{\text{MG V-cycle}}_{z=B_{MG}r}
+\rightarrow
+\text{Krylov vector updates/reduction}.
+}
+\label{eq:mg-parallel-preconditioned-krylov-dag}
+\end{equation}
+这意味着性能分析必须区分两种同步：MG 内部主要是 stencil 邻域依赖、transfer 与 coarse-grid 同步；Krylov 外层还会增加 dot product / norm 的 reduction。共享内存中它们表现为 thread reduction，MPI 中则可能变成全局 collective，多 GPU 中还要跨 device/rank 聚合。
+
+如果 $B_{MG}$ 每次 apply 都执行固定 cycle、固定 smoother 和固定粗层策略，它可以看成一个固定线性子图；若 inner tolerance 或 cycle 数随外层迭代变化，则执行图和算子本身都可能变化，需要\secref{sec:mg-preconditioner}讨论的 flexible Krylov 视角。
+
+\section{多维 Stencil、边界与分区}
+
+二维和三维改变的不只是每点 FLOPs。对一个 $n^d$ 规则子域，内部 work 约与体积 $n^d$ 成正比，而与相邻子域交换的数据约与表面积 $n^{d-1}$ 成正比，因此
+\begin{equation}
+\frac{\text{boundary data}}{\text{interior work}}
+\sim\frac1n.
+\label{eq:mg-parallel-surface-volume}
+\end{equation}
+这一定性关系是 MPI halo、GPU tile 边界和 cache 重复加载共同的几何来源。但要注意：共享内存 tile 边界并不等于网络通信；它更多表现为 cache/workset 重复，而 MPI 分区边界才真正产生消息。
+
+混合物理边界也会改变 task 类型。内部 stencil task 读取完整邻域；物理边界 task 读取较少内部邻居并加入\chapref{ch:discretization}推导的边界贡献；corner/edge task 可能同时组合多个边界面。因此一个高性能实现常把 interior 与 boundary region 分开处理，既简化热点 kernel，也避免每个内部点都执行边界分支。
+
+\section{粗化导致的并行度衰减}
+
+$d$ 维 full coarsening 下
+\begin{equation}
+N_{\ell+1}\approx\frac{N_\ell}{2^d}.
+\label{eq:mg-parallel-coarsening-count}
+\end{equation}
+总 work 因几何级数仍接近线性，但每层可并行 task 数也以同样比例快速下降。细层可能满足
+\begin{equation}
+N_\ell\gg P,
+\end{equation}
+硬件容易饱和；到粗层则可能变成
+\begin{equation}
+N_\ell\lesssim P,
+\end{equation}
+此时更多线程、GPU lanes 或 MPI ranks 已经没有足够 task 可做。后续三个架构章节所谓 thread under-utilization、GPU occupancy collapse 和 coarse-grid communication domination，本质上都是这一个算法事实的不同硬件表现。
+
+\section{操作级并行模式总表}
+
+\begin{center}
+\small
+\begin{tabularx}{0.98\textwidth}{>{\bfseries}p{2.0cm}p{2.25cm}p{2.2cm}X}
+\toprule
+操作 & 主要模式 & 写冲突/依赖 & 主要同步或通信来源\\
+\midrule
+Jacobi & stencil gather + map & 输出点独立 & sweep/阶段边界\\
+GS/RBGS & dependency / colored stencil & 颜色间依赖 & color barrier\\
+算子/残差 & stencil gather & 输出点独立 & ghost readiness\\
+restriction & gather & coarse 输出独立 & fine residual ready\\
+延拓 & gather 优先 & fine 输出独立 & coarse error ready\\
+correction & map & 输出点独立 & 通常无额外同步\\
+norm/dot & reduction & 聚合依赖 & tree/global reduction\\
+ghost fill & 复制/插值 & owner 到 ghost & 数据交换/插值完成\\
+\bottomrule
+\end{tabularx}
+\end{center}
+这张表是后续硬件章节的共同起点。
+
+\section{本章小结}
+
+多重网格不是一串无法并行化的数学公式，而是一组具有不同并行 pattern 的操作。Jacobi/residual 是 stencil gather，restriction/prolongation 最适合组织成 gather，correction 是 map，norm 是 reduction，ghost fill 负责让跨所有权边界的数据就绪。完整 V-cycle 是这些阶段组成的 DAG，而粗化同时减少 work 和可用并行度。后续所有架构优化都应能回到本章的操作级模型解释。
+
+\section*{习题}
+
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 对 $64^3$、$32^3$、$16^3$、$8^3$ 四层网格，计算每层 residual task 数，并求相对 finest level 的并行 task 比例。
+\item 二维 full-weighting 每个 coarse output 读取 9 个 fine values。对 $1024^2$ fine grid 估算一次 restriction 的 coarse task 数、fine value 读取次数上界与输出写次数。
+\item 三维立方子域每边 $n$ 个 cells，halo 厚度为 1。忽略棱角重复，估算 owned cells 与六个 face halos 的比例，并计算 $n=16,32,64$。
+\item 给定一层 $u,b,r,e$ 四个 double 向量与三个面系数数组，估算 $256^3$ 网格的基础存储量；再讨论 Jacobi ping-pong 增加一个 $u^{new}$ 后的变化。
+\end{enumerate}
+
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 证明 gather 形式的 restriction 若每个 coarse output 只有唯一 writer，则不需要 atomic update。
+\item 证明三维 full coarsening 下各层 task 总数形成系数为 $1/8$ 的几何级数，但最粗层可用并行度仍会迅速下降。
+\item 对 RBGS 写出 red/black 两阶段 DAG，说明为什么颜色内部可并行而颜色之间必须有依赖边。
+\item 比较 scatter prolongation 与 gather prolongation，形式化指出 scatter 中产生 write--write conflict 的条件。
+\end{enumerate}
+
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 为 Jacobi、residual、restriction、prolongation、correction 和 norm 分别实现串行 kernel，并记录每个 kernel 的读写字节与 FLOPs。
+\item 实现 gather 与 scatter 两种 prolongation，使用 race detector 或原子计数验证 scatter 冲突来源。
+\item 为一个三层 V-cycle 记录时间线：每个阶段的开始/结束、输入/输出向量和临时内存生命周期。
+\item 将 interior cells 与 physical-boundary cells 分成两个 loop，比较与单 loop 内部分支的性能和代码复杂度。
+\end{enumerate}
+
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item 设计一个 V-cycle buffer reuse 方案，标出哪些向量可复用、哪些因为数据仍被后继 task 使用而不能覆盖。
+\item 对 point Jacobi、RBGS 和 line smoother，分别画出 task granularity 与 dependency DAG，判断哪一种更容易映射到 GPU。
+\item 给定 AMR composite operator，说明 coarse--fine ghost interpolation 会如何改变“同层 ghost fill”这一基本模式。
+\end{enumerate}

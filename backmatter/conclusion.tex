@@ -1,0 +1,14 @@
+\chapter*{结语}
+\addcontentsline{toc}{chapter}{结语}
+
+并行多重网格的性能不能用“线程越多越快”或“GPU 算力更高”解释。多重网格的每一层都在主动改变问题尺寸、误差频谱、数据依赖和通信比例。细层通常由内存带宽决定，中间层开始受 patch/box 粒度影响，粗层则越来越由同步、kernel launch、MPI latency、global reductions 和 bottom solver 决定。
+
+因此一个成熟的 MLMG 性能优化流程应始终保持三条线同时可见：
+\begin{equation}
+\boxed{\text{数值收敛}}
+\qquad
+\boxed{\text{数据移动}}
+\qquad
+\boxed{\text{并行拓扑}}.
+\end{equation}
+只优化其中一条，往往会把瓶颈推到另一条线上。真正可扩展的实现不是在单个 kernel 上追求极限，而是让从 fine grid 到 bottom solve 再返回 fine grid 的整个 V-cycle 都保持合理的工作粒度、数据局部性与同步密度。

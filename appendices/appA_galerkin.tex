@@ -1,0 +1,63 @@
+\chapter{Galerkin 粗网格算子的一维推导}
+\label{app:galerkin}
+
+\begin{keybox}
+\textbf{目的：}把\chapref{ch:two-grid}的式~\eqref{eq:galerkin}展开成可逐行检查的一维计算，验证标准 prolongation/full-weighting 下 Galerkin coarse operator 确实回到标准 $2h$ Poisson 离散。建议先复习\chapref{ch:two-grid}的 $R$、$P$ 定义。
+\end{keybox}
+
+
+令 fine-grid operator
+\begin{equation}
+(A_hu)_j=\frac{-u_{j-1}+2u_j-u_{j+1}}{h^2}.
+\end{equation}
+取线性 prolongation：
+\begin{align}
+(Pv)_{2I}&=v_I,\\
+(Pv)_{2I+1}&=\frac12(v_I+v_{I+1}).
+\end{align}
+先计算 $A_hPv$ 在偶点：
+\begin{align}
+(A_hPv)_{2I}
+&=\frac{1}{h^2}
+\left[
+-v_{I-1/2}^{interp}+2v_I-v_{I+1/2}^{interp}
+\right]\\
+&=\frac{1}{h^2}
+\left[-\frac12(v_{I-1}+v_I)+2v_I-\frac12(v_I+v_{I+1})\right]\\
+&=\frac{-v_{I-1}+2v_I-v_{I+1}}{2h^2}.
+\end{align}
+在奇点 $2I+1$：
+\begin{align}
+(A_hPv)_{2I+1}
+&=\frac{1}{h^2}
+\left[-v_I+2\cdot\frac{v_I+v_{I+1}}2-v_{I+1}\right]\\
+&=0.
+\end{align}
+
+full-weighting restriction 为 $R=\frac12P^T$：
+\begin{equation}
+(Rw)_I=\frac14w_{2I-1}+\frac12w_{2I}+\frac14w_{2I+1}.
+\end{equation}
+由于 $w=A_hPv$ 的奇点值为零，
+\begin{align}
+(RA_hPv)_I
+&=\frac12(A_hPv)_{2I}\\
+&=\frac{-v_{I-1}+2v_I-v_{I+1}}{4h^2}.
+\end{align}
+又因为 $H=2h$，
+\begin{equation}
+4h^2=H^2,
+\end{equation}
+所以
+\begin{equation}
+\boxed{A_H=RA_hP
+=\frac{1}{H^2}\operatorname{tridiag}(-1,2,-1)}.
+\end{equation}
+也就是说，在这个经典组合下，Galerkin 粗算子恰好等于直接在 $2h$ 网格上重新离散的 Poisson 算子。
+
+这段推导非常重要，因为它把“Galerkin 是抽象矩阵乘法”和“几何粗网格还是同一个 PDE”连接起来。复杂系数、复杂边界或 AMG 中，这种完美一致性通常不再成立。
+
+\section*{推导检查}
+\begin{checkpointbox}
+不看正文，重新计算 $(A_hPv)_{2I}$ 与 $(A_hPv)_{2I+1}$。为什么奇点结果为零？这个零值怎样使 $RA_hP$ 恰好得到 $H=2h$ 的三点 Laplacian？
+\end{checkpointbox}

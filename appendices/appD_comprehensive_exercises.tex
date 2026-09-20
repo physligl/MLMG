@@ -1,0 +1,34 @@
+\chapter{综合练习}
+\label{app:exercises}
+
+\begin{keybox}
+本附录把前面分章训练重新组合成跨章问题。每一类都要求调用多个章节的知识：计算题重在完整手算链条，证明题重在结构性推理，上机题重在复现与验证，工程题重在把收敛、成本与硬件约束放到同一决策中。
+\end{keybox}
+
+\section*{计算题}
+\begin{enumerate}
+\item 对二维五点 Poisson，推导 weighted Jacobi 的 Fourier symbol，并在本书采用的高频区定义下求 minimax 权重与 smoothing factor。随后取 $\theta_x,\theta_y\in\{0,\pi/2,\pi\}$ 的若干模式逐一计算放大因子。
+\item 给定一个 $5\times5$ 一维 Poisson 矩阵、指定的 full-weighting $R$ 与 linear interpolation $P$，手算 $A_H=RA_hP$、一次 coarse correction 和完整 two-grid error matrix 的数值条目。
+\item 一个 $256^3$ 三维问题采用 64 个 MPI ranks、每 rank 一个 GPU。连续 full coarsen 5 次，逐层计算 global/local unknowns、近似 halo bytes、每 GPU blocks 数与 surface/volume；指出哪一级开始同时面临 MPI latency 与 GPU small-kernel 问题。
+\end{enumerate}
+
+\section*{推导与证明题}
+\begin{enumerate}
+\item 对纯 Neumann Poisson，从连续方程、有限体积守恒和离散矩阵三个层面分别证明常数零空间与兼容条件，并说明三种表述为什么等价。
+\item 假设 $A$ 对称正定、$P$ 满列秩、$R=P^T$。证明 Galerkin coarse operator 对称正定，证明 coarse correction 是投影，并说明它对 $\operatorname{range}(P)$ 的作用。
+\item 对 $d$ 维 full coarsening 推导 V-cycle 与 W-cycle 的工作量递推；再加入每层固定 communication latency，说明为什么算术复杂度保持 $\Oh(N)$ 并不保证并行 time complexity 也线性。
+\end{enumerate}
+
+\section*{编程与上机题}
+\begin{enumerate}
+\item 从零实现一个最小 2D geometric multigrid：Poisson 装配/Matrix-Free apply、weighted Jacobi、restriction、prolongation、V-cycle。用 manufactured solution 同时验证离散二阶精度和 mesh-independent convergence。
+\item 给上一题加入 OpenMP，再选择 CUDA 或 MPI 中一个并行后端。要求保持完全相同的离散和停止准则，报告每 cycle 时间、iteration/cycle count、time-to-solution 和逐 level profile。
+\item 任选一个成熟多重网格库，与自己的最小 solver 解同一个 case。记录 setup、hierarchy、transfer、smoother、bottom solver 与总时间，把库中的每个关键阶段映射回本书数学对象。
+\end{enumerate}
+
+\section*{工程与综合题}
+\begin{enumerate}
+\item 设计一个实验比较 Jacobi 与 RBGS：同时报告 LFA/实测 smoothing factor、V-cycle convergence factor、cycle time 与总 solve time。解释为什么任何单一指标都不足以决定最终选择。
+\item 若 GPU fine-grid kernel 已达到 HBM 可持续带宽的 75\%，但完整 V-cycle 只比 CPU 快 1.5 倍，建立至少五个可证伪根因假设，并为每个假设指定一个 profiler 指标或 A/B 实验。
+\item 设计一个 mixed-precision distributed V-cycle：fine level FP64、中间层 FP32、最粗层低精度，并允许 coarse-level rank/GPU consolidation。给出精度验证、conversion 位置、通信路径、setup/solve 计时和 release gate。
+\end{enumerate}

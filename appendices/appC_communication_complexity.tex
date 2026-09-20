@@ -1,0 +1,43 @@
+\chapter{粗网格通信复杂度推导}
+\label{app:communication}
+
+\begin{keybox}
+\textbf{目的：}把 MPI 章节中的“coarsening 会恶化通信/计算比”从定性判断推导成显式尺度关系。只需要表面积/体积尺度和 $\alpha$--$\beta$ 消息模型。
+\end{keybox}
+
+
+设三维全局网格每方向为 $N$，使用 $P$ 个 ranks，近似立方分解，因此每 rank 局部边长
+\begin{equation}
+n\approx \frac{N}{P^{1/3}}.
+\end{equation}
+一次 stencil 的本地工作
+\begin{equation}
+W\sim c n^3.
+\end{equation}
+六个面的 halo 字节数
+\begin{equation}
+M\sim 6g n^2s.
+\end{equation}
+若消息时间 $\alpha+\beta m$，则
+\begin{equation}
+T_{halo}\sim6\alpha+6\beta g n^2s.
+\end{equation}
+假设本地计算时间 $T_{comp}=\gamma n^3$，那么
+\begin{equation}
+\frac{T_{halo}}{T_{comp}}
+\sim\frac{6\alpha}{\gamma n^3}
++\frac{6\beta gs}{\gamma n}.
+\end{equation}
+
+每次三维 full coarsening 后 $n\to n/2$，所以第一项乘 8，第二项乘 2。经过 $k$ 层：
+\begin{equation}
+\left(\frac{T_{latency}}{T_{comp}}\right)_k
+\sim8^k
+\left(\frac{T_{latency}}{T_{comp}}\right)_0.
+\end{equation}
+这不是具体 MPI 实现的缺陷，而是几何表面积、体积与固定 latency 共同决定的结构性问题。agglomeration/consolidation/process reduction 的理论动机就在这里。
+
+\section*{推导检查}
+\begin{checkpointbox}
+三维 full coarsening 后 $n\to n/2$。分别对 latency 项 $1/n^3$ 和 bandwidth 项 $1/n$ 代入，验证为何每层分别放大 8 倍和 2 倍。
+\end{checkpointbox}

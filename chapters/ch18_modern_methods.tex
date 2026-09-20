@@ -1,0 +1,138 @@
+\chapter{现代多重网格方法与研究进展}
+\label{ch:modern}
+
+\begin{keybox}
+\textbf{本章按“它解决哪个瓶颈”组织前沿工作，而不是按论文年份罗列。}讨论对象包括低精度计算、专用矩阵计算单元、matrix-free 高阶离散以及极大规模分布式粗网格算法；每一节都先说明它针对的成本项，再讨论具体技术。阅读本章每一种技术时都用同一个模板：
+\begin{equation}
+\boxed{
+\text{原瓶颈}
+\rightarrow
+\text{改变了哪种资源成本}
+\rightarrow
+\text{引入什么数值/实现风险}
+\rightarrow
+\text{用什么指标验证}
+}
+\end{equation}
+这样“前沿方法”就能挂回前面已经建立的模型：带宽与算术强度见\chapref{ch:parallel-model}、\chapref{ch:mg-parallel-operations}和\chapref{ch:gpu}，AMG 层级与稀疏复杂度见\chapref{ch:software}，分布式粗层通信见\chapref{ch:mpi}和\chapref{ch:distributed-gpu}。
+\end{keybox}
+
+\section{性能瓶颈分类}
+现代多重网格研究大致可以对应到四类约束：memory bandwidth、稀疏算子规则性、coarse-grid parallelism、distributed communication。阅读一篇新论文时，先问“作者主要想改变哪一个成本项”，再看它用了什么新数据结构或算法；这样比直接记技术名词更容易迁移。
+
+
+\begin{warningbox}
+本章允许出现尚未在前文完整推导的现代术语，但只讲它们改变哪一类成本以及为什么可能有效。论文级算法细节不在本章强行展开；需要复核基础概念时，沿各节给出的交叉引用回到对应数学、执行或软件章节。
+\end{warningbox}
+
+\section{混合精度多重网格}
+
+对 memory-bound SpMV/stencil，把 FP64 数据换成 FP32，理论字节数近似减半；FP16 进一步下降。因此 mixed precision 的第一收益常来自 memory traffic，而不是低精度浮点峰值。
+
+\paragraph{先做字节预算，再谈加速。}
+若某向量场有 $N$ 个标量，仅比较存储本身，则 FP64、FP32、FP16 分别需要约 $8N$、$4N$、$2N$ byte。把一个层级的部分向量从 FP64 改成 FP32，最多只减少\textbf{这些被降精度对象}的字节数；index、halo metadata、未降精度系数场和通信同步并不会自动减半。因此“精度减半 $\Rightarrow$ solve time 减半”不是合法推论，必须回到\chapref{ch:benchmarking}测量完整 time-to-solution。
+
+一个典型策略是：
+\begin{equation}
+\text{fine level: FP64/FP32},\qquad
+\text{coarse levels: FP32/FP16},
+\end{equation}
+然后在 restriction/prolongation 时做 precision conversion。Tsai、Beams 与 Anzt 的 three-precision AMG 在 AMD、Intel、NVIDIA GPU 上研究了不同层级采用 double/single/half 的组合，说明 half precision 可以在保持最终精度的条件下用于部分 multigrid 层级\cite{tsai2023three}。
+
+数学上，低精度相当于让实际迭代算子变为
+\begin{equation}
+\widehat E=E+\Delta E,
+\end{equation}
+只要舍入扰动没有把有效收敛因子推到 $\rho(\widehat E)\ge1$，外层高精度 residual correction 或 Krylov 方法仍可能恢复目标精度。Krylov 的最低定义见\chapref{ch:mg-cycles}的\secref{sec:mg-preconditioner}；这里关注的不是它的推导，而是低精度多重网格如何作为内层求解/预条件组件。
+
+\subsection{FP16 结构化多重网格}
+
+2024 年的 structured multigrid 研究进一步把 FP16 用于真实应用预条件器，核心不是“所有量都强制 half”，而是分析哪些网格层、哪些向量和算子对量化误差更容忍\cite{zong2024fp16}。
+
+对工程实现，可把误差预算写成
+\begin{equation}
+\|e_{total}\|
+\lesssim
+\|e_{disc}\|+
+\|e_{iter}\|+
+\|e_{round}\|.
+\end{equation}
+如果 coarse-level roundoff 远低于离散误差与当前迭代误差，就没有必要坚持 FP64。
+
+\section{Tensor Core 多重网格}
+
+\textbf{Tensor Core} 是 NVIDIA GPU 中面向小块矩阵乘加的专用计算单元，尤其适合规则的 dense matrix multiply；传统 sparse SpMV 与这种硬件结构并不天然匹配。AmgT 在 2024 年探索通过新的 sparse/block storage，把 AMG setup 中的 SpGEMM 与 solve 中的 SpMV 映射到 Tensor Core，并将实现整合到 hypre 路径中；论文报告在 A100/H100 上相对 GPU hypre baseline 的平均加速\cite{lu2024amgt}。
+
+这类工作的关键不是“Tensor Core 峰值很高”，而是\textbf{是否能把稀疏结构重排成足够规则的小块，同时不让 padding、格式转换和额外 memory traffic 抵消收益}。
+
+\section{细粒度数据分块与性能可移植性}
+
+2024 年 SC workshop 的 BrickLib GMG 工作研究了 NVIDIA、AMD、Intel GPU 上统一的 fine-grain data blocking，把 stencil、inter-level transfer 和通信布局共同纳入数据组织设计，并报告了跨多种 GPU 的性能可移植性与多 GPU weak scaling\cite{antepara2024brick}。
+
+这揭示一个比“kernel tuning”更高层的方向：
+\begin{equation}
+\boxed{\text{数据布局应同时服务计算、缓存复用和 MPI packing。}}
+\end{equation}
+如果数组布局让 stencil 很快但通信必须重新 pack/unpack，大规模运行仍可能受限。
+
+\section{Matrix-Free 高阶多重网格}
+
+高阶有限元/DG 中，显式矩阵会产生大量内存流量，matrix-free operator 能用更多局部 FLOP 换更少 bytes。2025 年 GPU Stokes multigrid 工作使用 matrix-free、局部 patch smoother、shared-memory access 优化与 mixed precision，代表了“提高 arithmetic intensity 来适应 GPU”的另一条路线\cite{stokesgpu2025}。
+
+对于低阶七点 Poisson，这种思路的发挥空间有限；但对高阶算子，sum factorization、fast diagonalization 和 element-local kernels 可以把算法从 bandwidth-bound 推向更高算术强度区间。
+
+\subsection{Matrix-Free Algebraic $hp$-Multigrid}
+
+2026 年 Ohm、Harper 与 Jansson 在 Neko 中进一步研究了 matrix-free algebraic $hp$-multigrid：先通过 $p$-coarsening 从高阶谱元离散降到低阶，再仅利用 mesh adjacency 构造代数空间粗化，从而避免依赖显式矩阵条目或几何 rediscretization\cite{ohm2026hpmg}。其重要性在于，它把两个通常分开的方向结合起来：一方面利用 matrix-free 保持 GPU 上较高的算术强度和较低存储压力；另一方面又保留 algebraic hierarchy 对复杂网格/离散的适应性。
+
+该工作在不同层级采用 Chebyshev 类 smoother，也体现出一个不断强化的趋势：当硬件并行度越来越高时，\textbf{规则的多项式平滑器、matrix-free operator 与层级重分布}往往比强顺序依赖的经典平滑器更容易获得稳定的跨节点性能。对 MLMG 工程而言，这意味着“粗层怎么构造”和“细层 kernel 怎么写”正在逐渐变成同一个性能问题。
+
+\section{Exascale 粗网格通信与同步}
+
+\textbf{Exascale} 通常指面向 $10^{18}$ FLOP/s 量级超级计算系统的算法与软件环境。在这一尺度上，单个 GPU 越快，网络延迟和全局同步的相对成本越显眼。多重网格优化很大一部分并不是继续优化 fine-grid stencil，而是：
+\begin{itemize}
+\item aggressive process/rank coarsening；
+\item topology-aware redistribution；
+\item non-Galerkin sparsification，控制 coarse operator complexity；
+\item communication-avoiding / asynchronous smoothers；
+\item 减少 global reductions；
+\item 让 NIC、GPU 和 MPI runtime 更好地异步协同。
+\end{itemize}
+
+这也解释了为什么“单 GPU kernel 已达到很高带宽”并不代表 distributed MLMG 已经解决。
+
+\section{本章小结}
+本章建立了 mixed precision、FP16、Tensor Core、data blocking、high-order matrix-free、$hp$-multigrid 与 exascale communication。它们不是彼此独立的“新潮技术”，而是分别针对带宽、算子结构、算术强度和粗层通信等既有瓶颈。
+
+\section*{习题}
+
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 一个层级数据集包含 $4N$ 个 FP64 标量。计算其存储量；若其中 $2N$ 个改为 FP32，计算新存储量和理论 bytes 减少比例。
+\item 一个 memory-bound V-cycle 每次从 DRAM 搬运 800 GB 数据，硬件可持续带宽 1.6 TB/s。若 mixed precision 将流量降到 520 GB，但增加 15\% FLOP 且仍 bandwidth-bound，估算理想时间变化。
+\item 某 low-precision coarse correction 每次把 residual 降低到原来的 0.25，但随后高精度 refinement 有固定 0.1 ms 成本。计算达到 $10^{-8}$ 需要多少 correction steps，并建立总时间表达式。
+\item 高阶 matrix-free kernel arithmetic intensity 为 12 FLOP/byte，低阶 CSR 为 0.3 FLOP/byte。对 ridge point 8 FLOP/byte 的 GPU 判断二者分别处在哪个 Roofline 区域。
+\end{enumerate}
+
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 若低精度 correction 满足 $\|e_{k+1}\|\le q\|e_k\|$、$q<1$，推导达到给定误差阈值所需 correction 次数，并说明何时高精度 outer refinement 可以容忍低精度 inner solve。
+\item 从 bytes/FLOP 模型说明 mixed precision 对 memory-bound multigrid 首先影响的是数据流量，而不是“自动增加 FLOP/s”。
+\item 解释 Tensor Core/矩阵专用硬件为什么不能直接加速任意稀疏 SpMV；从数据布局与运算形态给出必要条件。
+\item 对高阶 matrix-free，说明“增加 FLOP、减少 bytes”为什么可能提高 GPU 利用率；用 Roofline 公式给出条件。
+\end{enumerate}
+
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 将 V-cycle 的部分 level/向量改为 FP32，其余保持 FP64，比较 residual history、最终误差、bytes 与 wall time。
+\item 实现 mixed-precision iterative refinement：低精度求 correction，高精度计算 residual。扫描 inner tolerance，观察稳定区间。
+\item 对同一高阶/低阶算子比较 explicit sparse 与 matrix-free apply 的 arithmetic intensity 和实测性能。
+\item 若硬件支持，实验一个 block-dense/tensor-core-friendly smoother，与普通 sparse smoother 比较 setup 与 solve 成本。
+\end{enumerate}
+
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item mixed precision 节省 35\% 时间但使迭代次数增加 20\%。说明还需要哪些 accuracy/robustness 证据才能决定是否采用。
+\item GPU 算力继续提高但网络 latency 基本不变时，解释为什么 coarse-grid communication 会成为更显著的瓶颈。
+\item 选择 matrix-free、mixed precision、communication-avoiding 中任两种现代技术，分析它们可能互补还是互相冲突，并设计联合 benchmark。
+\end{enumerate}

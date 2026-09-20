@@ -1,0 +1,105 @@
+\chapter{异构编程模型与性能可移植性}
+\label{ch:portability}
+
+\begin{keybox}
+性能可移植性不是“同一份源码能编译”这么简单。真正需要保持的是\chapref{ch:mg-parallel-operations}已经确定的\textbf{操作语义、数据所有权和依赖关系}，同时允许不同后端选择不同的执行粒度、memory space 和同步实现。
+\end{keybox}
+
+\section{算法接口与执行后端分离}
+
+理想的软件边界不是让数值代码直接写满 OpenMP/CUDA/MPI 细节，而是把核心操作表达成稳定接口，例如：
+\begin{align}
+&\texttt{apply\_operator(level, u, r)},\qquad
+\texttt{smooth(level, u, b)},\\
+&\texttt{restrict(fine, coarse)},\qquad
+\texttt{prolong(coarse, fine)}.
+\end{align}
+接口固定读写语义，后端决定 task 如何映射。
+
+这种分层只有在数据布局也可描述时才成立。单纯抽象 execution policy，却让 host/device memory、ghost ownership、temporary workspace 仍然散落在算法逻辑中，最终仍会形成“可编译但不可维护”的后端分叉。
+
+\section{Execution Space 与 Memory Space}
+
+异构抽象至少需要区分两个维度：
+\begin{itemize}
+\item execution space：task 在 CPU threads、GPU threads 或其他设备上执行；
+\item memory space：数据位于 host memory、device memory、unified/shared memory 或分布式 rank-local memory。
+\end{itemize}
+只有 execution 和 memory 匹配，kernel 才能合法且高效访问数据。一个 portable view/container 的价值，是把 shape/stride/ownership 与底层 allocation 绑定，而不是假设所有指针在所有设备上都等价。
+
+\section{并行 Pattern 的可移植表达}
+
+最值得抽象的是稳定 pattern：
+\begin{itemize}
+\item parallel-for：Jacobi/residual/correction；
+\item parallel-reduce：norm/dot；
+\item team/tile policy：GPU block 或 CPU tile；
+\item memory view：多维索引与 stride；
+\item async task/dependency：halo readiness、kernel DAG。
+\end{itemize}
+Restriction/prolongation 可以继续表达为 gather parallel-for；这样同一算法结构可以映射到 OpenMP loop、CUDA kernel、HIP/SYCL kernel 或 Kokkos execution policy。
+
+\section{原生后端与可移植框架}
+
+原生 CUDA/HIP 通常提供最直接的 device control；OpenMP target、SYCL、Kokkos 等则试图提供更统一的执行与内存抽象。选择时应比较的不只是单 kernel 峰值，还包括：
+\begin{itemize}
+\item 多维 view/layout 是否能表达结构网格和 patch；
+\item reduction、team/tile、async dependency 是否自然；
+\item host/device/multi-GPU memory management 是否清晰；
+\item profiler 与调试工具是否足够；
+\item coarse-grid 特殊路径是否允许下沉到原生实现。
+\end{itemize}
+
+性能可移植框架不应该迫使所有后端采用同一个 tile size 或完全相同的 kernel fusion。\textbf{语义可移植，调度参数可后端特化}通常更现实。
+
+\section{避免泄漏硬件细节}
+
+如果数值层开始出现“warp size”“MPI rank”“NUMA node”等判断，说明抽象边界可能已经泄漏。更稳定的做法是数值层表达：
+\begin{equation}
+\text{parallel-for / reduction / halo dependency / memory view},
+\end{equation}
+后端层再决定这些语义如何实现。
+
+但抽象也不能抹掉必要信息。例如 line smoother 的 task 不是 pointwise；distributed halo 具有 owner/ghost 语义；这些属于算法本身，应保留在接口中，而不是为了“统一 API”伪装成普通 map。
+
+\section{性能可移植性的评价}
+
+可以把某后端性能相对该平台最佳实现定义为
+\begin{equation}
+\eta_a=\frac{P_{portable,a}}{P_{best,a}},
+\end{equation}
+但单个 kernel 的 $\eta_a$ 仍不足以评价 multigrid。更重要的是
+\begin{equation}
+T_{solve}=\sum_{\ell}\sum_{op}T_{\ell,op},
+\end{equation}
+包括粗层、transfer、reduction、communication 和 setup。一个框架若细层 stencil 很快但无法控制 coarse-grid redistribution，整体性能仍可能很差。
+
+\section{本章小结}
+
+异构可移植性的核心是稳定算法语义与可替换执行后端：task、ownership、memory view、reduction、halo dependency 必须被清楚表达；tile、thread/block、stream 和 backend-specific tuning 则允许特化。真正的评价对象是完整 V-cycle/solve，而不是某个孤立 kernel 能否跨平台运行。
+
+\section*{习题}
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 某 portable backend 在 CPU/GPU 上分别达到各自原生最佳性能的 85\%/72\%。计算简单几何平均效率，并讨论该指标忽略了什么。
+\item 给定 V-cycle 五类 operation 时间，分别计算两个后端的 total cycle time，判断单独 stencil 快 20\% 是否足以让整体更快。
+\item 一个 backend 需要每 cycle 额外做两次 host-device sync，各 15 $\mu$s。计算在 100 $\mu$s 与 2 ms cycle 上的相对开销。
+\end{enumerate}
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 说明为什么 execution-space 抽象不能自动解决 memory-space 正确性。
+\item 给出“语义可移植、调度参数后端特化”不会改变数值结果的条件。
+\item 证明若 abstraction 隐藏了 halo ownership，则分布式 stencil 无法仅凭 local parallel-for 保证全局正确性。
+\end{enumerate}
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 为 residual/restriction/prolongation 设计统一 kernel interface，并实现两个执行后端。
+\item 比较 AoS/SoA 或不同多维 layout 在 CPU/GPU 上的影响。
+\item 为同一 V-cycle 收集 backend-neutral phase timing。
+\end{enumerate}
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item 设计一个 backend abstraction，明确哪些概念必须暴露给数值层、哪些必须隐藏。
+\item 评审一个“所有硬件统一 tile size”的方案，指出性能可移植性风险。
+\item 为软件库选择原生 CUDA/HIP、OpenMP target、SYCL 或 Kokkos 时制定评价矩阵。
+\end{enumerate}

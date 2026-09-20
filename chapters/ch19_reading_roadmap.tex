@@ -1,0 +1,98 @@
+\chapter{文献与源码阅读方法}
+\label{ch:reading}
+
+\begin{keybox}
+\textbf{本章把前面的知识转化成阅读方法。}读论文时追踪“问题--算法--代价--证据”，读源码时追踪“一份数据在 V-cycle 中怎样移动”。不要从类名或 API 开始背诵。可以把全书前面的知识压缩成四条回查路径：数学机制回到\chapref{ch:iterative-smoothing}至\chapref{ch:lfa}；AMR 与复合离散回到\chapref{ch:amr-discretization}；并行数据路径回到\chapref{ch:shared-memory}至\chapref{ch:distributed-gpu}；软件 hierarchy 与 AMG setup 回到\chapref{ch:software}。读到陌生名词时先沿这些交叉引用回到它的心智模型，再继续读论文或源码。
+\end{keybox}
+
+\section{论文阅读框架}
+面对一篇 multigrid/HPC 论文，先写四行：求解什么 PDE/线性系统；采用什么 hierarchy、smoother 与 coarse solver；主要优化 compute、memory、sync 还是 communication；证据来自 convergence、time-to-solution、bandwidth 还是 scaling。四行写不出来，说明还没有抓住论文主问题。可以把这四行固定成一张阅读卡：
+\begin{enumerate}
+\item \textbf{数学对象：}PDE、离散、边界条件、矩阵性质是什么？
+\item \textbf{多重网格对象：}hierarchy 怎样构造，smoother、$R/P$、coarse operator、bottom solver 分别是什么？
+\item \textbf{执行对象：}数据放在哪里，哪个阶段发生同步/通信，粗层是否改变 rank/device 拓扑？
+\item \textbf{证据：}作者证明或测量的是 convergence、cost per cycle、time-to-solution、bandwidth、strong/weak scaling 中的哪一个？
+\end{enumerate}
+如果一个结论无法落到这四格中的某一格，就先不要把它当成可迁移的工程结论。
+
+
+\paragraph{先填一张假想论文的阅读卡。}
+设摘要只告诉我们：“作者为三维扩散问题设计 GPU multigrid，并报告多 GPU scaling。”不要立刻追 kernel 名称。第一遍只填四格：数学对象是三维扩散离散；多重网格对象至少要继续查 smoother、transfer 和 coarse solver；执行对象是 GPU + 分布式 halo；证据对象应同时寻找 convergence 与 scaling。若论文正文后来发现两种实现使用不同 smoother 或容差，阅读卡就会立刻暴露“性能数字不可直接归因于硬件”这一问题。这个 worked example 的目的不是替你读论文，而是展示四格框架怎样主动生成后续问题。
+
+\section{主题化阅读路线}
+
+\subsection{多重网格数学基础}
+
+建议先读 Brandt 的经典论文，理解多层方法为何有可能达到 $\Oh(N)$；然后用 Briggs--Henson--McCormick 的教程建立 two-grid/V-cycle 的可操作直觉；最后用 Trottenberg--Oosterlee--Schuller 深入 LFA、smoothing、coarse-grid approximation 与复杂问题\cite{brandt1977,briggs2000,trottenberg2001}。
+
+阅读时不要先记 V-cycle 伪代码，而要反复回答：
+\begin{equation}
+\text{当前操作正在消除哪个误差子空间？}
+\end{equation}
+
+\subsection{块结构几何多重网格}
+
+阅读 AMReX 的框架论文与 GPU/MLMG 文档\cite{zhang2019amrex,zhang2021amrex,amrexGPUdocs2026,amrexMLMGdocs2026}。重点不是类名，而是追踪一份数据：
+\begin{equation}
+\text{MultiFab}\rightarrow\text{Box}\rightarrow\text{MG coarsen}\rightarrow\text{halo}\rightarrow\text{kernel}.
+\end{equation}
+然后追踪 coarse level 何时发生 agglomeration/consolidation。
+
+\subsection{分布式代数多重网格}
+
+用 hypre BoomerAMG 理解“没有规则几何时 hierarchy 如何建立”\cite{falgout2002hypre,hypreBoomer2026}。建议把 setup 拆为：
+\begin{equation}
+\text{strength graph}\rightarrow\text{coarsening}\rightarrow\text{interpolation}\rightarrow RAP.
+\end{equation}
+再把 solve 拆为 smoother/SpMV/restriction/prolongation/coarse solve。这样才能理解 AMG 与 GMG 在 GPU 上为什么有不同热点。
+
+\subsection{性能可移植框架}
+
+MueLu/Kokkos 与 Ginkgo 代表两种很有价值的现代路径：一个强调大型 solver ecosystem 中的 performance portability，一个强调 accelerator-native backend 和可组合线性算子\cite{edwards2014kokkos,mueluDocs2026,tsai2023three}。
+
+\subsection{现代研究主题}
+
+建议按问题而不是按年份读：
+\begin{itemize}
+\item \textbf{低精度层级：}mixed/three-precision AMG\cite{tsai2023mixed,tsai2023three,zong2024fp16}；
+\item \textbf{新硬件单元：}Tensor Core AMG\cite{lu2024amgt}；
+\item \textbf{数据布局与通信协同：}fine-grain blocking GMG\cite{antepara2024brick}；
+\item \textbf{matrix-free 高算术强度：}GPU Stokes/high-order multigrid\cite{stokesgpu2025}；
+\item \textbf{大规模粗层通信：}non-Galerkin coarse grids 与 process reduction\cite{falgout2014nongalerkin}。
+\end{itemize}
+
+\section{本章小结}
+本章没有新的数学对象，目标是建立两种阅读路径：理论论文追踪误差空间与收敛机制；工程源码追踪数据所有权、内存位置、同步点和层级转换。遇到陌生术语时，应沿交叉引用回到首次建立该心智模型的章节，再带着已有定义阅读论文或源码中的具体实现。
+
+\section*{习题}
+
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 任选一个开源 3D 7-point stencil kernel，从源码逐行统计每 cell 的显式 FLOP、数组读取/写入和理论 bytes，计算 arithmetic intensity，并与项目 benchmark 报告比较。
+\item 从一个实际 V-cycle trace 中记录各 level unknowns 与时间，计算每 unknown 时间、相邻层工作量缩减比和 coarse overhead 比例。
+\item 任选一篇论文中的 scaling 图，读取至少四个数据点，重新计算 speedup/efficiency；检查作者的结论是否与数据一致。
+\item 对一个开源 AMG hierarchy 的日志，利用每层 unknowns 与 nnz 计算 grid/operator complexity，并与论文或文档报告对照。
+\end{enumerate}
+
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 选择源码中的一个 residual/stencil kernel，把代码还原成数学算子，证明它与书中对应离散式等价（忽略边界处理差异）。
+\item 选择一个 restriction/prolongation 实现，从索引和权重推导其数学矩阵 $R$ 或 $P$，并检查是否保持常数。
+\item 选择一篇 multigrid 论文中的核心复杂度结论，依据论文给出的层级缩放假设重新完成推导，而不是直接引用作者结论。
+\end{enumerate}
+
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 任选一个开源 solver，成功构建并运行最小 Poisson case；记录 build 配置、问题规模、solver 参数和 residual history。
+\item 沿源码调用链追踪一次 V-cycle：从外层 solve 到 pre-smooth、residual、restriction、coarse solve、prolongation、post-smooth，画出调用图并标注数据结构。
+\item 在不改变数学算法的前提下加入一个计时器或 profiler marker，验证你能从运行结果定位到某一个书中定义的阶段。
+\item 复现论文或官方文档中的一个小 benchmark；若无法复现绝对数字，至少比较趋势并分析硬件/版本差异。
+\end{enumerate}
+
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item 用四格阅读卡整理一篇论文：“数学对象、多重网格对象、执行对象、证据”。任何无法落入四格的术语都必须继续追踪定义。
+\item 若论文只报告 kernel bandwidth，没有 residual history、iteration count 或 time-to-solution，列出哪些性能结论可以成立、哪些不能成立。
+\item 对一个开源 solver，回答 hierarchy 在哪里构造、transfer 在哪里执行、coarse topology 何时变化，并把每个答案交叉映射到本书相应章节。
+\item 写一份 2 页源码审查报告：一个数值设计选择、一个性能设计选择、一个你会进一步验证的假设。所有结论必须附代码位置或实测证据。
+\end{enumerate}

@@ -1,0 +1,167 @@
+\documentclass[11pt,openany]{ctexbook}
+
+\usepackage[a4paper,margin=2.3cm,headheight=14pt]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm}
+\usepackage{physics}
+\usepackage{booktabs,longtable,tabularx,array,multirow}
+\usepackage{siunitx}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,shapes.geometric,decorations.pathreplacing}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage[most]{tcolorbox}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{microtype}
+\setlength{\emergencystretch}{2em}
+\usepackage{fancyhdr}
+\usepackage{csquotes}
+\usepackage[backend=biber,style=numeric-comp,sorting=none,maxbibnames=20]{biblatex}
+\addbibresource{references.bib}
+
+\definecolor{deepblue}{RGB}{33,68,112}
+\definecolor{softblue}{RGB}{237,243,249}
+\definecolor{softgray}{RGB}{246,247,249}
+\definecolor{softgreen}{RGB}{239,247,241}
+\definecolor{softorange}{RGB}{252,246,235}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=deepblue,
+  citecolor=deepblue,
+  urlcolor=deepblue,
+  pdftitle={并行多重网格方法},
+  pdfauthor={OpenAI}
+}
+
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.15em}
+\setlist[itemize]{leftmargin=2em,itemsep=0.25em,topsep=0.35em}
+\setlist[enumerate]{leftmargin=2.2em,itemsep=0.25em,topsep=0.35em}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE]{\small 并行多重网格方法}
+\fancyhead[RO]{\small\leftmark}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+\newtheorem{definition}{定义}[chapter]
+\newtheorem{theorem}{定理}[chapter]
+\newtheorem{proposition}{命题}[chapter]
+\newtheorem{remark}{注}[chapter]
+
+\newtcolorbox{keybox}[1][]{
+  colback=softblue,colframe=deepblue,boxrule=0.6pt,arc=2pt,
+  left=6pt,right=6pt,top=5pt,bottom=5pt,#1
+}
+\newtcolorbox{engineeringbox}[1][]{
+  colback=softgreen,colframe=green!45!black,boxrule=0.6pt,arc=2pt,
+  left=6pt,right=6pt,top=5pt,bottom=5pt,#1
+}
+\newtcolorbox{warningbox}[1][]{
+  colback=softorange,colframe=orange!65!black,boxrule=0.6pt,arc=2pt,
+  left=6pt,right=6pt,top=5pt,bottom=5pt,#1
+}
+
+\newtcolorbox{checkpointbox}[1][]{
+  colback=softgray,colframe=black!45,boxrule=0.5pt,arc=2pt,
+  left=6pt,right=6pt,top=5pt,bottom=5pt,#1
+}
+
+\newcommand{\Oh}{\mathcal{O}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Ah}{A_h}
+\newcommand{\AH}{A_H}
+\newcommand{\Rh}{R_h^H}
+\newcommand{\Ph}{P_H^h}
+\newcommand{\Eh}{E_h}
+\newcommand{\Sh}{S_h}
+\newcommand{\normA}[1]{\left\lVert #1\right\rVert_A}
+\newcommand{\avg}[1]{\left\langle #1\right\rangle}
+\newcommand{\chapref}[1]{第\ref{#1}章}
+\newcommand{\secref}[1]{第\ref{#1}节}
+
+\title{\Huge 并行多重网格方法\\[0.6em]
+\Large 数学原理、并行算法与异构实现}
+\author{以几何多重网格为主线，结合 AMReX、hypre、PETSc、MueLu、Ginkgo 与 AmgX}
+\date{2026 年 9 月}
+
+\begin{document}
+\let\cleardoublepage\clearpage
+\frontmatter
+\maketitle
+
+\input{frontmatter/usage_guide}
+
+\tableofcontents
+\mainmatter
+
+\part{数学基础与多重网格算法}
+
+\input{chapters/ch01_discretization}
+
+\input{chapters/ch02_amr_discretization}
+
+\input{chapters/ch03_iterative_smoothing}
+
+\input{chapters/ch04_two_grid}
+
+\input{chapters/ch05_multigrid_cycles}
+
+\input{chapters/ch06_lfa}
+
+\part{并行算法与异构执行}
+
+\input{chapters/ch07_parallel_model}
+
+\input{chapters/ch08_mg_parallel_operations}
+
+\input{chapters/ch09_shared_memory}
+
+\input{chapters/ch10_gpu_cuda}
+
+\input{chapters/ch11_mpi}
+
+\input{chapters/ch12_distributed_gpu}
+
+\input{chapters/ch13_portability}
+
+\part{软件实现与性能工程}
+
+\input{chapters/ch14_gmg_amg_software}
+
+\input{chapters/ch15_benchmarking}
+
+\input{chapters/ch16_diagnosis}
+
+\input{chapters/ch17_architecture_design}
+
+\part{现代方法与研究进展}
+
+\input{chapters/ch18_modern_methods}
+
+\input{chapters/ch19_reading_roadmap}
+
+\appendix
+
+\input{appendices/appA_galerkin}
+
+\input{appendices/appB_variable_coefficient}
+
+\input{appendices/appC_communication_complexity}
+
+\input{appendices/appD_comprehensive_exercises}
+
+\backmatter
+\input{backmatter/conclusion}
+
+\begin{sloppypar}
+\printbibliography[heading=bibintoc,title={参考文献与项目文档}]
+\end{sloppypar}
+
+\end{document}

@@ -1,0 +1,125 @@
+\chapter{分布式 GPU 多重网格}
+\label{ch:distributed-gpu}
+
+\begin{keybox}
+分布式 GPU 同时存在两层所有权：\textbf{MPI rank 拥有全局子域，GPU device 承载该 rank 的计算与数据}。因此优化必须同时处理 rank 间通信路径和 device 内 kernel/data locality。把单 GPU 与 MPI 两章简单叠加并不够；关键是让 owned/ghost、host/device residency 与 coarse rank-set 变化彼此一致。
+\end{keybox}
+
+\section{Rank--Device 映射与两层数据所有权}
+
+最常见的配置是一 rank 一 GPU。rank $p$ 的逻辑状态仍是
+\begin{equation}
+u_p^{local}=\{u_p^{owned},u_p^{ghost}\},
+\end{equation}
+但这些数组主要驻留在 device memory。于是所有权关系分成两层：
+\begin{equation}
+\text{global cell}
+\rightarrow\text{MPI owner rank}
+\rightarrow\text{device-resident local index}.
+\end{equation}
+
+如果一个 rank 驱动多个 GPUs，还要再做 rank 内 device partition；如果多个 ranks 共享一个 GPU，则必须考虑 device context 与资源竞争。教材后面默认一 rank 一 GPU，因为它最清楚地展示通信与计算关系。
+
+\section{GPU-Aware 通信路径}
+\label{sec:gpu-aware-path}
+
+传统 staged 路径把 device halo 拷到 host buffer，再由 MPI 发送；接收后再拷回 device：
+\begin{equation}
+D\rightarrow H\rightarrow\text{network}\rightarrow H\rightarrow D.
+\end{equation}
+GPU-aware MPI 或等价能力允许 MPI 直接接受 device pointer，使逻辑路径接近
+\begin{equation}
+D\rightarrow\text{network}\rightarrow D.
+\end{equation}
+是否真正走 GPUDirect/RDMA 仍取决于系统栈，但算法层可以明确区分“必须 host staging”与“device buffer 可直接参与通信”。
+
+重要的是，GPU-aware 并没有消除 halo exchange；它只改变了\chapref{ch:mpi}同一个 owned-to-ghost 数据流经过哪些内存层次。
+
+\section{Halo Pack、通信与 Boundary Kernel}
+
+如果 halo 在内存中不是连续区域，通常需要 pack kernel 把边界数据写入连续 send buffer。典型时间线为
+\begin{equation}
+\text{pack}
+\rightarrow\text{MPI send/recv}
+\rightarrow\text{unpack}
+\rightarrow\text{boundary stencil}.
+\end{equation}
+在通信期间可以执行不依赖 ghost 的 interior kernel。于是 overlap 需要同时满足：
+\begin{enumerate}
+\item 通信真正异步推进；
+\item interior work 足够长；
+\item pack/unpack 与 compute 的 stream/dependency 安排正确；
+\item 不因额外同步把重叠重新串行化。
+\end{enumerate}
+
+三维分区中 face halos 最大，edge/corner halos 较小但消息更碎。宽 stencil 或 higher-order transfer 会增加 halo thickness，也可能扩大 pack region。
+
+\section{多 GPU V-Cycle 的双层 DAG}
+
+每个 level 同时具有 device kernel DAG 与 MPI communication DAG。以 residual 为例：
+\begin{equation}
+\begin{aligned}
+&\text{device pack halo}\rightarrow\text{network communication}\rightarrow\text{device unpack},\\
+&\text{interior residual}\quad\parallel\quad\text{communication},\\
+&\text{ghost ready}\rightarrow\text{boundary residual}.
+\end{aligned}
+\end{equation}
+Restriction、prolongation、coarse redistribution 也需要同时考虑 device data movement 与 rank ownership changes。因此“GPU kernel 很快”并不能保证多 GPU V-cycle 快；如果 kernel 被网络或全局 reduction 的关键路径串住，单 kernel 优化收益会被削弱。
+
+\section{粗网格的双重并行度塌缩}
+
+粗化会同时减少：
+\begin{itemize}
+\item 每 GPU 上可执行的 threads/blocks；
+\item 全局上值得继续保持活跃的 ranks/GPUs。
+\end{itemize}
+所以多 GPU coarse problem 比单 GPU 更容易进入低利用率区。保持所有 GPUs 活跃会出现“小 kernel + 小消息 + 高 latency”；过早收缩又会支付 redistribution 成本。
+
+一种层级策略是设置最小 cells/GPU 阈值：当
+\begin{equation}
+\frac{N_\ell}{P_\ell}<n_{gpu,min}
+\end{equation}
+时，把 coarse data 聚合到更少 ranks/GPUs。之后后续 levels 只在缩小后的 communicator 上执行。最粗层还可以转 CPU direct solve，但必须把 device--host transfer 纳入成本。
+
+\section{全局 Reduction 与 Krylov 外循环}
+
+多 GPU Krylov+MG 中，一次外层 iteration 可能包含：operator apply、若干 dot products/global reductions、一次 MG preconditioner，以及 vector updates。MG 内部主要是 nearest-neighbor halo，而 Krylov dot product 需要 global collective。两类通信具有不同的扩展特性。
+
+因此性能 trace 应区分：
+\begin{equation}
+T_{Krylov}=T_{SpMV}+T_{global\ reduce}+T_{MG\ preconditioner}+T_{vector}.
+\end{equation}
+预条件部分的数学角色将在\secref{sec:mg-preconditioner}进一步展开；这里先保留执行结构。
+
+\section{本章小结}
+
+分布式 GPU 多重网格是“rank 所有权 + device residency”的双层映射。GPU-aware MPI 改变数据路径而不改变 halo 语义；通信重叠依赖 interior work 与异步推进；粗化同时削弱 device occupancy 和 rank-level parallelism，因此 coarse redistribution 往往是多 GPU scalability 的核心设计点。
+
+\section*{习题}
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 一个 device halo 为 8 MB，PCIe D2H/H2D 各 20 GB/s，网络 25 GB/s。估算 staged 路径的数据搬运时间下界，并与忽略 host staging 的 GPU-aware 路径比较。
+\item 64 GPUs 上 $512^3$ 网格连续 coarsen，计算每层 cells/GPU；给定阈值 32768 cells/GPU，决定从哪层开始收缩 GPU 数。
+\item pack kernel 8 $\mu$s、network 20 $\mu$s、unpack 6 $\mu$s、interior kernel 30 $\mu$s。计算理想完全重叠与完全串行两种时间。
+\item 外层 Krylov 每步 2 次 allreduce，各 10 $\mu$s；MG preconditioner 120 $\mu$s。计算 reduction 占 iteration 比例。
+\end{enumerate}
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 建立 staged 与 direct-device halo path 的成本模型并推导 break-even 条件。
+\item 说明为何 GPU-aware MPI 不改变离散算子的数学结果，只改变数据移动路径。
+\item 推导 communicator shrink 后 redistribution 成本需要满足的 break-even 不等式。
+\item 解释 nearest-neighbor halo 与 global allreduce 在依赖图中的范围差异。
+\end{enumerate}
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 实现 device pack/unpack + MPI halo，验证与 host staging 版本数值一致。
+\item 使用 streams/nonblocking MPI 尝试 overlap interior compute 与 halo communication。
+\item 记录多 GPU V-cycle trace，分离 pack、network、unpack、interior、boundary 时间。
+\item 实现简单 communicator shrink 原型并比较 coarse-level 时间。
+\end{enumerate}
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item 设计 rank/device/stream 的映射规则，说明它如何避免跨 NUMA socket 的错误 GPU affinity。
+\item 对“单 GPU kernel 优化 2 倍但多 GPU总时间只改善 8\%”建立可能的因果解释。
+\item 比较把 bottom solve 留在 GPU 与搬到 CPU 的条件。
+\end{enumerate}

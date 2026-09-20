@@ -1,0 +1,203 @@
+\chapter{性能评测方法}
+\label{ch:benchmarking}
+
+\begin{keybox}
+\textbf{本章先回答“怎样比较才算公平”。}并行求解器基准测试的第一步不是计时，而是确认两种实现实际上求解了同一个离散问题、使用了可比的算法参数，并且达到相同的数值精度。
+\end{keybox}
+
+\section{基准测试的可比性与数值等价性}
+\textbf{基准测试（benchmark）}用于在受控条件下比较不同实现或配置。假设 CUDA 版本使用 weighted Jacobi，每个 V-cycle 做 2+2 次平滑；CPU 版本使用 RBGS，每个 cycle 做 1+1 次平滑，而且两边停止容差不同。即使最后得到两个 wall time，也不能把差异直接归因于 CUDA 与 CPU。一个有效 benchmark 必须同时固定问题、算法和停止条件，再分别观察 convergence 与 cost per cycle。
+
+
+\subsection{数值等价性与实验变量控制}
+
+至少固定：
+\begin{itemize}
+\item PDE、系数、边界条件；
+\item 网格与 AMR hierarchy；
+\item smoother 类型与 $\nu_1,\nu_2$；
+\item cycle 类型；
+\item bottom solver；
+\item stopping tolerance 与 norm 定义；
+\item 初值；
+\item 精度 FP64/FP32；
+\item 是否重用 hierarchy/setup。
+\end{itemize}
+否则“CUDA 比 OpenMP 快 5 倍”可能只是两边执行了不同的迭代次数或不同的数学算法。
+
+\paragraph{一张最小 benchmark 卡。}
+假设目标只是比较 CPU 与 GPU 的执行后端，可以先冻结如下数学路径：三维常系数 Poisson、同一 $256^3$ 网格、同一 Dirichlet 边界、weighted Jacobi $2+2$ sweep、同一 V-cycle、相同初值和相同相对残差容差。随后分别记录
+\begin{equation}
+\{N_{cycle},\ T_{setup},\ T_{cycle},\ T_{solve},\ \|r_{final}\|\}.
+\end{equation}
+如果两端的 $N_{cycle}$ 或残差历史不同，应先解释数值路径为什么改变；只有数值行为可比以后，wall time 才能用于讨论执行后端。这个例子是实验设计模板，而不是某个硬件的性能结论。
+
+\section{基准问题设计}
+
+一个最小但有诊断价值的 benchmark suite 应包括：
+\begin{enumerate}
+\item 2D constant-coefficient Poisson，规则矩形；
+\item 3D constant-coefficient Poisson；
+\item variable coefficient diffusion；
+\item 强各向异性问题，测试 semicoarsening/smoother；
+\item 多 patch block-structured geometry；
+\item AMR coarse-fine interface；
+\item 纯 Neumann/periodic null-space case；
+\item 若实际应用有 EB，再加入 cut-cell case。
+\end{enumerate}
+
+每个 case 应先做 manufactured solution：给定 $u^\star$，通过连续或离散算子生成 $b$，然后测
+\begin{equation}
+E_2=\frac{\|u-u^\star\|_2}{\|u^\star\|_2},
+\qquad
+E_\infty=\|u-u^\star\|_\infty.
+\end{equation}
+
+\section{强缩放与弱缩放}
+\label{sec:scaling}
+
+\textbf{强缩放（strong scaling）}固定全局问题规模，只增加并行资源。实际大问题常常无法在单 rank 或单 GPU 上运行，因此不应把基准强行写死为 $P=1$。选一个能够运行且定义明确的基准资源数 $P_0$，定义
+\begin{equation}
+S(P;P_0)=\frac{T(P_0)}{T(P)},
+\qquad
+\eta_{strong}(P;P_0)=\frac{S(P;P_0)}{P/P_0}.
+\label{eq:strong-scaling}
+\end{equation}
+它回答的是：固定同一个全局离散系统以后，增加资源还能把 wall time 降低多少？\chapref{ch:mpi}的式~\eqref{eq:mpi-surface-volume-ratio}已经从 surface/volume 与 latency 解释了为什么这种效率最终会下降。
+
+\textbf{弱缩放（weak scaling）}则保持每个 rank/GPU 的局部工作量近似不变，让全局问题随资源数一起增大。以同样的基准资源数 $P_0$ 定义
+\begin{equation}
+\eta_{weak}(P;P_0)=\frac{T(P_0)}{T(P)}.
+\label{eq:weak-scaling}
+\end{equation}
+若算法和机器网络理想可扩展，$T(P)$ 应接近常数，因而 $\eta_{weak}$ 接近 1。它更适合观察网络拓扑、global reductions、coarse-grid process reduction 以及 hierarchy setup 是否能跟随系统规模增长。
+
+\begin{keybox}
+强缩放和弱缩放不是两个不同的“画图方式”，而是在回答两个不同问题：前者问“同一个问题能否更快”，后者问“机器变大时能否保持单位资源效率”。
+\end{keybox}
+
+\section{重复测量与统计}
+
+并行性能具有运行间波动，因此单次 wall time 不能代表稳定性能。一个基本流程是：先做若干次 warm-up（正式计时前的预运行），使 JIT（just-in-time compilation，运行时首次生成/优化代码）、缓存、内存池（预先保留并复用的分配空间）和 GPU context（设备运行时上下文）等一次性成本进入稳定状态；随后做多次独立计时，并报告样本分布而不是只给一个平均值。
+
+若测得时间样本 $t_1,\ldots,t_m$，至少建议报告中位数（median）以及一个离散程度指标，例如四分位距（IQR）或最小/最大值。对存在明显系统噪声的 HPC 环境，中位数通常比算术平均更不容易被少量异常慢样本拖动。
+
+还必须明确计时边界。Setup、第一次数据迁移、一次 V-cycle、完整 solve、输出与 checkpoint 不能混在同一个数字里。后文\chapref{ch:diagnosis}的 profiler 诊断只有在计时边界稳定时才有意义。
+
+\section{逐层性能计数}
+
+建议对每层记录：
+\begin{equation}
+\{N_\ell,\#boxes_\ell,\#ranks_\ell,T_{smooth},T_{res},T_R,T_P,T_{halo},T_{bottom}\}.
+\end{equation}
+对显式稀疏/AMG hierarchy，还应记录 $\mathrm{nnz}(A_\ell)$，并用\chapref{ch:software}的式~\eqref{eq:grid-complexity}与式~\eqref{eq:operator-complexity}报告 grid/operator complexity。否则两个 solve 时间相近的配置，可能具有完全不同的 setup 内存和粗层稠密化成本。
+GPU 再增加：
+\begin{equation}
+\{\text{kernel duration},\text{achieved bandwidth},\text{occupancy},\text{L2 hit},\text{launch count}\}.
+\end{equation}
+CPU/OpenMP 增加：
+\begin{equation}
+\{\text{memory bandwidth},\text{LLC misses},\text{NUMA remote traffic},\text{barrier time}\}.
+\end{equation}
+MPI 增加：
+\begin{equation}
+\{\text{message count},\text{bytes},\text{wait time},\text{Allreduce time}\}.
+\end{equation}
+
+如果只看总时间，你只能知道“慢”；逐层数据才能回答“从第几层开始变慢，以及为什么”。
+
+\section{端到端求解成本}
+
+\subsection{收敛因子与 Time-to-Solution}
+
+测每 V-cycle residual reduction：
+\begin{equation}
+\rho_k=\frac{\|r^{(k+1)}\|}{\|r^{(k)}\|}.
+\end{equation}
+稳定区间可用几何平均估计 asymptotic convergence factor：
+\begin{equation}
+\bar\rho=\biggl(\frac{\|r^{(m)}\|}{\|r^{(0)}\|}\biggr)^{1/m}.
+\end{equation}
+然后同时报告：
+\begin{equation}
+T_{cycle},\qquad \bar\rho,\qquad T_{solve}.
+\end{equation}
+
+例如 smoother A 使 $\rho=0.08$ 但 cycle 时间 \SI{10}{ms}；smoother B 使 $\rho=0.2$ 但 cycle 只要 \SI{3}{ms}。若达到 $10^{-8}$：
+\begin{equation}
+N_A\approx\frac{\ln10^{-8}}{\ln0.08}\approx7.3,
+\qquad
+N_B\approx\frac{\ln10^{-8}}{\ln0.2}\approx11.4.
+\end{equation}
+粗略总时间分别约 \SI{73}{ms} 与 \SI{34}{ms}。只比较收敛因子会得出错误结论。
+
+\subsection{Setup 与 Solve 成本}
+
+GMG hierarchy 通常便宜，但 AMR regrid 后也可能需要重建；AMG setup 则可能很昂贵。总成本应写成
+\begin{equation}
+T_{total}=T_{setup}+N_{reuse}T_{solve}.
+\end{equation}
+当同一矩阵重复求解很多次，昂贵 setup 可以摊薄；若每个时间步矩阵结构都改变，setup 性能可能比 solve 更重要。
+
+\section{性能剖析层级}
+\label{sec:setup-solve}
+
+\begin{verbatim}
+solve
+  setup / hierarchy rebuild
+  vcycle
+    level 0
+      fill boundary / halo
+      pre-smooth
+      residual
+      restrict
+    level 1
+      ...
+    bottom solve
+    level 1
+      prolong + correction
+      post-smooth
+    level 0
+      prolong + correction
+      post-smooth
+  residual norm / convergence test
+\end{verbatim}
+
+这棵树应该在 CPU、MPI、GPU 版本中保持相同语义。只有这样，profile 才能跨实现比较。
+
+\section{本章小结}
+本章把性能评测组织成一条顺序：先确认数值等价，再固定实验变量；随后用 warm-up 与重复采样获得稳定时间分布；再分别做 strong/weak scaling、逐层计数和 convergence/time-to-solution 分析；最后区分 setup 与 solve。所有性能数字都必须绑定到明确的问题规模、硬件、数值容差、计时边界和样本统计。
+
+\section*{习题}
+
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 某 benchmark 运行时间为 $[10.2,10.0,9.9,10.1,35.0]$ ms。先排序；采用 Tukey 约定（奇数样本的总体中位数不再计入上下半组）计算均值、中位数、$Q_1,Q_3$ 与 IQR，并判断哪一个统计量更适合报告典型性能。
+\item 强缩放基准在 $P=4,8,16,32$ 时耗时为 $80,43,24,16$ s。以 $P_0=4$ 为基准计算 speedup 与 parallel efficiency。
+\item 弱缩放中每 rank 固定 $10^6$ unknowns，$P=1,8,64$ 时耗时为 $1.0,1.08,1.35$ s。计算相对弱缩放效率。
+\item 一个 solver setup=2 s、每次 solve=0.1 s；另一个 setup=0.2 s、每次 solve=0.14 s。求两者总时间相等时的 reuse 次数，并判断重复 1、20、100 次时谁更快。
+\item smoother A 每 cycle 8 ms、convergence factor 0.15；B 每 cycle 5 ms、factor 0.30。假设初始 residual 为 1，计算达到 $10^{-8}$ 所需 cycles 与总时间。
+\end{enumerate}
+
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 从 speedup 定义推导以任意基准资源数 $P_0$ 定义的 strong-scaling efficiency，说明为什么不必假设单 rank 能运行。
+\item 推导 setup/solve 总成本 $T=T_{setup}+N_{reuse}T_{solve}$ 的 break-even reuse 次数公式。
+\item 对几何收敛 $\|r_k\|\approx q^k\|r_0\|$ 推导达到 tolerance $\varepsilon$ 所需 cycle 数。
+\item 说明为什么只有在 PDE、离散、停止准则和初值等数值路径等价时，性能比较才有可解释性；构造一个“更快只是因为少做了迭代”的反例。
+\end{enumerate}
+
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 写一个 benchmark harness：warm-up 后重复至少 15 次，输出 median、IQR、min/max，并保存原始样本。
+\item 实现 manufactured solution convergence test，自动对多组 $h$ 计算误差和实验阶，若阶数偏离预期则报错。
+\item 对同一 V-cycle 自动生成 strong/weak scaling 表和图，同时记录每 level local problem size。
+\item 实现 setup/solve 分离计时，并模拟不同 $N_{reuse}$ 计算摊销后的总成本。
+\end{enumerate}
+
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item 设计一张 CPU vs GPU benchmark card，列出必须固定的数值条件和必须分别测量的性能指标。
+\item 为什么只报告“最快一次”容易误导？结合 warm-up、JIT、cache、系统噪声说明。
+\item 设计一个 release-blocking benchmark 集：至少包含常系数、变系数、AMR、null-space 与并行缩放问题，并说明每类在验证什么。
+\end{enumerate}

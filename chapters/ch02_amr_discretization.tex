@@ -1,0 +1,1465 @@
+\chapter{自适应网格离散}
+\label{ch:amr-discretization}
+
+\chapref{ch:discretization}建立了单层规则网格上的离散链条：连续椭圆方程经过控制体或差分近似、边界闭合与全局装配，最终形成线性系统 $A\bm u=\bm b$。本章保持同一个连续问题不变，只改变\textbf{离散空间的几何分辨率}：不同物理区域允许使用不同网格尺度。
+
+这一步的本质并不是“把局部网格间距从 $h$ 换成 $h/2$”。局部细化以后，同一物理位置可能同时存在粗层存储和细层存储，但复合离散只能保留一套独立物理自由度；粗、细控制体在接口处具有不同的中心距离与面划分；一个 coarse face 可能被多个 fine faces 覆盖；fine stencil 在 patch 边缘还需要由 coarse data 提供离散延拓。于是 AMR 的核心问题可以表述为：\textbf{怎样从若干规则 Cartesian 子网格构造一个仍然一致、守恒并具有可分析代数结构的复合离散算子。}
+
+\begin{keybox}
+\textbf{本章的概念主线是离散空间与算子的构造，而不是 AMR 数据结构本身：}
+\[
+\boxed{
+\text{局部细化几何}
+\rightarrow
+\text{复合离散空间 }V(\mathcal H)
+\rightarrow
+\text{复合控制体集合}
+\rightarrow
+\text{coarse--fine 数值通量}
+}
+\]
+\[
+\boxed{
+\text{离散延拓与同步}
+\rightarrow
+\text{复合算子 }A_{\mathrm{comp}}
+\rightarrow
+\text{守恒性、零空间与一致性}
+\rightarrow
+\text{regridding 下的空间转移}
+}
+\]
+本章中的 level 始终表示\textbf{物理离散层级（AMR level）}。服务于误差消除的 multigrid level 将在后文单独定义。
+\end{keybox}
+
+为了把 coarse--fine interface 上的守恒与一致性分析写清楚，本章固定以\textbf{cell-centered、block-structured AMR 上的标量椭圆型有限体积离散}作为主模型。规则 Cartesian patch 内部的离散行在很多情形下与守恒形式有限差分具有相同代数模板，但跨层接口仍从控制体积分和 numerical face flux 出发构造。nodal discretization、finite element AMR、embedded boundary 等扩展具有不同自由度语义与接口条件，不在本章公式的默认假设内。
+
+\section{局部细化、层级几何与复合离散空间}
+\label{sec:amr-hierarchy-space}
+
+\subsection{细化比与层级几何}
+
+先从一维开始。设第 $\ell$ 层网格尺度为 $h_\ell$，局部细化后的下一层尺度为 $h_{\ell+1}$。若
+\begin{equation}
+ h_\ell=r_\ell h_{\ell+1},
+ \qquad r_\ell\in\mathbb N,
+\label{eq:amr-refinement-ratio}
+\end{equation}
+则 $r_\ell$ 称为从 level $\ell$ 到 level $\ell+1$ 的\textbf{细化比（refinement ratio）}。块结构 AMR 通常使用整数细化比，因为这样 coarse cell、fine cell 以及 coarse face、fine face 之间具有确定的嵌套覆盖关系。本章主要以 $r=2$ 为例；一般 $r$ 只改变一个 coarse cell 中包含的 fine cells 数量以及一个 coarse face 对应的 fine faces 数量，不改变后续守恒与耦合的基本结构。
+
+若粗层 $\mathcal L_0$ 覆盖整个计算域，并在局部区域增加 $\mathcal L_1$，就得到最简单的两层 hierarchy。继续在 $\mathcal L_1$ 的局部区域细化可得到 $\mathcal L_2$，依此类推。这里的层级是\textbf{物理离散层级}：层号越高，空间分辨率越高，但各层仍表示同一个连续 PDE。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1.08cm,y=1cm,font=\small]
+  \draw[thick] (0,0)--(8,0);
+  \foreach \x in {0,2,4,6,8}{\draw[thick] (\x,-0.12)--(\x,0.12);}
+  \node at (1,0.38) {$C_0$};
+  \node at (3,0.38) {$C_1$};
+  \node at (5,0.38) {$C_2$};
+  \node at (7,0.38) {$C_3$};
+  \draw[thick] (2,-0.8)--(6,-0.8);
+  \foreach \x in {2,3,4,5,6}{\draw[thick] (\x,-0.92)--(\x,-0.68);}
+  \node at (2.5,-1.18) {$F_0$};
+  \node at (3.5,-1.18) {$F_1$};
+  \node at (4.5,-1.18) {$F_2$};
+  \node at (5.5,-1.18) {$F_3$};
+  \draw[-{Latex}] (4,0.15)--(4,-0.62);
+  \node[right] at (4.06,-0.27) {$r=2$};
+  \draw[decorate,decoration={brace,mirror,amplitude=4pt}] (2,-1.45)--(6,-1.45)
+    node[midway,below=5pt]{细层覆盖区域};
+\end{tikzpicture}
+\caption{两层一维 AMR。粗层覆盖整个区域，细层只覆盖局部区域。细层的存在不会自动使覆盖区域内的 coarse 与 fine values 都成为复合离散的独立自由度。}
+\label{fig:amr-hierarchy-one-dimensional}
+\end{figure}
+
+\subsection{块结构 hierarchy 的数学表示}
+
+真正的 block-structured AMR 通常不逐个管理零散的 fine cells，而是把相邻细单元组织成矩形或长方体 patch。为了把“patch 是一个软件对象”和“patch 决定离散空间”区分开，先给出一个最小的数学表示。
+
+记第 $\ell$ 层的规则 Cartesian 网格为 $\mathcal G_\ell$，该层实际存在的 patch 集合为
+\begin{equation}
+\mathcal B_\ell
+=\{B_{\ell,1},B_{\ell,2},\ldots,B_{\ell,N_\ell}\},
+\end{equation}
+每个 $B_{\ell,k}$ 都是 $\mathcal G_\ell$ 上若干完整网格单元的轴对齐并集。相应的 level coverage 定义为
+\begin{equation}
+\Omega_\ell^{\mathrm{patch}}
+=
+\bigcup_{B\in\mathcal B_\ell} B.
+\label{eq:amr-level-coverage}
+\end{equation}
+于是一个 AMR hierarchy 可以抽象成
+\begin{equation}
+\boxed{
+\mathcal H
+=
+\left(
+\left\{(\mathcal G_\ell,\mathcal B_\ell)\right\}_{\ell=0}^{L},
+\left\{r_\ell\right\}_{\ell=0}^{L-1}
+\right).
+}
+\label{eq:amr-hierarchy-definition}
+\end{equation}
+这里 $\mathcal B_\ell$ 决定“第 $\ell$ 层在哪些物理区域存在”，而 $\mathcal G_\ell$ 决定这些区域内部的规则离散几何。数据结构中的 box、patch descriptor、array allocation 都是在实现这个几何对象，而不是它的数学定义本身。
+
+\subsection{有效单元、覆盖单元与复合自由度}
+
+设 $\mathcal C_\ell$ 为第 $\ell$ 层所有 patch 中的 cells。若一个 coarse cell 的物理区域已经完全由下一层覆盖，则记为 covered cell。对 $\ell<L$，在对齐且整比细化时可以写成
+\begin{equation}
+\mathcal C_\ell^{\mathrm{covered}}
+=
+\left\{
+C\in\mathcal C_\ell:
+C\subset\Omega_{\ell+1}^{\mathrm{patch}}
+\right\}.
+\end{equation}
+约定最细层 $\mathcal C_L^{\mathrm{covered}}=\varnothing$，并令当前层真正进入复合离散的单元集合为
+\begin{equation}
+\boxed{
+\mathcal V_\ell
+=
+\mathcal C_\ell\setminus
+\mathcal C_\ell^{\mathrm{covered}}.
+}
+\label{eq:amr-valid-set}
+\end{equation}
+$\mathcal V_\ell$ 中的 cells 称为 valid cells。于是 cell-centered 标量的复合离散空间可以写成
+\begin{equation}
+\boxed{
+V(\mathcal H)
+=
+\prod_{\ell=0}^{L}
+\mathbb R^{|\mathcal V_\ell|},
+}
+\label{eq:amr-composite-space}
+\end{equation}
+而复合未知量只是这个空间中的一个向量：
+\begin{equation}
+\bm u_{\mathrm{comp}}
+=
+\left\{
+\bm u^{(\ell)}|_{\mathcal V_\ell}
+\right\}_{\ell=0}^{L}.
+\label{eq:amr_valid_unknowns}
+\end{equation}
+
+在标准嵌套条件下，所有 valid cells 的内部互不重叠，并共同给出计算域的一套复合控制体划分：
+\begin{equation}
+\Omega
+=
+\bigcup_{\ell=0}^{L}
+\bigcup_{C\in\mathcal V_\ell}C,
+\qquad
+\operatorname{int}(C)\cap\operatorname{int}(D)=\varnothing
+\quad(C\neq D).
+\label{eq:amr-composite-partition}
+\end{equation}
+这个“无重复覆盖”的性质才是后面定义复合积分、全局守恒和误差范数的基础。
+
+\begin{warningbox}
+\textbf{存储存在不等于自由度存在。}covered coarse cell 可以继续保存在数组中，用于 coarse-to-fine interpolation、average-down、regridding 或粗尺度输出；但它不属于 $V(\mathcal H)$ 中与 fine data 并列的独立物理解自由度。
+\end{warningbox}
+
+\subsection{复合自由度、层级存储与延拓工作区}
+
+理解 block-structured AMR 时最容易混淆的并不是某个插值公式，而是把三种不同对象都称为“网格数据”。本章后续始终区分下面三个层次。
+
+第一层是\textbf{复合物理解} $u_{\mathrm{comp}}\in V(\mathcal H)$。它只在 valid cells 上具有独立自由度，并代表当前 hierarchy 对连续场的实际离散近似。第二层是\textbf{层级存储}：为了重构、regridding、输出或跨层同步，实现中可以继续保存 covered coarse values，因此存储数组通常比 $V(\mathcal H)$ 的坐标集合更大。第三层是\textbf{stencil 延拓工作区}：为了让规则 patch 内部的 stencil 在边缘也能统一执行，还会临时构造 ghost values。ghost values 由有效自由度和边界条件派生，不是新的物理解自由度。
+
+\begin{equation}
+\boxed{
+\underbrace{u_{\mathrm{comp}}\in V(\mathcal H)}_{\text{独立物理解}}
+\quad\longrightarrow\quad
+\underbrace{u_{\mathrm{hier}}}_{\text{含 covered coarse storage}}
+\quad\longrightarrow\quad
+\underbrace{E(u_{\mathrm{hier}})}_{\text{含 ghost 的 stencil 工作区}}.
+}
+\label{eq:amr-three-representations}
+\end{equation}
+
+这个箭头表示\textbf{表示的扩展}，不是自由度数量不断增加。covered coarse values 需要与 finest valid representation 保持一致，而 ghost values 则必须由 same-level copy、coarse-to-fine interpolation 或 physical boundary closure 唯一确定。只要把后两类派生量误当成独立 unknown，就会重复表示同一个物理状态，甚至改变线性系统本身。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[>=Stealth,font=\small,node distance=13mm]
+\tikzset{rep/.style={draw=black!65,rounded corners=2pt,align=center,minimum width=3.9cm,minimum height=1.45cm,fill=black!2}}
+\node[rep] (comp) {复合离散空间 $V(\mathcal H)$\\valid cells = 独立自由度};
+\node[rep,right=of comp] (store) {hierarchy storage\\valid + covered coarse data};
+\node[rep,right=of store] (ghost) {stencil work array\\真实数据 + ghost values};
+\draw[->,line width=0.8pt] (comp)--node[above,font=\scriptsize]{跨层同步}(store);
+\draw[->,line width=0.8pt] (store)--node[above,font=\scriptsize]{离散延拓 $E_\ell$}(ghost);
+\node[below=5mm of comp,align=center,text width=4.5cm] {决定 PDE 的离散未知量};
+\node[below=5mm of store,align=center,text width=4.5cm] {服务于跨层表示与数据管理};
+\node[below=5mm of ghost,align=center,text width=4.5cm] {服务于局部 stencil apply};
+\end{tikzpicture}
+\caption{AMR 中三个不同的数据层次。复合物理解、层级冗余存储与 ghost 延拓工作区承担不同数学角色；后两者可以比复合自由度集合更大，但不因此产生新的独立物理解未知量。}
+\label{fig:amr-three-representations}
+\end{figure}
+
+\subsection{规则 patch 与接口局部化}
+
+图~\ref{fig:amr-block-structured-composite} 同时画出“存储 hierarchy”和“真正的复合控制体集合”。左图中 coarse level 仍覆盖全域，fine patch 覆盖局部区域，因此 patch 内部可以继续使用规则 Cartesian stencil；右图去掉 covered coarse cells 后，才得到实际参与复合离散的控制体集合。coarse--fine interface 正是两种控制体尺度相接的位置。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.50cm,y=0.50cm,>=Stealth,font=\small]
+\tikzset{
+  cgrid/.style={draw=black!58,line width=0.55pt},
+  fgrid/.style={draw=black!78,line width=0.30pt},
+  iface/.style={draw=red!72!black,line width=1.2pt},
+  validfill/.style={fill=blue!8},
+  coveredfill/.style={fill=gray!28},
+  finefill/.style={fill=green!14}
+}
+
+% left panel: stored hierarchy
+\node[font=\bfseries] at (4,8.0) {(a) hierarchy 中的存储表示};
+\fill[validfill] (0,0) rectangle (8,6);
+\fill[coveredfill] (3,1) rectangle (6,5);
+\draw[cgrid] (0,0) rectangle (8,6);
+\foreach \x in {1,2,3,4,5,6,7}{\draw[cgrid] (\x,0)--(\x,6);}
+\foreach \y in {1,2,3,4,5}{\draw[cgrid] (0,\y)--(8,\y);}
+\fill[finefill,opacity=0.72] (3,1) rectangle (6,5);
+\draw[iface] (3,1) rectangle (6,5);
+\foreach \x in {3.5,4,4.5,5,5.5}{\draw[fgrid] (\x,1)--(\x,5);}
+\foreach \y in {1.5,2,2.5,3,3.5,4,4.5}{\draw[fgrid] (3,\y)--(6,\y);}
+\node[align=center,fill=white,fill opacity=0.82,text opacity=1,inner sep=1.2pt] at (4.5,3) {fine patch\\$\mathcal L_{\ell+1}$};
+
+% right panel: composite partition
+\begin{scope}[xshift=6.0cm]
+\node[font=\bfseries] at (4,8.0) {(b) 复合离散中的有效控制体};
+\fill[validfill] (0,0) rectangle (8,6);
+\draw[cgrid] (0,0) rectangle (8,6);
+\foreach \x in {1,2,3,4,5,6,7}{\draw[cgrid] (\x,0)--(\x,6);}
+\foreach \y in {1,2,3,4,5}{\draw[cgrid] (0,\y)--(8,\y);}
+\fill[white] (3,1) rectangle (6,5);
+\fill[finefill] (3,1) rectangle (6,5);
+\draw[iface] (3,1) rectangle (6,5);
+\foreach \x in {3,3.5,4,4.5,5,5.5,6}{\draw[fgrid] (\x,1)--(\x,5);}
+\foreach \y in {1,1.5,2,2.5,3,3.5,4,4.5,5}{\draw[fgrid] (3,\y)--(6,\y);}
+\node[align=center,fill=white,fill opacity=0.82,text opacity=1,inner sep=1.2pt] at (4.5,3) {fine valid\\cells};
+\end{scope}
+
+% legend
+\node[anchor=west] at (1.1,-1.2) {\raisebox{0.35ex}{\tikz\fill[blue!8,draw=black!45] (0,0) rectangle (0.45,0.28);}\; coarse valid};
+\node[anchor=west] at (6.2,-1.2) {\raisebox{0.35ex}{\tikz\fill[gray!28,draw=black!45] (0,0) rectangle (0.45,0.28);}\; covered coarse storage};
+\node[anchor=west] at (13.5,-1.2) {\raisebox{0.35ex}{\tikz\fill[green!14,draw=black!45] (0,0) rectangle (0.45,0.28);}\; fine valid};
+\draw[iface] (18.1,-1.0)--(19.0,-1.0);
+\node[anchor=west] at (19.25,-1.0) {coarse--fine interface};
+\end{tikzpicture}
+\caption{二维 block-structured AMR 的两种视图，示意 refinement ratio $r=2$。左图强调 hierarchy 的存储：coarse level 可继续保存被 fine patch 覆盖的 coarse data；右图强调复合离散：covered coarse cells 被 fine cells 替代，不再重复作为独立控制体。红色边界表示 coarse--fine interface，patch 内部保持规则 Cartesian 结构。}
+\label{fig:amr-block-structured-composite}
+\end{figure}
+
+“绝大多数 cell 位于规则块内部”并不是无条件成立的口号。作为几何尺度估计，先考虑一个孤立的 $d$ 维方形或立方 patch，每个方向有 $n$ 个 fine cells，并假定所有 patch 边界都需要宽度为 $g$ 个 cells 的 ghost/interface 特殊处理。此时受边界层影响的 cell 比例为
+\begin{equation}
+\eta_{\mathrm{if}}
+=
+1-\left(1-\frac{2g}{n}\right)^d
+\sim
+\frac{2dg}{n},
+\qquad n\gg g.
+\label{eq:amr-interface-fraction}
+\end{equation}
+因此，在这个孤立 patch 模型下，patch 足够大时内部规则 stencil 的体积工作量按 $O(n^d)$ 增长，而边界层工作量按 $O(n^{d-1})$ 增长；这给出了 block-structured AMR 能保持规则 stencil 效率的一个定量原因。实际 hierarchy 中某些 patch faces 可能与 same-level neighbors 相接，因此式~\eqref{eq:amr-interface-fraction} 更适合作为边界层比例的尺度估计，而不是普适的 coarse--fine interface 精确占比。反过来，若 patch 很小，ghost/interface 比例和调度开销都可能显著增大，规则块的优势会被削弱。这里的结论来自几何尺度比，而不是仅仅来自软件实现经验\cite{zhang2019amrex,zhang2021amrex}。
+
+\begin{checkpointbox}
+\textbf{即时检查 2.1}
+
+二维 refinement ratio 为 $r=2$ 时，一个 coarse cell 对应多少个 fine cells？三维又对应多少个？若边缘 stencil 深度 $g=1$，式~\eqref{eq:amr-interface-fraction} 对 $n=8$ 与 $n=64$ 分别给出怎样的接口影响比例？这两个结果怎样解释“小 patch 不一定高效”？
+\end{checkpointbox}
+
+\section{复合控制体与守恒离散}
+\label{sec:amr-composite-conservation}
+
+式~\eqref{eq:amr-composite-partition}说明，所有 valid cells 共同构成一套不重复的复合控制体集合。因此 AMR 接口离散最稳固的起点仍然是\chapref{ch:discretization}的有限体积积分恒等式，而不是先猜一个跨层 stencil。
+
+考虑
+\begin{equation}
+-\nabla\cdot\bigl(\beta(\bm x)\nabla u\bigr)
++\alpha(\bm x)u=f.
+\label{eq:amr_general_operator}
+\end{equation}
+对任意复合有效控制体 $V_P$ 积分。固定 $\bm n_{P,f}$ 为从 $P$ 指向控制体外部的外法向，并定义\textbf{连续精确面通量}
+\begin{equation}
+Q_{P,f}
+:=-\int_f\beta\nabla u\cdot\bm n_{P,f}\,\mathrm dA.
+\label{eq:amr-exact-face-flux}
+\end{equation}
+则连续方程严格满足
+\begin{equation}
+\sum_{f\subset\partial V_P}Q_{P,f}
++\int_{V_P}\alpha u\,\mathrm dV
+=
+\int_{V_P}f\,\mathrm dV.
+\label{eq:amr-exact-cell-balance}
+\end{equation}
+到这一步还没有做任何数值离散。
+
+真正的离散需要为每个面构造\textbf{数值积分通量} $\widehat Q_{P,f}$，并选择体积分的数值求积。以 cell-centered midpoint approximation 为例，离散控制方程写成
+\begin{equation}
+\boxed{
+\sum_{f\subset\partial V_P}\widehat Q_{P,f}
++\alpha_PV_Pu_P
+=f_PV_P.
+}
+\label{eq:amr_fv_balance}
+\end{equation}
+式~\eqref{eq:amr_fv_balance} 是本章后续装配的离散母式；其准确性取决于 $\widehat Q$ 与体积分求积的一致性，而其离散守恒性则取决于相邻控制体是否共享同一个反对称数值通量。
+
+对于同一 level 上两个正交相邻的 cells $P,N$，一个标准 two-point closure 为
+\begin{equation}
+\widehat Q_{P,f}
+=T_{PN}(u_P-u_N),
+\qquad
+T_{PN}=\frac{\beta_fA_f}{d_{PN}}.
+\label{eq:amr_same_level_transmissibility}
+\end{equation}
+若相邻控制体使用同一个 $T_{PN}=T_{NP}$，则从代数上立即得到
+\begin{equation}
+\widehat Q_{N,f}
+=T_{PN}(u_N-u_P)
+=-\widehat Q_{P,f}.
+\label{eq:amr-same-level-antisymmetry}
+\end{equation}
+内部面在全局求和中因此严格抵消。这里必须区分两个命题：$\widehat Q_{P,f}\approx Q_{P,f}$ 是\textbf{一致性问题}；$\widehat Q_{N,f}=-\widehat Q_{P,f}$ 是\textbf{离散守恒的代数结构}。前者需要光滑性、几何和求积假设，后者一旦共享同一个数值通量便可精确成立。
+
+\begin{keybox}
+\textbf{AMR 接口离散的基本顺序：}
+先固定复合控制体和面法向，再区分连续精确通量 $Q$ 与数值通量 $\widehat Q$；随后构造 coarse--fine 数值通量，使同一物理界面的贡献在两侧离散方程中严格配对。守恒不能代替一致性分析，一致性也不能自动保证守恒。
+\end{keybox}
+
+\section{界面类型与离散闭合}
+\label{sec:amr-interface-classification}
+
+\chapref{ch:discretization}已经讨论 Dirichlet、Neumann、Robin、周期和 DtN 边界怎样进入离散系统。AMR 中还必须区分另一类几何对象：\textbf{coarse--fine interface 是复合离散内部的尺度转换界面，而不是 PDE 的物理边界。}
+
+物理边界 $\partial\Omega$ 表示连续计算域在这里结束，因此需要外部给定的边界关系闭合未知通量或边界值；coarse--fine interface 位于 $\Omega$ 内部，只是同一个连续解在两种离散尺度之间切换。若把 fine patch 的外缘误当成 Dirichlet 或 Neumann boundary，就等价于在原 PDE 内部人为加入一条新的边界，所解问题已经改变。
+
+因此，对一个 valid cell 的面 $f$，离散闭合至少分成三类：
+\begin{enumerate}
+\item \textbf{same-level interior face：}相邻控制体位于同一 AMR level，直接使用同层 numerical flux；
+\item \textbf{coarse--fine interface：}相邻有效控制体属于不同尺度，必须构造跨层 numerical flux，并保证 coarse face 与其 fine subfaces 的一致装配；
+\item \textbf{physical boundary：}不存在域内相邻控制体，必须由给定的物理边界条件闭合 numerical flux。
+\end{enumerate}
+若 fine patch 本身触碰 $\partial\Omega$，则由 finest available representation 在该物理边界上执行相应边界离散；被 finer level 覆盖的 coarse cells 不再独立贡献另一套边界方程。
+
+这三个分支最终都进入式~\eqref{eq:amr_fv_balance}，区别只在于 $\widehat Q_{P,f}$ 的构造来源不同。这样的分类使后续 ghost filling、界面通量和物理边界处理共享同一控制体框架，而不需要把它们理解成互不相关的软件特例。
+
+
+\begin{keybox}
+\textbf{coarse--fine interface 上存在两个相关但不同的离散任务。}
+
+一类任务是\textbf{状态延拓}：当 fine stencil 缺少同层邻居时，用 coarse data 构造 ghost/interface state，使 stencil 有定义。它回答“缺失位置应使用什么离散状态”。另一类任务是\textbf{通量闭合}：为同一个物理 coarse--fine interface 构造并共享 numerical flux，使 coarse contribution 与所有 fine-subface contributions 严格配对。它回答“界面两侧如何交换同一个离散通量”。
+
+因此
+\[
+\boxed{
+\text{coarse-to-fine interpolation}
+\not\equiv
+\text{coarse--fine flux matching}.
+}
+\]
+插值可以参与 numerical flux 的构造，但仅有一个看起来合理的 ghost value 并不能自动保证式~\eqref{eq:amr_flux_matching_general} 的离散守恒；反过来，严格通量守恒也不能证明插值具有目标一致性阶。
+\end{keybox}
+
+\section{一维粗细网格接口}
+\label{sec:amr-1d-interface}
+
+\subsection{界面状态消元与传导系数}
+
+考虑宽度为 $H$ 的 valid coarse cell $C$ 与宽度为 $h$ 的 fine cell $F$ 在界面 $\Gamma$ 相邻。粗、细单元中心到界面的距离分别为 $H/2$ 与 $h/2$。为了看清 transmissibility 的来源，先假设 $\beta$ 在两侧半区间上分别取常数 $\beta_C,\beta_F$，并用分段线性 profile 近似中心到界面的局部解。
+
+引入暂时的界面值 $u_\Gamma$。若同一个从 coarse 指向 fine 的数值积分通量穿过两段半区间，则
+\begin{equation}
+\widehat Q_{C\rightarrow\Gamma}
+=
+\frac{\beta_CA}{H/2}(u_C-u_\Gamma),
+\qquad
+\widehat Q_{\Gamma\rightarrow F}
+=
+\frac{\beta_FA}{h/2}(u_\Gamma-u_F).
+\end{equation}
+要求局部通量连续，
+\begin{equation}
+\widehat Q_{C\rightarrow\Gamma}
+=
+\widehat Q_{\Gamma\rightarrow F}
+=:\widehat Q_{C\rightarrow F},
+\end{equation}
+并消去 $u_\Gamma$，得到
+\begin{equation}
+\boxed{
+\widehat Q_{C\rightarrow F}
+=T_{CF}(u_C-u_F),
+\qquad
+T_{CF}
+=
+\frac{A}{\dfrac{H}{2\beta_C}+\dfrac{h}{2\beta_F}}.
+}
+\label{eq:amr_cf_transmissibility}
+\end{equation}
+这就是常见的串联扩散阻力公式。它在上述一维、分段常系数、局部分段线性模型下由消元直接得到；对一般变系数与多维问题，它应被理解为一种 numerical flux closure，而不是从守恒定律本身自动推出的精确公式。
+
+为保留后文引用，把数值界面通量单独记为
+\begin{equation}
+\boxed{
+\widehat Q_{C\rightarrow F}
+=T_{CF}(u_C-u_F).
+}
+\label{eq:amr-cf-flux-one-dimensional}
+\end{equation}
+若材料相同，$\beta_C=\beta_F=\beta$，且 $H=2h$，则
+\begin{equation}
+T_{CF}=\frac{2\beta A}{3h}.
+\label{eq:amr_cf_T_uniform}
+\end{equation}
+同层 fine--fine 相邻时 transmissibility 为 $\beta A/h$，同层 coarse--coarse 为 $\beta A/(2h)$；三者不同的直接原因是中心间距离不同。若 $\beta$ 在接口处不连续，则式~\eqref{eq:amr_cf_transmissibility} 还隐含了连续法向通量的界面条件，这一点与\chapref{ch:discretization} 对变系数面的讨论一致。
+
+\subsection{一维复合矩阵示例}
+
+现在把 AMR 离散真正写成矩阵。考虑区间 $0<x<6h$，左右给 Dirichlet 条件
+\begin{equation}
+u(0)=g_L,
+\qquad
+u(6h)=g_R.
+\end{equation}
+左右各保留一个宽度 $H=2h$ 的 valid coarse cell，中间区域用两个宽度 $h$ 的 fine cells 表示。复合独立未知量按空间顺序为
+\begin{equation}
+\bm u_{\mathrm{comp}}
+=
+\begin{bmatrix}
+u_{C_L}&u_{F_0}&u_{F_1}&u_{C_R}
+\end{bmatrix}^T,
+\end{equation}
+其 cell centers 位于
+\begin{equation}
+x=h,
+\quad \frac{5h}{2},
+\quad \frac{7h}{2},
+\quad 5h.
+\end{equation}
+因此 coarse--fine 中心距离为 $3h/2$，fine--fine 中心距离为 $h$，coarse center 到物理边界的距离为 $h$。
+
+取常系数 $\beta=1$、$\alpha=0$ 和单位横截面积。对每个控制体使用积分平衡式，并把所有行统一乘以 $h$，得到
+\begin{equation}
+\boxed{
+\begin{bmatrix}
+\frac53&-\frac23&0&0\\
+-\frac23&\frac53&-1&0\\
+0&-1&\frac53&-\frac23\\
+0&0&-\frac23&\frac53
+\end{bmatrix}
+\begin{bmatrix}
+u_{C_L}\\u_{F_0}\\u_{F_1}\\u_{C_R}
+\end{bmatrix}
+=
+\begin{bmatrix}
+g_L+2h^2f_{C_L}\\
+h^2f_{F_0}\\
+h^2f_{F_1}\\
+g_R+2h^2f_{C_R}
+\end{bmatrix}.
+}
+\label{eq:amr-explicit-one-dimensional-matrix}
+\end{equation}
+第一行的 $-2/3$ 来自 coarse--fine numerical flux，第二、三行的 $-1$ 来自 fine--fine face，Dirichlet 数据进入首尾两行右端。矩阵中没有 covered coarse unknown，因为它们不属于 $V(\mathcal H)$。
+
+这个例子还揭示了一个容易被 row scaling 掩盖的结构。对积分控制方程进行统一缩放时，共享 transmissibility 在两侧以相同系数出现，因此
+\begin{equation}
+A_{C_L,F_0}=A_{F_0,C_L}=-\frac23,
+\end{equation}
+显示矩阵是对称的。但若把每个 cell equation 分别除以自己的体积，coarse 与 fine 行会乘上不同因子，Euclidean 矩阵对称性一般不再显式保留。
+
+更一般地，令 $K$ 表示由 cell-integrated balance 得到的矩阵，$M=\operatorname{diag}(V_P)$ 为复合控制体体积矩阵，并令
+\begin{equation}
+L=M^{-1}K.
+\label{eq:amr-volume-normalized-operator}
+\end{equation}
+若共享通量构造使 $K=K^T$，则 $L$ 虽未必满足 $L=L^T$，却满足
+\begin{equation}
+ML=K=K^T=L^TM,
+\end{equation}
+因而在体积加权内积
+\begin{equation}
+\langle \bm u,\bm v\rangle_M
+=\bm u^TM\bm v
+\end{equation}
+下仍然自伴。后文讨论求解器时，必须先明确所谓“对称”指的是哪一种离散表示，而不能只根据连续 PDE 的自伴性下结论。
+
+\begin{checkpointbox}
+\textbf{即时检查 2.2}
+
+把式~\eqref{eq:amr-explicit-one-dimensional-matrix} 中 $H=2h$ 改为一般 $H=rh$，推导相同材料下的 $T_{CF}$。再分别写出 cell-integrated 矩阵 $K$ 与 volume-normalized operator $L=M^{-1}K$，检查哪一个在普通 Euclidean 内积下保持对称。
+\end{checkpointbox}
+
+\section{多维粗细网格接口}
+\label{sec:amr-multid-interface}
+
+\subsection{粗面与细面的几何分割}
+
+一维中一个 coarse face 只对应一个 fine face，因此尚未出现 AMR 最典型的面分裂。设空间维数为 $d$，refinement ratio 为 $r$。一个 coarse face 在 $d-1$ 个切向方向被细分，所以对应
+\begin{equation}
+N_f=r^{d-1}
+\end{equation}
+个 fine subfaces。特别地，
+\begin{equation}
+d=2,\ r=2\Rightarrow N_f=2,
+\qquad
+d=3,\ r=2\Rightarrow N_f=4.
+\end{equation}
+若 coarse face 面积为 $A_C$，fine subface 面积为 $A_{F,k}$，对齐嵌套几何必须满足
+\begin{equation}
+A_C=\sum_{k=1}^{N_f}A_{F,k}.
+\label{eq:amr_face_area_partition}
+\end{equation}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.0,font=\small]
+  \draw[thick] (0,0) rectangle (2,2);
+  \node at (1,1) {$C$};
+  \draw[very thick,red!72!black] (2,0)--(2,2);
+  \draw[thick] (2,0) rectangle (3,1);
+  \draw[thick] (2,1) rectangle (3,2);
+  \node at (2.5,0.5) {$F_1$};
+  \node at (2.5,1.5) {$F_2$};
+  \draw[-{Latex}] (1.5,0.7)--(2.35,0.5);
+  \draw[-{Latex}] (1.5,1.3)--(2.35,1.5);
+  \node[below] at (2,-0.22) {coarse--fine interface};
+\end{tikzpicture}
+\caption{二维 $r=2$ 的 coarse--fine interface。一个 coarse face 被两个 fine subfaces 覆盖；三维对应四个 fine subfaces。几何面分割是积分通量守恒关系的基础。}
+\label{fig:amr-two-dimensional-face-split}
+\end{figure}
+
+\subsection{精确通量关系与离散通量匹配}
+
+固定法向从 coarse 区域指向 fine 区域。对连续精确通量，由于 coarse face 正好是 fine subfaces 的并集，纯粹从积分可加性就有
+\begin{equation}
+Q_C
+=\sum_{k=1}^{N_f}Q_{F,k}.
+\label{eq:amr-exact-flux-partition}
+\end{equation}
+这是连续通量积分的几何恒等式。
+
+离散时真正需要主动保证的是数值通量的对应关系：
+\begin{equation}
+\boxed{
+\widehat Q_C
+=
+\sum_{k=1}^{N_f}\widehat Q_{F,k}.
+}
+\label{eq:amr_flux_matching_general}
+\end{equation}
+若 coarse equation 使用左边的 $\widehat Q_C$，fine equations 使用右边各 subface flux，并以相反外法向装配，则 coarse--fine interface 在全局离散求和中严格抵消。这是 composite finite-volume conservation 的代数条件。
+
+若改用通量密度 $\widehat q=\widehat Q/A$，则
+\begin{equation}
+\widehat q_CA_C
+=
+\sum_k\widehat q_{F,k}A_{F,k}.
+\end{equation}
+只有 fine subfaces 等面积时，才可退化成简单算术平均。因而\textbf{守恒对象是积分通量，而不是通量密度的数值本身。}
+
+\subsection{切向重构与 subface 状态}
+
+多维接口还存在一维中没有的切向几何。图~\ref{fig:amr-two-dimensional-face-split} 中各 fine subface center 位于 coarse face 上不同的切向位置，而一个 coarse cell 只有一个中心状态 $u_C$。若所有 subfaces 都直接使用同一个 $u_C$，等价于忽略 coarse solution 沿界面的切向变化。
+
+一个常见的线性 coarse-side reconstruction 为
+\begin{equation}
+u_C^{\mathrm{rec}}(\bm x)
+=u_C+\bm\sigma_C\cdot(\bm x-\bm x_C),
+\label{eq:amr_coarse_reconstruction}
+\end{equation}
+其中 $\bm\sigma_C$ 由相邻 coarse data 近似。对第 $k$ 个 subface center $\bm x_{f,k}$，可定义
+\begin{equation}
+u_{C,k}^{\Gamma}
+=u_C^{\mathrm{rec}}(\bm x_{f,k}),
+\end{equation}
+再构造
+\begin{equation}
+\widehat Q_{F,k}
+=T_k\left(u_{C,k}^{\Gamma}-u_{F,k}\right).
+\label{eq:amr_subface_flux}
+\end{equation}
+这里 $T_k$ 还需要包含法向中心距离、face area 与 coefficient approximation。式~\eqref{eq:amr_subface_flux} 的精度不是由“使用了线性 reconstruction”一句话保证的；还必须检查 gradient approximation、face coefficient、几何正交性与解正则性。守恒则由式~\eqref{eq:amr_flux_matching_general} 的共享装配单独保证。
+
+若 reconstruction 是线性的，可以写成
+\begin{equation}
+u_{C,k}^{\Gamma}
+=\sum_{j\in\mathcal S_C}w_{kj}u_{C_j}.
+\label{eq:amr-interface-reconstruction-weights}
+\end{equation}
+于是 coarse--fine coupling 不再只是一个 coarse unknown 与一个 fine unknown 的成对连接，而可能通过 $\mathcal S_C$ 引入多个 coarse columns。
+
+\subsection{二维接口的显式代数结构}
+
+仍取二维 $r=2$。先考虑最简单的 two-point subface closure，即每个 subface 都直接使用同一个 $u_C$。若两个 transmissibilities 为 $T_1,T_2$，则 coarse row 的 coarse--fine 部分为
+\begin{equation}
+\boxed{
+(T_1+T_2)u_C
+-T_1u_{F_1}
+-T_2u_{F_2}.
+}
+\label{eq:amr-two-dimensional-coarse-row}
+\end{equation}
+这已经说明：二维中一个 coarse face 会使一个 coarse row 同时耦合多个 fine unknowns。
+
+若改用式~\eqref{eq:amr-interface-reconstruction-weights} 的切向 reconstruction，则相同 coarse-face flux sum 变成
+\begin{equation}
+\sum_{k=1}^{2}
+T_k
+\left(
+\sum_{j\in\mathcal S_C}w_{kj}u_{C_j}
+-u_{F_k}
+\right).
+\label{eq:amr-reconstructed-coarse-row}
+\end{equation}
+此时 matrix graph 同时向多个 fine unknowns 和多个 coarse reconstruction neighbors 扩展。是否仍能得到对称矩阵，取决于 fine-side equation 与 coarse-side flux sum 是否来自同一个对称离散构造；“连续算子是自伴的”本身并不足以保证这一点。
+
+\subsection{三维接口与 patch 棱角}
+
+三维 $r=2$ 时，一个 coarse face 被 $2\times2=4$ 个 fine subfaces 覆盖，并且 coarse-side state 需要在两个切向坐标上重构。对规则 Cartesian 几何，若一维插值算子分别为 $I_x,I_y,I_z$，一个可分离的三维构造可以组织为
+\begin{equation}
+I_{c\rightarrow f}^{3D}
+=I_z\otimes I_y\otimes I_x.
+\label{eq:amr-three-dimensional-interpolation-tensor}
+\end{equation}
+但 tensor-product 只是规则几何下的一种构造方式，不是 AMR 的定义。
+
+此外，fine patch 存在面、棱和角。靠近 patch 面的 stencil 可能只缺一个方向的 same-level neighbor；靠近棱时可能缺两个方向；角附近可能同时缺三个方向。由此产生的多方向 ghost extension 必须明确其 interpolation stencil、常数保持、低阶多项式再现与重复填充的一致性。复杂 coarse--fine geometry、embedded boundary 或非张量 reconstruction 需要直接验证这些性质，不能仅由一维公式类推。
+
+\begin{warningbox}
+\textbf{一维接口公式不能通过“增加 fine faces 数量”直接推广到三维。}
+多维新增了切向 reconstruction、patch 棱角、多点 coarse coupling 以及 matrix graph 扩张。数值通量的守恒、一致性和代数对称性必须分别检查。
+\end{warningbox}
+
+\section{粗细接口的离散延拓与 Ghost Fill}
+\label{sec:amr-ghost-extension}
+
+\subsection{Ghost fill 作为离散延拓算子}
+
+fine patch 内部的 stencil 希望继续作用在规则 fine-grid 上，但靠近 patch 外缘时，某些 stencil locations 不属于当前 patch 的真实 fine cells。ghost cells 的作用就是把复合离散场\textbf{延拓}到这些辅助位置，使内部 stencil 可以保持统一形式。
+
+因此 ghost fill 最自然的数学对象不是“额外的一圈数组”，而是一个离散延拓算子 $E_\ell$。对 level $\ell$ 的 ghost location $g$，可以概括为
+\begin{equation}
+(E_\ell u)_g
+=
+\begin{cases}
+\Pi_{\mathrm{same}}u_\ell,
+& g\text{ 可由同层有效数据获得},\\[1mm]
+I_{\ell-1\rightarrow\ell}u_{\ell-1},
+& g\text{ 位于 coarse--fine interface 外侧},\\[1mm]
+B_h(u),
+& g\text{ 对应 physical boundary closure}.
+\end{cases}
+\label{eq:amr-ghost-extension-operator}
+\end{equation}
+第一种情况在并行实现中可能需要 patch-to-patch copy 或 MPI halo exchange，但数学上它只是同一离散函数在同尺度网格上的重映射；第二种情况才是真正的 coarse-to-fine interpolation；第三种情况由物理边界条件决定。三种来源不能仅因为最终都写入 ghost storage 就混为一种数值操作。
+
+对 coarse--fine ghost，记
+\begin{equation}
+u_g^{(f)}
+=I_{c\rightarrow f}\bm u_c.
+\label{eq:amr_cf_interp_operator}
+\end{equation}
+若 $I_{c\rightarrow f}$ 是固定线性算子，则
+\begin{equation}
+\boxed{
+u_g^{(f)}
+=\sum_{j\in\mathcal S_c}w_j u_j^{(c)}.
+}
+\label{eq:amr_interp_weights}
+\end{equation}
+这里 $\mathcal S_c$ 是 coarse stencil，$w_j$ 是由几何和插值规则决定的权重。ghost value 是已有自由度的派生量，不属于 $V(\mathcal H)$ 的新独立坐标。
+
+
+最小的一维例子可以把这些权重完全写出来。设两个 coarse cell centers 位于 $x_0=0$ 与 $x_1=2h$，待填充的 fine-grid ghost location 位于 $x_g=3h/2$。若这里把 $u_0,u_1$ 解释为这些中心位置的 point-value approximations，并采用一次线性插值，则
+\begin{equation}
+\boxed{
+ u_g
+ =
+ \frac{x_1-x_g}{x_1-x_0}u_0
+ +
+ \frac{x_g-x_0}{x_1-x_0}u_1
+ =
+ \frac14u_0+\frac34u_1.
+}
+\label{eq:amr-explicit-linear-ghost-interpolation}
+\end{equation}
+这里的 $1/4$ 与 $3/4$ 不是经验系数，而是由目标位置在 coarse centers 之间的几何坐标直接确定。代入常数场 $u_0=u_1=C$ 可得 $u_g=C$；代入线性函数 $u(x)=a+bx$ 则得到 $u_g=a+3bh/2$。因此这个例子同时显式验证了后面的零阶与一阶矩条件。
+
+需要注意，式~\eqref{eq:amr-explicit-linear-ghost-interpolation} 是\textbf{point-value interpolation} 的最小模型。若 $u$ 表示 finite-volume cell average，则 coarse-to-fine 初始化应从 coarse-cell reconstruction 出发，并另外满足积分守恒；不能把点值插值系数未经分析直接套到 cell averages 上。
+
+
+还要区分两种都沿 coarse $\rightarrow$ fine 方向的数据操作。这里的 ghost interpolation 只构造\textbf{辅助 stencil value}，计算完成后可以丢弃；regridding 时的 AMR interpolation 则构造新 hierarchy 上\textbf{真正的 fine valid state}。二者可以共享某些 reconstruction 公式，但作用空间、生命周期以及必须满足的守恒约束并不相同。
+
+\subsection{一致性矩条件}
+
+插值公式必须通过可检验的一致性条件。若 coarse field 为常数 $u=C$，则任何 coarse--fine ghost 都应得到 $C$，因此
+\begin{equation}
+\boxed{\sum_j w_j=1.}
+\label{eq:amr_interp_constant_preserve}
+\end{equation}
+若还要求线性函数 $u(\bm x)=a+\bm b\cdot\bm x$ 被精确再现，则需要
+\begin{equation}
+\boxed{
+\sum_j w_j\bm x_j=\bm x_g.
+}
+\label{eq:amr_interp_linear_reproduce}
+\end{equation}
+这两式是零阶与一阶 moment conditions。它们比记忆某一套具体插值系数更重要，因为 refinement ratio、维数、patch 位置改变以后，权重会变化，而多项式再现条件仍然可以作为统一的正确性判据。
+
+如果存储变量是 cell average，而不是 point value，还必须区分“点值多项式再现”和“控制体平均的守恒重构”。对于守恒密度，新生成 fine-cell averages 通常还要满足 coarse cell 积分量与 fine children 积分量一致；这一约束将在 regridding 的状态转移中再次出现。
+
+\subsection{Ghost 消元与复合矩阵耦合}
+
+假设一个 fine cell 的原始线性 stencil 含 ghost location：
+\begin{equation}
+a_Pu_P+a_gu_g+
+\sum_{N\in\mathcal N_f}a_Nu_N=b_P.
+\label{eq:amr_row_with_ghost}
+\end{equation}
+将式~\eqref{eq:amr_interp_weights} 代入得到
+\begin{equation}
+a_Pu_P
++\sum_{N\in\mathcal N_f}a_Nu_N
++\sum_{j\in\mathcal S_c}a_gw_j u_j^{(c)}
+=b_P.
+\label{eq:amr_row_after_ghost_elimination}
+\end{equation}
+于是 ghost variable 被消去，fine row 直接获得 coarse columns：
+\begin{equation}
+\boxed{
+A_{P,j}^{cf}\;\mathrel{+}=\;a_gw_j.
+}
+\end{equation}
+这说明 coarse-to-fine interpolation 并不是“与线性系统无关的预处理”。只要 interpolation 是固定线性的，它就是 composite linear operator 的一部分；matrix-free apply 与显式矩阵装配必须代表同一个消元关系。
+
+如果 interpolation 使用依赖当前解的 limiter、非线性 reconstruction 或状态相关权重，则 $w_j=w_j(\bm u)$，上述关系不再定义一个固定矩阵 $A$。此时应把 composite operator 视为非线性映射 $\mathcal A(\bm u)$，或在线性化后讨论其 Jacobian。把这种状态相关 ghost fill 强行解释成固定 sparse matrix 会混淆离散模型与求解器对象。
+
+\begin{warningbox}
+常数保持只保证零阶一致性，并不能证明 coarse--fine interface 达到与内部 stencil 相同的截断误差阶。AMR 的整体收敛性还取决于 reconstruction、numerical flux、boundary closure、稳定性与解正则性。
+\end{warningbox}
+
+\section{复合离散算子及代数结构}
+\label{sec:amr-composite-operator}
+
+\subsection{两层块结构}
+
+把两层 composite unknown 按 valid coarse 与 fine variables 分块：
+\begin{equation}
+\bm u_{\mathrm{comp}}
+=
+\begin{bmatrix}
+\bm u_c\\
+\bm u_f
+\end{bmatrix}.
+\end{equation}
+若所有 interface closures 都是固定线性的，则 cell-integrated balance 可以装配成
+\begin{equation}
+\boxed{
+\begin{bmatrix}
+K_{cc}&K_{cf}\\
+K_{fc}&K_{ff}
+\end{bmatrix}
+\begin{bmatrix}
+\bm u_c\\
+\bm u_f
+\end{bmatrix}
+=
+\begin{bmatrix}
+\bm b_c^{\mathrm{int}}\\
+\bm b_f^{\mathrm{int}}
+\end{bmatrix}.
+}
+\label{eq:amr_block_matrix}
+\end{equation}
+这里 $K$ 强调使用\textbf{cell-integrated} 方程：
+\begin{itemize}
+\item $K_{cc}$ 包含 valid coarse cells 的同层耦合及其物理边界项；
+\item $K_{ff}$ 包含 fine cells 的同层耦合及 fine-level 物理边界项；
+\item $K_{cf}$ 来自 coarse equation 对 fine subface states 的依赖；
+\item $K_{fc}$ 来自 fine equation 经 interface reconstruction 或 ghost elimination 后对 coarse variables 的依赖。
+\end{itemize}
+一般有
+\begin{equation}
+K_{\mathrm{comp}}
+\neq
+\operatorname{diag}(K_{cc},K_{ff}),
+\end{equation}
+否则两个 level 在代数上完全解耦，不再是同一个 PDE 的复合离散。
+
+若希望写成每单位体积的离散 operator，则引入复合 volume matrix
+\begin{equation}
+M=\operatorname{diag}(V_P),
+\end{equation}
+并定义
+\begin{equation}
+A_{\mathrm{comp}}=M^{-1}K_{\mathrm{comp}}.
+\label{eq:amr-composite-normalized-operator}
+\end{equation}
+本书后续出现“复合矩阵是否对称”时会明确所指的是 $K$ 还是 volume-normalized $A_{\mathrm{comp}}$，避免把 row scaling 与真正的接口非对称混为一谈。
+
+\subsection{对称性、加权自伴性与界面构造}
+
+若每一个内部同层 face 和 coarse--fine subface 都来自同一个共享 transmissibility，并且 coarse/fine 两侧按同一对称能量或成对 flux 关系装配，则 cell-integrated matrix $K$ 可以保持
+\begin{equation}
+K=K^T.
+\end{equation}
+但是一旦 coarse-side reconstruction 与 fine-side ghost elimination 使用了不互为转置的离散关系，就可能产生
+\begin{equation}
+K_{cf}\neq K_{fc}^T.
+\end{equation}
+因此“连续算子自伴”只是离散对称性的背景条件，不是充分条件。
+
+即使 $K=K^T$，volume-normalized operator
+\begin{equation}
+A_{\mathrm{comp}}=M^{-1}K
+\end{equation}
+也通常不满足普通 Euclidean 对称性，因为 coarse 与 fine control volumes 不同。然而
+\begin{equation}
+MA_{\mathrm{comp}}=K=K^T=A_{\mathrm{comp}}^TM,
+\end{equation}
+所以 $A_{\mathrm{comp}}$ 在 $M$-weighted inner product 下仍然自伴。这个区分会直接影响后续 Krylov 方法和多重网格平滑器对 operator structure 的判断。
+
+对一个采用成对 transmissibility 的纯扩散离散，若忽略边界项，可以把离散能量写成示意形式
+\begin{equation}
+\bm u^TK\bm u
+=\sum_{f\in\mathcal F_{\mathrm{int}}}
+T_f(u_P-u_N)^2
++\text{boundary contributions}.
+\label{eq:amr-discrete-energy}
+\end{equation}
+这说明 positive transmissibility 与对称共享 flux 为什么会自然产生半正定能量结构。若 interface reconstruction 引入多点 coupling，则必须重新检查是否仍存在对应的对称离散能量，不能直接沿用式~\eqref{eq:amr-discrete-energy}。
+
+\subsection{纯 Neumann 零空间}
+
+若整个物理边界为齐次 Neumann、$\alpha=0$，并且离散延拓保持常数、每个 internal numerical flux 对相等状态给出零通量，则复合常数向量
+\begin{equation}
+\bm 1_{\mathrm{comp}}=(1,1,\ldots,1)^T
+\end{equation}
+应满足
+\begin{equation}
+\boxed{
+K\bm1_{\mathrm{comp}}=0,
+\qquad
+A_{\mathrm{comp}}\bm1_{\mathrm{comp}}=0.
+}
+\label{eq:amr_constant_nullspace}
+\end{equation}
+这是离散常数保持的结构结果。若实现对常数场产生非零离散不平衡量，至少说明 physical boundary closure、coarse--fine extension、interface numerical flux 或 mask/DOF selection 中存在不一致。后续\chapref{ch:iterative-smoothing}会把这个可计算的不平衡量正式纳入 residual framework。
+
+\section{守恒性、一致性与误差验证}
+\label{sec:amr-verification}
+
+\subsection{全局离散守恒}
+
+对所有 valid control volumes 的离散方程~\eqref{eq:amr_fv_balance}求和。同层 internal face 上的数值通量由于式~\eqref{eq:amr-same-level-antisymmetry} 成对抵消；coarse--fine interface 上的 coarse contribution 与 fine subface contributions 由于式~\eqref{eq:amr_flux_matching_general} 抵消。因此全域只剩 physical boundary numerical flux：
+\begin{equation}
+\boxed{
+\sum_{P\in\mathcal V}f_PV_P
+-
+\sum_{P\in\mathcal V}\alpha_PV_Pu_P
+=
+\sum_{f\subset\partial\Omega}\widehat Q_f.
+}
+\label{eq:amr_global_conservation}
+\end{equation}
+这里
+\begin{equation}
+\mathcal V=\bigcup_{\ell=0}^{L}\mathcal V_\ell
+\end{equation}
+只包含复合有效控制体，covered coarse cells 不重复计入。
+
+式~\eqref{eq:amr_global_conservation} 是一个\textbf{离散代数恒等式}：只要内部 numerical flux 以相反符号共享装配，它就可以达到机器精度，而不要求 $\widehat Q_f$ 本身具有高阶精度。因此一个方法可以“严格守恒但精度很差”，也可以“局部近似很准但由于两侧 flux 不一致而不严格守恒”。这两个性质必须分开验证。
+
+\begin{keybox}
+\textbf{复合守恒的对象是整套 valid control volumes。}
+“每个 level 各自守恒”并不足够；真正需要的是 same-level faces 与 coarse--fine interfaces 在整个 composite mesh 上都形成成对抵消的数值通量。
+\end{keybox}
+
+\subsection{截断误差的区域分解}
+
+为了讨论精度，设 $I_{\mathcal H}u$ 表示把足够光滑的连续解投影到复合离散空间 $V(\mathcal H)$，并令 $A_{\mathrm{comp}}$ 表示 volume-normalized discrete operator。定义复合局部截断误差
+\begin{equation}
+\boxed{
+\bm\tau_{\mathcal H}
+=
+A_{\mathrm{comp}}I_{\mathcal H}u
+-
+I_{\mathcal H}(\mathcal Lu).
+}
+\label{eq:amr-composite-truncation-error}
+\end{equation}
+valid cells 可以进一步分成远离 coarse--fine interface 的 interior set $\mathcal V^{\mathrm{int}}$ 与受 interface closure 影响的 $\mathcal V^{\mathrm{cf}}$。即使内部规则 stencil 满足
+\begin{equation}
+\tau_P=\Oh(h_\ell^2),
+\qquad P\in\mathcal V_\ell^{\mathrm{int}},
+\end{equation}
+也不能据此直接宣布整个 AMR method 二阶，因为 $P\in\mathcal V^{\mathrm{cf}}$ 时还会出现 coarse-side reconstruction、ghost interpolation、subface coefficient approximation、center-distance geometry 与 flux matching closure 的误差。
+
+反过来，interface 局部截断误差阶低于内部阶数，也不自动等价于 global solution error 必然降到同一个阶。在物理 interface 面积保持 $O(1)$、网格准均匀细化的典型情形下，interface-near cells 的数量按 $O(h^{-(d-1)})$ 增长，而 volume cells 按 $O(h^{-d})$ 增长，局部误差如何传播到 global norm 还取决于离散稳定性、椭圆平滑性质、接口误差结构与所采用的 norm。教材中应把“局部 truncation order”和“global convergence order”作为两个需要分别证明或数值验证的命题。
+
+\subsection{一致性测试的递进层次}
+
+一个 coarse--fine algorithm 至少应依次通过以下测试：
+\begin{enumerate}
+\item \textbf{常数保持：}常数场经 same-level、coarse--fine extension 与 physical boundary closure 后不产生伪梯度；
+\item \textbf{低阶多项式再现：}线性或目标阶数所需的 polynomial modes 在 interpolation/reconstruction 中满足相应 moment conditions；
+\item \textbf{离散通量守恒：}式~\eqref{eq:amr_flux_matching_general} 对每个 coarse face 成立；
+\item \textbf{算子结构：}根据离散设计检查 weighted symmetry、nullspace、row sum 或离散能量；
+\item \textbf{制造解收敛：}对光滑 manufactured solution 系统性缩小所有 level spacing，并测量 composite solution error 的实验阶。
+\end{enumerate}
+这些测试对应不同层面的正确性，不能互相替代。例如 $\|K\bm1\|$ 很小只能验证常数模式，并不能证明对二次函数具有二阶截断误差。
+
+\subsection{AMR 误差范数与实验阶}
+
+复合误差范数必须使用 valid control volumes，避免细化区域重复加权。离散 $L^2$ norm 定义为
+\begin{equation}
+\boxed{
+\|e\|_{2,h}
+=
+\left(
+\sum_{\ell=0}^{L}
+\sum_{P\in\mathcal V_\ell}
+V_Pe_P^2
+\right)^{1/2}.
+}
+\label{eq:amr-ltwo-norm}
+\end{equation}
+最大范数为
+\begin{equation}
+\|e\|_{\infty,h}
+=
+\max_{\ell}
+\max_{P\in\mathcal V_\ell}|e_P|.
+\end{equation}
+如果一组实验把所有 level spacing 同时缩小一半，并保持 refinement regions 在物理空间中的位置和形状可比，则观测收敛阶可写为
+\begin{equation}
+p_{\mathrm{obs}}
+=
+\frac{\log(E_h/E_{h/2})}{\log 2},
+\label{eq:amr-observed-order}
+\end{equation}
+其中 $E_h$ 可以取式~\eqref{eq:amr-ltwo-norm} 或其他明确声明的 composite norm。
+
+若同时改变 base-grid spacing 和 refinement region，$E_h$ 的变化就混合了“离散尺度变细”和“高分辨率覆盖区域变化”两种效应，不能直接用式~\eqref{eq:amr-observed-order} 解释为单一离散阶。
+
+\subsection{代数结构检查}
+
+对显式装配的小规模问题，可以检查
+\begin{equation}
+\|K-K^T\|,
+\qquad
+\|K\bm1\|,
+\qquad
+\|MA_{\mathrm{comp}}-A_{\mathrm{comp}}^TM\|,
+\label{eq:amr-operator-structure-checks}
+\end{equation}
+分别对应 cell-integrated Euclidean symmetry、constant nullspace 与 volume-normalized operator 的 weighted self-adjointness。对预期具有这些结构的离散，只观察到 manufactured-solution error 很小并不足够；结构检查能够发现被误差抵消暂时掩盖的 interface assembly defect。
+
+\section{粗细层状态一致性与细到粗同步}
+\label{sec:amr-average-down}
+
+\subsection{Cell-average 的 conservative projection}
+
+coarse-to-fine extension 为 fine stencil 提供 coarse-side 信息；反方向还需要维持同一物理场在 coarse storage 与 fine representation 之间的一致性。对被 fine level 覆盖的 coarse cell，若 $u_F$ 表示 finite-volume cell average，则最自然的 coarse representation 是体积加权 projection：
+\begin{equation}
+\boxed{
+(R_{f\rightarrow c}u)_C
+=
+\frac{1}{V_C}
+\sum_{F\subset C}V_Fu_F.
+}
+\label{eq:amr_average_down_general}
+\end{equation}
+均匀 refinement ratio $r$ 下，一个 coarse cell 在 $d$ 维包含 $r^d$ 个等体积 fine children，因此
+\begin{equation}
+(R_{f\rightarrow c}u)_C
+=
+\frac{1}{r^d}
+\sum_{m=1}^{r^d}u_{F_m}.
+\label{eq:amr_average_down_uniform}
+\end{equation}
+这个操作通常称为 \textbf{average-down}。
+
+对一维 $r=2$，若两个 fine children 的 cell averages 分别为 $\bar u_{F_-},\bar u_{F_+}$，则
+\begin{equation}
+\boxed{
+\bar u_C
+=\frac12\left(\bar u_{F_-}+\bar u_{F_+}\right).
+}
+\label{eq:amr-average-down-r2-1d}
+\end{equation}
+二维 $r=2$ 时，一个 coarse cell 对应四个等面积 fine children，因而
+\begin{equation}
+\boxed{
+\bar u_C
+=\frac14
+\left(
+\bar u_{F_1}+\bar u_{F_2}+\bar u_{F_3}+\bar u_{F_4}
+\right).
+}
+\label{eq:amr-average-down-r2-2d}
+\end{equation}
+三维时相应地是八个 fine-cell averages 的 $1/8$ 加权和。这里出现 $1/2,1/4,1/8$ 只是因为 children 等体积；非均匀体积时必须回到式~\eqref{eq:amr_average_down_general} 的体积权重。
+
+式~\eqref{eq:amr_average_down_general} 的核心不是“平均”这个动作，而是它严格满足
+\begin{equation}
+V_C(R_{f\rightarrow c}u)_C
+=
+\sum_{F\subset C}V_Fu_F,
+\label{eq:amr-average-down-conservation}
+\end{equation}
+即 coarse cell 表示的积分量等于 fine children 的积分量总和。对 piecewise-constant cell-average representation，这也可以看成把 fine representation 投影到 coarse piecewise-constant space。
+
+covered coarse value 不是 composite solution 的独立自由度，但 average-down 后可以作为 fine solution 的低分辨率代表，用于后续 coarse reconstruction、regridding、诊断或粗尺度输出。
+
+\subsection{守恒插值的显式一维模型}
+
+average-down 的反方向是 coarse-to-fine initialization。为了避免把“插值”停留在抽象算子符号上，考虑一维 $r=2$ 的一个 coarse cell $C$，宽度 $H=2h$、中心为 $x_C$，其两个 fine children 的中心为
+\begin{equation}
+ x_{F_-}=x_C-\frac h2,
+ \qquad
+ x_{F_+}=x_C+\frac h2.
+\end{equation}
+设 $\bar u_C$ 是 coarse-cell average。取一个以 cell average 为基准的线性重构
+\begin{equation}
+ u_C^{\mathrm{rec}}(x)
+ =\bar u_C+\sigma_C(x-x_C),
+\label{eq:amr-conservative-linear-reconstruction}
+\end{equation}
+其中 $\sigma_C$ 是由相邻 coarse cells 构造的斜率。因为线性函数在对称子区间上的平均值等于其中心值，两个 fine-cell averages 可直接写成
+\begin{equation}
+\boxed{
+\bar u_{F_-}
+=\bar u_C-\frac h2\sigma_C,
+\qquad
+\bar u_{F_+}
+=\bar u_C+\frac h2\sigma_C.
+}
+\label{eq:amr-r2-conservative-interpolation}
+\end{equation}
+于是立即得到
+\begin{equation}
+\frac12\left(\bar u_{F_-}+\bar u_{F_+}\right)
+=\bar u_C,
+\label{eq:amr-r2-conservative-interpolation-check}
+\end{equation}
+即 coarse cell 的积分量在生成两个 fine children 后保持不变。若 coarse cells 等距、中心距为 $H=2h$，再采用中心斜率
+\begin{equation}
+\sigma_C
+=\frac{\bar u_{C+1}-\bar u_{C-1}}{2H}
+=\frac{\bar u_{C+1}-\bar u_{C-1}}{4h},
+\end{equation}
+则式~\eqref{eq:amr-r2-conservative-interpolation} 进一步变成显式权重形式
+\begin{equation}
+\boxed{
+\begin{aligned}
+\bar u_{F_-}
+&=\bar u_C
+-\frac18\left(\bar u_{C+1}-\bar u_{C-1}\right),\\
+\bar u_{F_+}
+&=\bar u_C
++\frac18\left(\bar u_{C+1}-\bar u_{C-1}\right).
+\end{aligned}
+}
+\label{eq:amr-r2-conservative-interpolation-explicit}
+\end{equation}
+这只是光滑区域中一个 unlimited linear reconstruction 的示例，而不是所有 AMR 软件必须使用的唯一公式。存在间断或需要单调性约束时，$\sigma_C$ 往往需要 limiter；更高阶方法则会使用更宽的 coarse stencil。无论具体形式怎样，守恒初始化至少应满足
+\begin{equation}
+\boxed{
+R_{f\rightarrow c}P_{c\rightarrow f}\bar u_c
+=\bar u_c,
+}
+\label{eq:amr-rp-identity}
+\end{equation}
+即把一个 coarse representation 插值到 fine children 后再 average-down，应恢复原 coarse average。
+
+反方向一般不成立：
+\begin{equation}
+\boxed{
+P_{c\rightarrow f}R_{f\rightarrow c}\bm u_f
+\neq\bm u_f
+\quad\text{（一般 fine state）}.
+}
+\label{eq:amr-pr-not-identity}
+\end{equation}
+average-down 只保留 coarse-scale average，fine children 之间的 subcell variation 已经被压缩掉；之后再 interpolation 只能依据 coarse representation 重建一个新的 fine profile，而无法恢复任意原始 fine state。这个不对称关系是理解 AMR 跨层数据传递最重要的心智模型之一。
+
+
+最简单的 piecewise-constant transfer 可以把这个信息损失写成一个 $2\times2$ 投影矩阵。对一维 $r=2$，令
+\begin{equation}
+P_0=
+\begin{bmatrix}1\\1\end{bmatrix},
+\qquad
+R=\frac12
+\begin{bmatrix}1&1\end{bmatrix}.
+\end{equation}
+于是
+\begin{equation}
+RP_0=1,
+\qquad
+P_0R
+=\frac12
+\begin{bmatrix}
+1&1\\
+1&1
+\end{bmatrix}
+\neq I_2.
+\label{eq:amr-simple-transfer-projector}
+\end{equation}
+$P_0R$ 把任意 fine state $(u_{F_-},u_{F_+})^T$ 变成两个相同的均值。它保留平均模态 $(1,1)^T$，却消去细尺度差分模态 $(1,-1)^T$。因此 average-down 的“信息损失”不是抽象说法，而可以直接看成某些 fine-scale modes 被 projection 的零空间消去。
+
+\subsection{变量语义决定同步规则}
+
+式~\eqref{eq:amr_average_down_general} 只适用于“$u$ 是 cell average”的语义。如果存储的是 cell-integrated quantity $M_F$，则 coarse quantity 应直接求和：
+\begin{equation}
+M_C=\sum_{F\subset C}M_F.
+\end{equation}
+如果变量是 nodal point value，则体积平均通常也不是自然的同步定义，而应根据该离散空间选择 nodal restriction 或其他 projection。face-centered 与 edge-centered variables 同样需要与其几何 measure 一致的同步关系。
+
+因此，AMR 中任何所谓 restriction、average 或 interpolation，在写公式前都必须先回答两个问题：\textbf{自由度位于哪里，以及它表示 point value、average 还是 integral。}变量语义不明确时，仅凭数组位置选择平均公式没有数值分析依据。
+
+\subsection{与多重网格限制算子的概念边界}
+
+average-down 的数据方向是 fine $\rightarrow$ coarse，但方向相同并不意味着它就是后文 multigrid restriction。这里的 $R_{f\rightarrow c}$ 作用在\textbf{同一个物理状态的 AMR representations} 上，目标是维持 coarse storage 与 fine solution 的表示一致性；multigrid restriction 则作用在求解算法中的 residual、error 或其他 solver state 上，目标是构造 coarse error problem。
+
+两者可能在某些规则网格上恰好使用相同权重，但数学角色仍然不同。本书将在\secref{sec:amr-vs-mg-level}正式建立 AMR level 与 MG level 的二元层级关系；在此之前，不把 AMR average-down 解释为求解器操作。
+
+\begin{checkpointbox}
+\textbf{即时检查 2.3}
+
+二维 $r=2$ 的四个 fine cell averages 为 $1,2,3,6$ 时，covered coarse average 是多少？若这些数字改为四个 fine cells 的 cell-integrated masses，coarse total mass 又是多少？为什么两道题的数据组合规则不同？
+\end{checkpointbox}
+
+\section{多层 AMR 层级与嵌套约束}
+\label{sec:amr-multilevel-hierarchy}
+
+前面主要研究两层，因为 coarse--fine numerical flux、ghost extension、average-down 与 composite DOF selection 在两层情形已经全部出现。对
+\begin{equation}
+\mathcal L_0,\mathcal L_1,\ldots,\mathcal L_L,
+\end{equation}
+第 $\ell+1$ 层相对第 $\ell$ 层具有 refinement ratio $r_\ell$，相邻层 spacing 满足式~\eqref{eq:amr-refinement-ratio}。复合离散空间仍由式~\eqref{eq:amr-composite-space} 给出；每个 physical location 只由 finest valid representation 贡献一个复合自由度。
+
+对每一对相邻 AMR levels，都重复同一组局部结构：
+\begin{equation}
+\boxed{
+\text{coarse--fine flux closure}
+\quad+
+\text{coarse-to-fine extension}
+\quad+
+\text{fine-to-coarse state synchronization}.
+}
+\label{eq:amr-adjacent-level-operations}
+\end{equation}
+这并不意味着不同 interfaces 可以完全独立构造。为了让 level $\ell+1$ 的 interpolation stencil 和 interface closure 总能从 level $\ell$ 获得所需 support，实际 AMR hierarchy 通常施加 \textbf{proper nesting}：更细 patch 不能任意贴近其父 level 覆盖区域的边缘，而应保留与 stencil reach 相匹配的 coarse buffer。
+
+设某个 coarse-to-fine interpolation 需要在 coarse level 上向接口外延伸 $s$ 个 cells。proper nesting 至少应保证这些 support cells 在父 level 的有效或可用 coverage 内存在。其具体 buffer 宽度依赖 interpolation order、ghost depth 与软件约定，因此本章不把某个固定 cell 数写成数学定律；真正不变的要求是：\textbf{每一个跨层离散 stencil 都必须在相邻层上拥有完整定义域。}
+
+这一点也说明 patch geometry 与 numerical method 不是彼此独立的。更高阶 interpolation 往往需要更宽的 coarse support，从而收紧 hierarchy 的 nesting requirement；反过来，给定的 patch topology 也会限制可用的 local reconstruction stencil。
+
+最后再次固定术语：$\mathcal L_0,\ldots,\mathcal L_L$ 在本章中只表示 physical AMR levels。它们由局部空间分辨率决定，并直接进入 $V(\mathcal H)$ 的定义。后文 multigrid solver 可能在一个 AMR level 内再建立多个 solver grids，那是另一套层级坐标，不应与这里的 physical hierarchy 合并编号。
+
+\section{层级重构与离散空间转移}
+\label{sec:amr-regridding}
+
+AMR 中的 hierarchy 并不一定在整个计算过程中保持不变。当误差指标、界面位置或几何形貌发生变化时，细化区域可能扩大、缩小或移动，由此产生新的 patch 布局。根据当前状态重新构造 AMR hierarchy 的过程称为 \textbf{regridding}。
+
+从数值离散的角度看，regridding 并不只是“重新划分 patch”。设重构前后的层级分别为
+\begin{equation}
+\mathcal H^{\mathrm{old}},
+\qquad
+\mathcal H^{\mathrm{new}},
+\end{equation}
+它们对应的复合离散空间记为
+\begin{equation}
+V^{\mathrm{old}}=V(\mathcal H^{\mathrm{old}}),
+\qquad
+V^{\mathrm{new}}=V(\mathcal H^{\mathrm{new}}).
+\end{equation}
+旧 hierarchy 上的离散场
+\begin{equation}
+u^{\mathrm{old}}\in V^{\mathrm{old}}
+\end{equation}
+一般不能直接解释为新 hierarchy 上的离散场，因为有效单元集合、covered 区域以及 coarse--fine interface 都可能已经改变。因此 regridding 首先产生一个离散空间之间的状态转移问题：
+\begin{equation}
+\boxed{
+\mathcal T_{\mathrm{regrid}}:
+V^{\mathrm{old}}\longrightarrow V^{\mathrm{new}},
+\qquad
+u^{\mathrm{new}}
+=\mathcal T_{\mathrm{regrid}}u^{\mathrm{old}}.
+}
+\label{eq:amr-regrid-transfer-operator}
+\end{equation}
+完成状态迁移之后，还必须在 $\mathcal H^{\mathrm{new}}$ 上重新建立与几何和层间接口有关的离散算子。这两个阶段不能混为同一个“数据搬运”步骤。
+
+\subsection{三类区域与三种迁移机制}
+
+先考虑相邻的 coarse level $\ell$ 与 fine level $\ell+1$。为了只描述层级几何的变化，把旧、新 hierarchy 中被 level $\ell+1$ 覆盖的物理区域分别记为
+\begin{equation}
+\mathcal F^{\mathrm{old}},
+\qquad
+\mathcal F^{\mathrm{new}}.
+\end{equation}
+那么 regridding 后的物理区域自然分成三部分：
+\begin{align}
+\mathcal R_{\mathrm{keep}}
+&=\mathcal F^{\mathrm{old}}\cap\mathcal F^{\mathrm{new}},
+\\
+\mathcal R_{\mathrm{refine}}
+&=\mathcal F^{\mathrm{new}}\setminus\mathcal F^{\mathrm{old}},
+\\
+\mathcal R_{\mathrm{derefine}}
+&=\mathcal F^{\mathrm{old}}\setminus\mathcal F^{\mathrm{new}}.
+\label{eq:amr-regrid-region-decomposition}
+\end{align}
+这三个集合分别对应“细网格仍然存在”“新产生细网格”和“细网格被删除”。图~\ref{fig:amr-regrid-transfer} 用二维、refinement ratio $r=2$ 的最小例子展示了三类区域的数据来源。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.46cm,y=0.46cm,>=Stealth,font=\small]
+\tikzset{
+  cgrid/.style={draw=black!62,line width=0.55pt},
+  fgrid/.style={draw=black!78,line width=0.32pt},
+  keep/.style={fill=blue!13},
+  refine/.style={fill=green!14},
+  derefine/.style={fill=orange!16},
+  transfer/.style={->,line width=1.05pt},
+  opbox/.style={draw=black!65,rounded corners=2pt,fill=black!3,align=left,inner sep=4pt}
+}
+
+% ----- old hierarchy -----
+\node[font=\bfseries] at (4,10.0) {旧 hierarchy $\mathcal H^{\mathrm{old}}$};
+\fill[derefine] (2,2) rectangle (4,6);
+\fill[keep] (4,2) rectangle (6,6);
+\draw[cgrid] (0,0) rectangle (8,8);
+\foreach \x in {2,4,6} {\draw[cgrid] (\x,0)--(\x,8);}
+\foreach \y in {2,4,6} {\draw[cgrid] (0,\y)--(8,\y);}
+\draw[line width=0.9pt] (2,2) rectangle (6,6);
+\foreach \x in {3,4,5} {\draw[fgrid] (\x,2)--(\x,6);}
+\foreach \y in {3,4,5} {\draw[fgrid] (2,\y)--(6,\y);}
+\node[align=center] at (3,4) {\scriptsize 将取消\\[-1mm]\scriptsize 细化};
+\node[align=center] at (5,4) {\scriptsize 保持\\[-1mm]\scriptsize 细化};
+
+% ----- new hierarchy -----
+\node[font=\bfseries] at (15,10.0) {新 hierarchy $\mathcal H^{\mathrm{new}}$};
+\fill[keep] (15,2) rectangle (17,6);
+\fill[refine] (17,2) rectangle (19,6);
+\draw[cgrid] (11,0) rectangle (19,8);
+\foreach \x in {13,15,17} {\draw[cgrid] (\x,0)--(\x,8);}
+\foreach \y in {2,4,6} {\draw[cgrid] (11,\y)--(19,\y);}
+\draw[line width=0.9pt] (15,2) rectangle (19,6);
+\foreach \x in {16,17,18} {\draw[fgrid] (\x,2)--(\x,6);}
+\foreach \y in {3,4,5} {\draw[fgrid] (15,\y)--(19,\y);}
+\node[align=center] at (16,4) {\scriptsize 保持\\[-1mm]\scriptsize 细化};
+\node[align=center] at (18,4) {\scriptsize 新增\\[-1mm]\scriptsize 细化};
+
+% ----- transfer arrows -----
+\draw[transfer,blue!65!black] (6.15,5.25) .. controls (8.3,6.15) and (12.4,6.15) .. (14.85,5.25);
+\node[blue!65!black,fill=white,inner sep=1.5pt] at (10.5,6.45) {同分辨率 overlap copy};
+
+\draw[transfer,orange!75!black] (3.0,2.3) .. controls (5.5,0.35) and (10.8,0.35) .. (14.0,2.3);
+\node[orange!75!black,fill=white,inner sep=1.5pt,align=center] at (8.4,0.1) {fine $\rightarrow$ coarse\\average-down};
+
+\draw[transfer,green!45!black] (6.7,6.15) .. controls (8.4,8.0) and (15.9,8.0) .. (17.8,6.15);
+\node[green!40!black,fill=white,inner sep=1.5pt,align=center] at (12.2,8.15) {coarse $\rightarrow$ fine：AMR interpolation};
+
+% ----- region legend -----
+\node[anchor=west] at (0,-1.35) {\raisebox{0.4ex}{\tikz\fill[blue!13,draw=black!50] (0,0) rectangle (0.45,0.28);}\; $\mathcal R_{\mathrm{keep}}$};
+\node[anchor=west] at (6.1,-1.35) {\raisebox{0.4ex}{\tikz\fill[green!14,draw=black!50] (0,0) rectangle (0.45,0.28);}\; $\mathcal R_{\mathrm{refine}}$};
+\node[anchor=west] at (12.7,-1.35) {\raisebox{0.4ex}{\tikz\fill[orange!16,draw=black!50] (0,0) rectangle (0.45,0.28);}\; $\mathcal R_{\mathrm{derefine}}$};
+
+% ----- operator rebuild stage -----
+\node[opbox,text width=15.5cm] (op) at (9.5,-3.1) {
+\textbf{状态迁移完成以后：}
+在 $\mathcal H^{\mathrm{new}}$ 上重新识别 valid/covered masks、physical boundary 与 coarse--fine interface，并据此更新与几何相关的系数、界面通量离散和 composite operator。
+};
+\draw[dashed,->,line width=0.7pt] (15,-0.1) -- (op.north east);
+
+\end{tikzpicture}
+\caption{Regridding 后的三类区域及数据迁移。示意图使用二维 $r=2$ 网格。保持细化的区域具有同分辨率旧数据，可以按几何重叠关系复制；新增细化区域在旧 hierarchy 中只有 coarse representation，需要通过 AMR interpolation 构造新的 fine data；取消细化区域在删除 fine representation 前先 average-down 到新 hierarchy 保留的 coarse representation。状态变量迁移完成后，再在新 hierarchy 上重建离散几何关系与复合算子。}
+\label{fig:amr-regrid-transfer}
+\end{figure}
+
+图中的 patch 边界只是存储布局。所谓“直接复制”并不要求旧 patch 与新 patch 具有相同的 patch ID 或相同的矩形范围；真正需要匹配的是\textbf{同一 level、同一物理位置且分辨率相同的有效自由度}。因此，regrid 后即使 patch 被重新切分，只要某一 fine cell 仍然存在于 $\mathcal R_{\mathrm{keep}}$，它的离散值仍可由旧 fine data 直接获得。
+
+\subsection{分片状态转移算子}
+
+三类区域对应三个不同的离散操作。为了突出其数学对象，可把式~\eqref{eq:amr-regrid-transfer-operator}抽象地写成
+\begin{equation}
+\left.u^{\mathrm{new}}\right|_{\mathcal R}
+=
+\begin{cases}
+\Pi_{\mathrm{copy}}\,u^{\mathrm{old}},
+& \mathcal R=\mathcal R_{\mathrm{keep}},\\[1mm]
+P_{\mathrm{AMR}}\,u^{\mathrm{old}}_{\ell},
+& \mathcal R=\mathcal R_{\mathrm{refine}},\\[1mm]
+R_{\mathrm{AMR}}\,u^{\mathrm{old}}_{\ell+1},
+& \mathcal R=\mathcal R_{\mathrm{derefine}}.
+\end{cases}
+\label{eq:amr-regrid-piecewise-transfer}
+\end{equation}
+这里 $\Pi_{\mathrm{copy}}$ 表示同分辨率数据的几何重映射，$P_{\mathrm{AMR}}$ 表示 coarse-to-fine 的 AMR interpolation，$R_{\mathrm{AMR}}$ 表示 fine-to-coarse 的同步算子。
+
+对新出现的 fine cells，$P_{\mathrm{AMR}}$ 的具体形式取决于离散变量的含义。若未知量是 cell average，并且它代表某个守恒密度，则仅要求点值插值精度还不够；新生成的 fine-cell averages 还应满足相应的积分守恒关系。对于一个被 $r^d$ 个等体积 fine cells 覆盖的 coarse cell $C$，最基本的约束是
+\begin{equation}
+\boxed{
+\sum_{F\subset C}V_F u_F^{\mathrm{new}}
+=
+V_Cu_C^{\mathrm{old}}.
+}
+\label{eq:amr-regrid-conservative-refine}
+\end{equation}
+高阶初始化可以进一步要求线性或更高阶矩保持，但具体构造依赖所采用的重构方法，本章不预设唯一形式。对一维 $r=2$ 的 cell-average 情形，式~\eqref{eq:amr-r2-conservative-interpolation}--\eqref{eq:amr-r2-conservative-interpolation-explicit} 给出了一个可直接计算的线性重构示例，并通过式~\eqref{eq:amr-r2-conservative-interpolation-check} 显式验证守恒。
+
+对取消细化区域，$R_{\mathrm{AMR}}$ 必须先把将要删除的 fine representation 转移回仍然保留的 coarse representation。对于 cell-average 型标量，前面已经得到
+\begin{equation}
+\boxed{
+u_C^{\mathrm{new}}
+=
+\frac{1}{V_C}
+\sum_{F\subset C}V_Fu_F^{\mathrm{old}}.
+}
+\label{eq:amr-regrid-average-down}
+\end{equation}
+若 fine cells 等体积，式~\eqref{eq:amr-regrid-average-down}退化为算术平均。若存储的是 cell-integrated quantity，则相应的 coarse quantity 应由 fine quantities 求和，而不是取平均。
+
+因此，regridding 中的数据迁移本身也是一个\textbf{数值算子}，它具有需要分析的保持性质和近似误差。设 $I_{\mathcal H}$ 表示把足够光滑的连续函数采样或投影到 hierarchy $\mathcal H$ 上的离散表示，则可定义一次 regridding 的转移误差
+\begin{equation}
+\tau_{\mathrm{regrid}}
+=
+I_{\mathcal H^{\mathrm{new}}}u
+-
+\mathcal T_{\mathrm{regrid}}
+I_{\mathcal H^{\mathrm{old}}}u.
+\label{eq:amr-regrid-transfer-error}
+\end{equation}
+它的阶数取决于 $P_{\mathrm{AMR}}$、$R_{\mathrm{AMR}}$、变量的离散含义以及解的正则性，不能仅凭“使用了线性插值”就对整个 regridding 过程宣称某个全局收敛阶。至少应分别验证常数保持、守恒量保持以及与目标离散阶相匹配的一致性性质。
+
+\subsection{新层级上的离散算子重构}
+
+状态变量已经转移到 $V^{\mathrm{new}}$ 并不意味着旧线性系统仍然有效。Regridding 改变了 valid cells、covered cells、physical boundary 邻接关系以及 coarse--fine interface 的位置，因此依赖这些几何信息的局部 stencil 和跨层耦合也可能改变。
+
+若当前连续问题和系数记为 $\mathcal L(\beta,\alpha)$，则 regridding 前后的离散算子应分别理解为
+\begin{equation}
+A^{\mathrm{old}}
+=A(\mathcal H^{\mathrm{old}};\beta,\alpha,\mathrm{BC}),
+\qquad
+A^{\mathrm{new}}
+=A(\mathcal H^{\mathrm{new}};\beta,\alpha,\mathrm{BC}).
+\label{eq:amr-regrid-operator-rebuild}
+\end{equation}
+即使连续 PDE 和物理边界条件没有变化，通常也不能假设 $A^{\mathrm{new}}=A^{\mathrm{old}}$，因为两者作用在不同的离散空间上，而且 coarse--fine coupling 的位置已经变化。实现上通常需要重新建立 valid/covered masks、接口拓扑以及依赖几何的 face coefficients 或 transmissibilities，并据此更新 composite operator。
+
+因此，一次完整的 regridding 在逻辑上更准确地写成
+\begin{equation}
+\boxed{
+(\mathcal H^{\mathrm{old}},u^{\mathrm{old}})
+\xrightarrow{\text{hierarchy reconstruction}}
+\mathcal H^{\mathrm{new}}
+\Longrightarrow
+\begin{cases}
+u^{\mathrm{new}}=\mathcal T_{\mathrm{regrid}}u^{\mathrm{old}},\\[1mm]
+A^{\mathrm{new}}=A(\mathcal H^{\mathrm{new}};\beta,\alpha,\mathrm{BC}).
+\end{cases}
+}
+\label{eq:amr-regrid-full-chain}
+\end{equation}
+新 hierarchy 首先决定新的离散空间；随后状态迁移与算子重建都以这个新空间为依据。对于固定系数线性问题，这两项在实现上可以部分并行进行；如果离散系数本身也是随 hierarchy 迁移的状态量，则应先完成相应系数场的迁移，再装配依赖它们的 $A^{\mathrm{new}}$。
+
+\subsection{AMR 状态插值与多重网格传递的概念边界}
+
+文献和软件中有时也把 regridding 时的 coarse-to-fine 初始化称为 prolongation。为了避免与后文多重网格传递算子混淆，本书在 AMR hierarchy 语境中优先称其为 \textbf{AMR interpolation}。
+
+二者虽然都可能具有
+\begin{equation}
+P:\text{coarse}\longrightarrow\text{fine}
+\end{equation}
+的形式，但数学对象不同。AMR regridding 中的 $P_{\mathrm{AMR}}$ 用于构造新产生的 fine-level\textbf{物理状态变量}，并且可能需要满足质量、电荷或其他积分量的守恒约束；多重网格中的 prolongation 则把 coarse-grid\textbf{误差校正量}传回 fine-grid 求解空间。前者属于离散空间发生变化时的状态迁移，后者属于在既定线性系统上执行的迭代求解。仅仅因为二者的数据方向相同，不能把它们视为同一个算子。
+
+\begin{engineeringbox}
+\textbf{工程检查顺序：}regridding 之后若复合算子表现异常，应先确认状态迁移和算子重建是否使用同一个 $\mathcal H^{\mathrm{new}}$。特别检查 overlap copy、AMR interpolation、average-down、valid/covered mask、physical BC 和 coarse--fine flux 是否与当前 hierarchy 一致。层级版本错配会直接破坏离散一致性，并可能表现为后续迭代求解器残差停滞或收敛异常。
+\end{engineeringbox}
+
+\section{本章小结}
+
+本章把单层规则网格上的离散提升为 block-structured AMR 上的复合离散。真正新增的对象不是某一种 patch 数据结构，而是由 hierarchy $\mathcal H$ 决定的复合离散空间
+\begin{equation}
+V(\mathcal H)
+=
+\prod_{\ell=0}^{L}\mathbb R^{|\mathcal V_\ell|},
+\end{equation}
+以及作用在这个空间上的 composite operator。valid cells 构成不重复的复合控制体划分，covered coarse cells 可以继续存在于存储中，但不再重复成为物理自由度。
+
+从这个空间出发，本章建立了以下推理链：
+\begin{equation}
+\boxed{
+\mathcal H
+\rightarrow
+V(\mathcal H)
+\rightarrow
+\text{composite control volumes}
+\rightarrow
+\widehat Q_{cf}
+\rightarrow
+K\text{ 或 }A=M^{-1}K.
+}
+\end{equation}
+连续精确通量 $Q$ 与数值通量 $\widehat Q$ 必须严格区分。coarse--fine conservation 来自 numerical flux 的共享装配，accuracy 则来自 $\widehat Q$、interpolation、reconstruction 与 quadrature 对连续 operator 的一致近似；两者是不同性质。二维和三维中，一个 coarse face 对应多个 fine subfaces，切向 reconstruction 会进一步扩大 matrix graph，因此一维接口公式不能只通过增加邻居数量机械推广。
+
+Ghost fill 在数学上是把复合离散函数延拓到 stencil 所需辅助位置的 operator；same-level copy、coarse-to-fine interpolation 与 physical boundary closure 是三个不同分支。固定线性 interpolation 可以通过 ghost elimination 直接进入 composite matrix；状态相关的 nonlinear reconstruction 则产生非线性或 Jacobian-dependent operator，不能解释成固定 sparse matrix。
+
+对 cell-integrated balance，若 interface construction 来自共享对称通量，矩阵 $K$ 可以保持 Euclidean symmetry；逐行除以不同 control-volume sizes 后得到的 $A=M^{-1}K$ 未必 Euclidean symmetric，却可以满足 $MA=A^TM$ 的 weighted self-adjointness。纯 Neumann nullspace、global conservation、polynomial reproduction、manufactured-solution convergence 与 operator-structure checks 分别验证不同层面的性质，不能用单一测试互相替代。
+
+average-down 与 AMR interpolation 则描述同一物理状态在不同分辨率 representations 之间的转移。对 finite-volume cell averages，average-down 是保持积分量的 conservative projection；一个守恒的 coarse-to-fine initialization 应至少满足 $R_{f\rightarrow c}P_{c\rightarrow f}=I$，而一般 $P_{c\rightarrow f}R_{f\rightarrow c}\neq I$，因为降到 coarse representation 会丢失 subcell information。对 nodal、face-centered 或 cell-integrated variables，应依据自由度的几何位置和变量语义重新定义同步关系。regridding 最终把这一章的全部结构连接起来：hierarchy 从 $\mathcal H^{\mathrm{old}}$ 变为 $\mathcal H^{\mathrm{new}}$ 后，既要通过 $\mathcal T_{\mathrm{regrid}}$ 转移离散状态，也要在新的 $V(\mathcal H^{\mathrm{new}})$ 上重新构造 composite operator。
+
+直到本章结束，\textbf{multigrid solver 仍然没有参与 AMR 离散空间的定义}。\chapref{ch:iterative-smoothing}开始研究如何迭代求解已经构造好的线性系统；在\secref{sec:amr-vs-mg-level}中，再把服务于误差消除的 MG hierarchy 叠加到这里已经建立的 physical AMR hierarchy 上。
+
+\section*{习题}
+
+本章习题按“几何与空间表示 $\rightarrow$ numerical flux $\rightarrow$ operator structure $\rightarrow$ consistency/convergence $\rightarrow$ regridding”组织。计算时必须明确自由度语义、valid/covered 区域、face orientation、integrated flux 与 row scaling；不能只写最终 stencil 系数。
+
+\subsection*{计算题}
+\begin{enumerate}[label=\arabic*.]
+\item 二维 refinement ratio 为 $r=2$，一个 square fine patch 每个方向有 $n=8,16,64$ 个 fine cells，stencil interface depth 为 $g=1$。用式~\eqref{eq:amr-interface-fraction} 计算接口影响比例，并比较其随 $n$ 的变化。
+\item 对一维 coarse--fine interface，令 $H=2h$、$h=1$、$\beta_C=1$、$\beta_F=4$。从界面状态 $u_\Gamma$ 的通量连续条件消去 $u_\Gamma$，得到 $T_{CF}$，并写出该界面对 coarse 与 fine 两个 cell-integrated rows 的贡献。
+\item 对式~\eqref{eq:amr-explicit-one-dimensional-matrix} 取 $h=1$、$\beta=1$，写出 cell-integrated matrix $K$。再以 $M=\operatorname{diag}(2,1,1,2)$ 构造 $A=M^{-1}K$，分别检查 $K-K^T$ 与 $MA-A^TM$。
+\item 一维 fine ghost point 位于 $x=3h/2$，两个 coarse centers 位于 $x=0$ 与 $x=2h$。求线性 interpolation weights，并验证式~\eqref{eq:amr_interp_constant_preserve} 与式~\eqref{eq:amr_interp_linear_reproduce}；随后把 ghost relation 代入一个 fine-grid 三点 stencil，写出新增 coarse matrix columns。
+\item 二维 $r=2$ 时，一个 coarse face 对应两个等面积 fine subfaces。若 fine flux densities 为 $q_1=2,q_2=5$，计算与积分通量守恒一致的 coarse flux density。三维 $r=2$ 时对 $q_1,q_2,q_3,q_4=1,2,3,6$ 重复计算。
+\item 一个二维 covered coarse cell 的四个 fine cell averages 为 $1,2,3,6$。计算 conservative average-down 后的 coarse average；若这四个数字改为 cell-integrated quantities，计算 coarse integral，并解释两个公式为什么不同。
+\item 对一维 $r=2$ 的 piecewise-constant transfer，使用式~\eqref{eq:amr-simple-transfer-projector} 计算 $P_0R$ 的特征值与特征向量，并说明为什么 $(1,1)^T$ 被保留而 $(1,-1)^T$ 被消去。把这一结果解释为“coarse representation 保留平均模态但丢失 subcell variation”。
+\item 给定 $N_c=1200$ 个 valid coarse cells、$N_{cov}=300$ 个 covered coarse cells 和 $N_f=1200$ 个 fine cells。分别计算 hierarchy storage cell count 与 composite DOF count；若每个存储 cell 保存 6 个 FP64 fields，再比较两种计数对应的数据量。
+\end{enumerate}
+
+\subsection*{推导与证明题}
+\begin{enumerate}[label=\arabic*.]
+\item 证明标准嵌套且不存在重复 valid coverage 时，式~\eqref{eq:amr-composite-partition} 给出的 valid cells 构成计算域的复合控制体划分。说明这一性质为什么是 composite integral norm 与 global conservation 的前提。
+\item 从连续精确通量的积分可加性证明式~\eqref{eq:amr-exact-flux-partition}；再独立证明，若 numerical flux 满足式~\eqref{eq:amr_flux_matching_general}，coarse--fine interface 在所有 valid-cell equations 求和时不产生净内部源项。指出这两个证明分别属于连续恒等式和离散代数恒等式。
+\item 从“coarse center--interface--fine center”上的分段线性局部模型推导式~\eqref{eq:amr_cf_transmissibility}，并验证 $H=h$ 时退化为同层 two-point transmissibility。
+\item 设 fixed linear interpolation 满足 $\sum_jw_j=1$。证明 constant field 经 ghost elimination 后仍保持常数；再说明只满足这一条件为什么不足以推出二阶 interface truncation error。
+\item 假设 cell-integrated matrix $K=K^T$，$M$ 为正对角 volume matrix，$A=M^{-1}K$。证明 $MA=A^TM$，并证明 $A$ 在 $M$-weighted inner product 下自伴。解释这与 Euclidean symmetry 的区别。
+\item 对齐次纯 Neumann diffusion，给出足够条件使 $K\bm1=0$。将条件分别归入 physical boundary closure、same-level flux、coarse--fine extension 和 interface flux 四类，并说明缺失其中任一类时常数零空间如何被破坏。
+\item 设两层 regridding 中 $P_{\mathrm{AMR}}$ 保持常数，$R_{\mathrm{AMR}}$ 是 conservative average-down，$\Pi_{\mathrm{copy}}$ 精确复制同分辨率数据。证明 $\mathcal T_{\mathrm{regrid}}\bm1=\bm1$；若 $u$ 表示守恒密度，再写出新增细化区域必须满足的局部积分约束。
+\end{enumerate}
+
+\subsection*{编程与上机题}
+\begin{enumerate}[label=\arabic*.]
+\item 实现二维 block-structured hierarchy 的 valid/covered mask 构造器。显式验证所有 valid cell volumes 的并集覆盖 $\Omega$ 且不存在 interior overlap；再输出 storage cell count 与 composite DOF count。
+\item 实现本章的一维 two-level composite Poisson assembler，同时输出 cell-integrated $K$、volume matrix $M$ 和 $A=M^{-1}K$。数值检查 $\|K-K^T\|$、$\|MA-A^TM\|$ 与纯 Neumann 情况下的 $\|K\bm1\|$。
+\item 实现二维 $r=2$ coarse-face/fine-subface numerical flux matching。随机生成 interface states，验证 coarse flux 与 fine subface flux sum 在机器精度范围内一致；随后故意让 coarse 与 fine 两侧各自重算不同 flux，观察 global conservation defect。
+\item 实现一个 linear coarse-to-fine ghost extension，并通过常数场、线性场和二次场测试其 polynomial reproduction。将 ghost relation 显式消元后，与 matrix-free ghost-fill-plus-stencil apply 的结果逐项比较。
+\item 设计 manufactured-solution AMR convergence experiment。保持 refinement region 的物理位置与形状可比，对所有 level spacing 同时减半，报告 composite $L_2$、$L_\infty$ error 与式~\eqref{eq:amr-observed-order} 的 observed order；同时单独报告 interface-near error。
+\item 实现式~\eqref{eq:amr-regrid-piecewise-transfer} 的两层 regridding transfer。构造 $\mathcal R_{\mathrm{keep}}$、$\mathcal R_{\mathrm{refine}}$ 与 $\mathcal R_{\mathrm{derefine}}$，分别执行 overlap copy、AMR interpolation 与 average-down；检查 constant preservation、conserved integral 与 transfer error。
+\end{enumerate}
+
+\subsection*{工程与综合题}
+\begin{enumerate}[label=\arabic*.]
+\item 给定 stencil depth $g$ 与每个 patch 方向的 cell count $n$，同时考虑式~\eqref{eq:amr-interface-fraction}、ghost storage 和 patch scheduling，分析为什么无限减小 patch size 不会单调提高 AMR 并行性能。区分几何上的 interface fraction 与具体机器上的性能结论。
+\item 比较显式 composite matrix 与 matrix-free ghost-fill/stencil apply。说明在 fixed linear interpolation 下两者怎样表示同一个线性 operator；再讨论 nonlinear limiter 出现后为什么需要改变 operator abstraction。
+\item 一个实现的 manufactured-solution error 看起来二阶，但 $\|K-K^T\|/\|K\|=10^{-3}$。提出至少三个可证伪的 interface hypotheses，并为每个 hypothesis 设计一个最小 diagnostic case。不要把“误差阶正确”当作对称性正确的证据。
+\item 比较 AMR interpolation/average-down 与后续 multigrid prolongation/restriction。按“作用空间、传递对象、发生时机、守恒要求、是否属于 solver iteration”五个维度建立对照，并给出一个混用后会改变数学问题的具体例子。
+\end{enumerate}
