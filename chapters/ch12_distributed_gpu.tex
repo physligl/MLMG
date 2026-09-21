@@ -168,7 +168,7 @@ T_{MG\ preconditioner}^{\mathrm{excl}}
 T_{vector}^{\mathrm{excl}}.
 \label{eq:distributed-gpu-krylov-exclusive-cost}
 \end{equation}
-其中上标 $\mathrm{excl}$ 表示同一时刻的 wall-clock 时间只归入一个桶；$T_{op}$ 表示离散算子应用，显式稀疏矩阵路径中它可能表现为 SpMV，matrix-free 路径中则是 stencil/kernel apply。若 profiler 记录的是原始 kernel、copy 或 MPI event duration，由于它们可能重叠，这些 duration 不能直接相加得到 wall time。\chapref{ch:benchmarking}会正式区分 wall time、exclusive phase time 与可重叠 event duration。预条件器的数学角色已经在\secref{sec:mg-preconditioner}建立；这里关注它与全局归约共同形成的执行关键路径。
+其中上标 $\mathrm{excl}$ 表示同一时刻的 wall-clock 时间只归入一个桶；$T_{op}$ 表示离散算子应用，显式稀疏矩阵路径中它可能表现为 SpMV，无矩阵路径中则是 stencil/kernel apply。若 profiler 记录的是原始 kernel、copy 或 MPI event duration，由于它们可能重叠，这些 duration 不能直接相加得到 wall time。\chapref{ch:benchmarking}会正式区分 wall time、exclusive phase time 与可重叠 event duration。预条件器的数学角色已经在\secref{sec:mg-preconditioner}建立；这里关注它与全局归约共同形成的执行关键路径。
 
 \section{本章小结}
 

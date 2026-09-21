@@ -637,9 +637,9 @@ M_{ubr}
 
 对 $512^3$ 最细网格，这一项本身约为 $3.43$ GiB；还没有计算系数场、几何数据、Jacobi 双缓冲、临时归约缓冲区、AMR ghost cells 或粗层算子。GPU 显存容量因此可能比 FLOP/s 更早成为规模上限。
 
-\subsection{Matrix-Free 与显式稀疏矩阵}
+\subsection{无矩阵算子与显式稀疏矩阵}
 
-对规则 Poisson stencil，显式 CSR 会额外存每个 nonzero 的 value/index 与 row pointers；matrix-free 则从规则几何和少量系数即时计算 stencil。GPU 上这常形成一个非常重要的交换：
+对规则 Poisson stencil，显式 CSR 会额外存每个 nonzero 的 value/index 与 row pointers；无矩阵 则从规则几何和少量系数即时计算 stencil。GPU 上这常形成一个非常重要的交换：
 \[
 \boxed{
 \text{更多轻量 FLOPs}
@@ -647,9 +647,9 @@ M_{ubr}
 \text{更少 global-memory bytes 与更少显存容量}.
 }
 \]
-由于简单 stencil 往往 memory-bound，增加少量可预测 FLOPs 反而可能改善 arithmetic intensity。这也是近年 GPU multigrid 研究持续重视 matrix-free、data blocking 与 mixed precision 的原因之一\cite{antepara2024brick,stokesgpu2025}。
+由于简单 stencil 往往 memory-bound，增加少量可预测 FLOPs 反而可能改善 arithmetic intensity。这也是近年 GPU multigrid 研究持续重视 无矩阵、data blocking 与 mixed precision 的原因之一\cite{antepara2024brick,stokesgpu2025}。
 
-但 matrix-free 不是免费：复杂 cut-cell、非结构几何或高阶 operator 可能需要更多几何数据和分支。是否值得必须回到实际 memory traffic 与 kernel complexity。
+但 无矩阵 不是免费：复杂 cut-cell、非结构几何或高阶 operator 可能需要更多几何数据和分支。是否值得必须回到实际 memory traffic 与 kernel complexity。
 
 \subsection{Kernel 融合的适用条件}
 

@@ -3,7 +3,7 @@
 
 本章建立后续全书共同使用的离散对象：怎样从连续椭圆型方程得到有限个未知量、局部 stencil 和全局线性系统。后面的 Jacobi、Gauss--Seidel、多重网格以及并行实现都只是在操作这个离散系统，因此第一章最重要的不是记住若干公式，而是能够解释每一个矩阵系数从哪一个局部关系产生。
 
-本章先用 Poisson 方程建立两条可以持续追踪的离散路线。第一条从微分算子的局部差分近似出发，以节点型有限差分作为最小例子；第二条从控制体积分平衡出发，以 cell-centered 有限体积作为最小例子。有限差分与有限体积描述离散构造的不同侧面，并且存在重要的交集。有限差分强调怎样用离散差分近似微分算子，有限体积强调怎样由控制体积分与数值通量满足离散守恒；在规则笛卡尔网格上，守恒型 flux-difference 有限差分与有限体积可以生成完全相同的代数算子，同一个格式也可能同时具有两种解释。因而“节点型 FD”和“cell-centered FV”只是本章选择的两种代表性布局，而不是两种方法的定义。进入一般变系数算子、边界、AMR 与 matrix-free 表示以后，本书会继续标明当前推导属于哪条路线、哪些结构为两条路线共享、哪些结论依赖具体布局。\textbf{本章始终只讨论单一分辨率网格}；局部细化以及粗、细离散层之间的耦合留到\chapref{ch:amr-discretization}。
+本章先用 Poisson 方程建立两条可以持续追踪的离散路线。第一条从微分算子的局部差分近似出发，以节点型有限差分作为最小例子；第二条从控制体积分平衡出发，以 cell-centered 有限体积作为最小例子。有限差分与有限体积描述离散构造的不同侧面，并且存在重要的交集。有限差分强调怎样用离散差分近似微分算子，有限体积强调怎样由控制体积分与数值通量满足离散守恒；在规则笛卡尔网格上，守恒型 flux-difference 有限差分与有限体积可以生成完全相同的代数算子，同一个格式也可能同时具有两种解释。因而“节点型 FD”和“cell-centered FV”只是本章选择的两种代表性布局，而不是两种方法的定义。进入一般变系数算子、边界、AMR 与无矩阵表示以后，本书会继续标明当前推导属于哪条路线、哪些结构为两条路线共享、哪些结论依赖具体布局。\textbf{本章始终只讨论单一分辨率网格}；局部细化以及粗、细离散层之间的耦合留到\chapref{ch:amr-discretization}。
 
 \begin{keybox}
 \textbf{本章的核心学习链：}
@@ -1428,7 +1428,7 @@ A^T=A.
 \end{checkpointbox}
 
 
-\section{显式矩阵与 Matrix-Free 算子}
+\section{显式矩阵与无矩阵算子}
 
 到目前为止，我们一直把离散系统写成
 \begin{equation}
@@ -1436,7 +1436,7 @@ A\bm u=\bm b.
 \end{equation}
 这里的 $A$ 首先是一个\textbf{数学上的线性算子}：给定离散向量 $\bm u$，它规定应该得到什么样的 $A\bm u$。但程序还要回答另一个问题：\textbf{这个算子在内存中怎样表示，又怎样真正计算 $A\bm u$？}
 
-这两个层次不能混在一起。把 $A$ 写成矩阵，并不意味着程序一定要把所有非零矩阵条目逐项保存下来。显式矩阵和 matrix-free 讨论的正是同一个离散算子的两种程序表示。
+这两个层次不能混在一起。把 $A$ 写成矩阵，并不意味着程序一定要把所有非零矩阵条目逐项保存下来。显式矩阵和无矩阵（matrix-free）表示讨论的正是同一个离散算子的两种程序表示。
 
 \subsection{离散算子的两种程序表示}
 
@@ -1507,7 +1507,7 @@ A\bm x=
 \end{equation}
 这个小例子可以直接用来检查：表示方式变了，算子的数学作用没有变。
 
-这就是最基本的 matrix-free 思想。它没有改变离散方程，也没有删除数学上的 $A$；它只是没有把 $A$ 逐项物化为一个长期存储的矩阵数据结构。
+这就是最基本的无矩阵思想。它没有改变离散方程，也没有删除数学上的 $A$；它只是没有把 $A$ 逐项物化为一个长期存储的矩阵数据结构。
 
 \begin{keybox}
 \textbf{先把最核心的区别固定下来：}
@@ -1519,7 +1519,7 @@ Matrix-free 表示：不长期保存完整的非零矩阵条目，而是保留�
 因此
 \[
 \boxed{
-A\text{ 是数学对象；explicit / matrix-free 是程序表示。}
+A\text{ 是数学对象；explicit /无矩阵是程序表示。}
 }
 \]
 \end{keybox}
@@ -1554,7 +1554,7 @@ A\bm x.
 }
 \label{eq:discretization-explicit-path}
 \end{equation}
-而 matrix-free 路径跳过了“长期保存完整矩阵条目”这一步：
+而无矩阵路径跳过了“长期保存完整矩阵条目”这一步：
 \begin{equation}
 \boxed{
 \text{离散规则与局部系数}
@@ -1564,7 +1564,7 @@ A\bm x.
 \label{eq:discretization-matrixfree-path}
 \end{equation}
 
-这两个流程必须产生与同一离散算子一致的结果。若边界条件、变系数平均方式或几何系数在两条路径中处理不同，那么所谓“显式与 matrix-free 等价”就已经失效。验证一个 matrix-free 实现时，最直接的正确性测试之一，就是在一个足够小的问题上同时构造显式矩阵，并比较两种路径得到的 $A\bm x$。
+这两个流程必须产生与同一离散算子一致的结果。若边界条件、变系数平均方式或几何系数在两条路径中处理不同，那么所谓“显式与无矩阵等价”就已经失效。验证一个无矩阵实现时，最直接的正确性测试之一，就是在一个足够小的问题上同时构造显式矩阵，并比较两种路径得到的 $A\bm x$。
 
 \subsection{显式稀疏矩阵的存储结构}
 
@@ -1585,7 +1585,7 @@ CSR 的意义不是改变数学上的矩阵，而是避免保存大量必然为�
 
 显式矩阵也不一定非要使用 CSR。规则 stencil 可以使用固定对角线或固定邻接格式，某些块系统还会使用 block sparse 格式。这里真正决定“显式”的不是具体容器，而是：\textbf{局部代数系数已经被预先物化并长期保存，后续 $A\bm x$ 直接读取这些系数。}
 
-\subsection{Matrix-Free 算子的存储对象}
+\subsection{无矩阵算子的存储对象}
 
 Matrix-free 省略的是 assembled matrix entries 及其通用稀疏索引结构，不是把算子所需的数据全部消失。
 
@@ -1599,7 +1599,7 @@ h_x,\qquad h_y,\qquad h_z
 \begin{equation}
 -\nabla\cdot\bigl(\beta\nabla u\bigr)+\alpha u=f,
 \end{equation}
-matrix-free 实现仍可能需要保存
+无矩阵实现仍可能需要保存
 \begin{itemize}
 \item cell-centered 的 $\alpha$；
 \item 各方向 face-centered 的 $\beta$；
@@ -1612,7 +1612,7 @@ matrix-free 实现仍可能需要保存
 \begin{keybox}
 \[
 \boxed{
-\text{matrix-free}\neq\text{data-free}.
+\text{无矩阵}\neq\text{无数据}.
 }
 \]
 
@@ -1621,7 +1621,7 @@ Matrix-free 不存完整 assembled sparse matrix，但仍然必须拥有足够�
 
 \subsection{迭代算法的算子应用接口}
 
-把“矩阵”和“算子应用”区分开以后，就能理解为什么 matrix-free 可以与许多迭代算法配合。以残差为例，
+把“矩阵”和“算子应用”区分开以后，就能理解为什么无矩阵可以与许多迭代算法配合。以残差为例，
 \begin{equation}
 \bm r=\bm b-A\bm u.
 \end{equation}
@@ -1635,7 +1635,7 @@ A\bm x.
 \end{equation}
 因此从接口上看，一个线性算子完全可以表现为“输入向量，输出算子作用后的向量”，而不必表现为“允许任意查询矩阵条目”的容器。后续章节讨论 Krylov 方法、多重网格和 GPU kernel 时会反复使用这一观点。
 
-不过，\textbf{能做 $A\bm x$ 并不意味着所有算法都天然适合 matrix-free。}直接因子分解需要显式代数结构；某些 AMG setup、稀疏矩阵重排或依赖矩阵图的算法也需要访问矩阵条目或等价的邻接信息。于是 matrix-free 是否合适，不只由 PDE 决定，还取决于后续算法究竟需要“算子作用”，还是需要“矩阵本身”。
+不过，\textbf{能做 $A\bm x$ 并不意味着所有算法都天然适合无矩阵。}直接因子分解需要显式代数结构；某些 AMG setup、稀疏矩阵重排或依赖矩阵图的算法也需要访问矩阵条目或等价的邻接信息。于是无矩阵是否合适，不只由 PDE 决定，还取决于后续算法究竟需要“算子作用”，还是需要“矩阵本身”。
 
 \subsection{存储、数据搬运与计算量的权衡}
 
@@ -1648,7 +1648,7 @@ Matrix-free 则把一部分工作推迟到 operator apply 阶段：程序从 ste
 \boxed{
 \text{显式：更多预计算与存储}
 \quad\longleftrightarrow\quad
-\text{matrix-free：更多现场计算，较少矩阵数据搬运}.
+\text{无矩阵：更多现场计算，较少矩阵数据搬运}.
 }
 \label{eq:discretization-explicit-mf-tradeoff}
 \end{equation}
@@ -1656,7 +1656,7 @@ Matrix-free 则把一部分工作推迟到 operator apply 阶段：程序从 ste
 
 \subsection{三维七点问题的内存预算}
 
-现在再看内存预算，它的作用只是量化前面已经建立的表示差异，而不是定义 matrix-free。
+现在再看内存预算，它的作用只是量化前面已经建立的表示差异，而不是定义无矩阵。
 
 取
 \begin{equation}
@@ -1671,7 +1671,7 @@ u,\qquad b,\qquad r,\qquad w
 M_{vec}=4\times8N=32N\ \text{byte},
 \label{eq:discretization-vector-memory}
 \end{equation}
-即约 $512\ \mathrm{MiB}$。这部分并不是显式矩阵专属成本；matrix-free 求解同样需要未知量、右端、残差和相应工作向量。
+即约 $512\ \mathrm{MiB}$。这部分并不是显式矩阵专属成本；无矩阵求解同样需要未知量、右端、残差和相应工作向量。
 
 \paragraph{显式 CSR。}
 内部每行近似七个非零元。若 matrix value 使用 FP64、column index 使用 32-bit integer、row pointer 使用 64-bit integer，则
@@ -1698,13 +1698,13 @@ M_{CSR}\approx92N\ \text{byte}
 \end{equation}
 再加四个工作向量，总核心数据接近 $1.94\ \mathrm{GiB}$。
 
-\paragraph{常系数 matrix-free。}
+\paragraph{常系数无矩阵算子。}
 对规则三维 Poisson，算子表示主要是少量网格步长和边界元数据，与 $N$ 成正比的核心成本主要来自工作向量。因此在这个刻意简化的例子里，四个 FP64 工作向量约占
 \begin{equation}
 512\ \mathrm{MiB}.
 \end{equation}
 
-\paragraph{变系数 matrix-free。}
+\paragraph{变系数无矩阵算子。}
 若保存一个 cell-centered $\alpha$ 和三个方向的 face-centered $\beta$，在大规则三维网格上可把 face 数量近似看成每个方向 $\Oh(N)$，因此系数存储粗略为
 \begin{equation}
 N+3N\approx4N
@@ -1726,8 +1726,8 @@ N+3N\approx4N
 \midrule
 显式 CSR 算子 & 非零值、列索引、行指针 & 约 $1.44\ \mathrm{GiB}$\\
 四个公共工作向量 & $u,b,r,w$ & $0.50\ \mathrm{GiB}$\\
-常系数 matrix-free 算子 & 网格步长、边界等少量元数据 & 相对可忽略\\
-变系数 matrix-free 算子 & $\alpha$ 与三个方向 face coefficient & 约 $0.50\ \mathrm{GiB}$\\
+常系数无矩阵算子 & 网格步长、边界等少量元数据 & 相对可忽略\\
+变系数无矩阵算子 & $\alpha$ 与三个方向 face coefficient & 约 $0.50\ \mathrm{GiB}$\\
 \bottomrule
 \end{tabularx}
 \caption{三维七点问题的核心存储预算。该表用于展示表示方式的量级差异，不计边界辅助层、内存对齐、容器元数据和求解器额外工作区，因此不能直接当作具体程序的峰值 RSS。}
@@ -1743,11 +1743,11 @@ N+3N\approx4N
 
 现在可以把选择标准压缩成两个问题。
 
-第一，\textbf{离散算子是否可以由较少的局部规则、物理系数和几何信息低成本重建？}规则低阶 Poisson/扩散 stencil 往往满足这一条件，因此 matrix-free 很自然；若算子来源高度不规则，显式稀疏矩阵通常更直接。
+第一，\textbf{离散算子是否可以由较少的局部规则、物理系数和几何信息低成本重建？}规则低阶 Poisson/扩散 stencil 往往满足这一条件，因此无矩阵很自然；若算子来源高度不规则，显式稀疏矩阵通常更直接。
 
-第二，\textbf{后续算法需要的是 $A\bm x$，还是必须访问矩阵条目、矩阵图或分解结构？}若核心求解过程主要反复调用 operator apply，matrix-free 可以充分发挥优势；若需要直接因子分解、通用 AMG setup、稀疏重排或其他显式代数操作，则显式矩阵可能更合适。
+第二，\textbf{后续算法需要的是 $A\bm x$，还是必须访问矩阵条目、矩阵图或分解结构？}若核心求解过程主要反复调用 operator apply，无矩阵可以充分发挥优势；若需要直接因子分解、通用 AMG setup、稀疏重排或其他显式代数操作，则显式矩阵可能更合适。
 
-因此显式矩阵与 matrix-free 不是“落后”和“先进”的关系，而是同一个离散算子的两种表示策略。真正要比较的是完整算法链上的 setup、存储、内存流量、计算量、可复用性和软件接口。
+因此显式矩阵与无矩阵不是“落后”和“先进”的关系，而是同一个离散算子的两种表示策略。真正要比较的是完整算法链上的 setup、存储、内存流量、计算量、可复用性和软件接口。
 
 \begin{checkpointbox}
 \textbf{即时检查}
@@ -1760,7 +1760,7 @@ N+3N\approx4N
 
 (3) 不用 CSR，但预先保存每一行的左、主、右三个系数数组，再用这些数组计算 $A\bm x$。
 
-哪一种属于 matrix-free？为什么第 (3) 种虽然没有 CSR，仍然属于显式算子表示？再说明用什么小规模测试可以验证第 (1) 与第 (2) 种实现的是同一个离散算子。
+哪一种属于无矩阵？为什么第 (3) 种虽然没有 CSR，仍然属于显式算子表示？再说明用什么小规模测试可以验证第 (1) 与第 (2) 种实现的是同一个离散算子。
 \end{checkpointbox}
 
 \begin{keybox}
@@ -1797,7 +1797,7 @@ Matrix-free（工程扩展） & 不显式保存完整矩阵，而是保存生成
 
 到这里，读者应能够完成五件可以直接检验的工作。第一，从一维 Poisson 方程推导节点型有限差分并组装小型矩阵；第二，从二维小网格解释五点邻接怎样形成块三对角结构，并把三维看成二维切片之间的进一步耦合；第三，对同一个 Poisson 方程区分精确面通量与数值面通量，从控制体积分恒等式推导 cell-centered FV，并证明共享面数值通量的反对称装配如何给出离散局部守恒；第四，对一般算子 $-\nabla\cdot(\beta\nabla u)+\alpha u=f$，在明确的光滑性、椭圆性与规则网格假设下分别沿 FD 与 FV 两条路线建立离散，并判断它们何时共享同一数值通量或代数算子；第五，对 Dirichlet、Neumann、Robin、周期以及扩展的 DtN，既能从 FV 的边界面通量闭合推导矩阵贡献，也能从 FD 的边界 stencil/ghost 关系建立对应矩阵行，并比较两种表示的精度、守恒性、对称性与零空间。
 
-在此基础上，变系数算子不再只是“把常数换成数组”：空间变化的 $\beta$ 进入面/半点连接权重，零阶项 $\alpha u$ 则主要增加本地对角贡献。显式矩阵与 matrix-free 一节进一步说明这些数学对象在程序中分别保存什么。具体界面离散、复合网格、迭代求解器、多重网格粗化和并行框架将在后续章节逐步引入。
+在此基础上，变系数算子不再只是“把常数换成数组”：空间变化的 $\beta$ 进入面/半点连接权重，零阶项 $\alpha u$ 则主要增加本地对角贡献。显式矩阵与无矩阵一节进一步说明这些数学对象在程序中分别保存什么。具体界面离散、复合网格、迭代求解器、多重网格粗化和并行框架将在后续章节逐步引入。
 
 \section*{习题}
 
@@ -1845,14 +1845,14 @@ Matrix-free（工程扩展） & 不显式保存完整矩阵，而是保存生成
 \subsection*{数值验证}
 \begin{enumerate}[label=\arabic*.]
 \item 编写一维 cell-centered Poisson/扩散 FV 装配器，内部面统一通过数值通量接口处理，物理边界面至少支持 Dirichlet、Neumann 和 Robin。对一个有解析解的问题依次取 $N=16,32,64,128$，报告 $L_2$ 与 $L_\infty$ 误差及实验收敛阶。随后再实现一个节点型 FD 边界版本，验证在选定的规则网格和相同低阶闭合下，两种表示是否生成预期的等价代数关系；不要把这种等价推广到一般网格。
-\item 分别实现二维五点 Poisson 的显式稀疏矩阵乘和 matrix-free stencil apply。对随机向量验证两种实现输出一致，并报告误差范数。
+\item 分别实现二维五点 Poisson 的显式稀疏矩阵乘和无矩阵算子应用。对随机向量验证两种实现输出一致，并报告误差范数。
 \item 给定一组周期的一维 face-centered 系数 $\beta_{i+1/2}$ 和 cell/node-centered $\alpha_i$，分别实现守恒型 FD 与 cell-centered FV 的内部算子装配。让两种实现读取同一组面系数，数值验证它们生成的局部矩阵系数一致；再解释为什么这个实验只验证了规则网格上的代数重合，而没有证明两种方法普遍等价。
 \item 构造一个纯 Neumann 离散矩阵，数值验证 $A\bm1\approx0$；再人为给一个不满足兼容条件的右端，观察直接/迭代求解器的表现并解释原因。
 \end{enumerate}
 
 \subsection*{边界诊断与综合}
 \begin{enumerate}[label=\arabic*.]
-\item 对 $128^3$ 三维七点 Poisson，按 FP64 value、32-bit column index、64-bit row pointer 的 CSR 假设精确估算矩阵存储；再与七系数结构化显式存储、常系数 matrix-free 和四个 FP64 工作向量比较。
-\item 给出一个“显式矩阵更合适”和一个“matrix-free 更合适”的实际算子场景。判断时必须从算子信息是否可低成本重建、下游算法是否需要矩阵条目、内存流量三个角度论证。
+\item 对 $128^3$ 三维七点 Poisson，按 FP64 value、32-bit column index、64-bit row pointer 的 CSR 假设精确估算矩阵存储；再与七系数结构化显式存储、常系数无矩阵和四个 FP64 工作向量比较。
+\item 给出一个“显式矩阵更合适”和一个“无矩阵更合适”的实际算子场景。判断时必须从算子信息是否可低成本重建、下游算法是否需要矩阵条目、内存流量三个角度论证。
 \item 比较局部 Robin 与一般 DtN 对稀疏结构的影响。若边界有 $M$ 个自由度，一个稠密 DtN 边界块可能引入多少量级的非零元？讨论其对存储与并行通信的后果。
 \end{enumerate}

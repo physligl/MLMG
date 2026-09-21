@@ -731,7 +731,7 @@ a_Pu_P
 A_{P,j}^{cf}\;\mathrel{+}=\;a_gw_j.
 }
 \end{equation}
-这说明 coarse-to-fine interpolation 并不是“与线性系统无关的预处理”。只要 interpolation 是固定线性的，它就是 composite linear operator 的一部分；matrix-free apply 与显式矩阵装配必须代表同一个消元关系。
+这说明 coarse-to-fine interpolation 并不是“与线性系统无关的预处理”。只要 interpolation 是固定线性的，它就是 composite linear operator 的一部分；无矩阵算子应用 与显式矩阵装配必须代表同一个消元关系。
 
 如果 interpolation 使用依赖当前解的 limiter、非线性 reconstruction 或状态相关权重，则 $w_j=w_j(\bm u)$，上述关系不再定义一个固定矩阵 $A$。此时应把 composite operator 视为非线性映射 $\mathcal A(\bm u)$，或在线性化后讨论其 Jacobian。把这种状态相关 ghost fill 强行解释成固定 sparse matrix 会混淆离散模型与求解器对象。
 
@@ -1458,7 +1458,7 @@ average-down 与 AMR interpolation 则描述同一物理状态在不同分辨率
 \item 实现本章的一维 two-level composite Poisson assembler，同时输出 cell-integrated $K$、volume matrix $M$ 和 $A=M^{-1}K$。数值检查 $\|K-K^T\|$、$\|MA-A^TM\|$ 与纯 Neumann 情况下的 $\|K\bm1\|$。
 \item 在同一个一维 two-level cell-centered hierarchy 上，分别以“控制体逐面收支”和“半点通量差分”实现 FV 与守恒型 FD。让两种实现读取同一组 coarse--fine interface flux coefficients，逐行比较生成的 composite operator；随后故意改变其中一路的 interface flux，观察两条离散路线从何处开始分离。
 \item 实现二维 $r=2$ coarse-face/fine-subface numerical flux matching。随机生成 interface states，验证 coarse flux 与 fine subface flux sum 在机器精度范围内一致；随后故意让 coarse 与 fine 两侧各自重算不同 flux，观察 global conservation defect。
-\item 实现一个 linear coarse-to-fine ghost extension，并通过常数场、线性场和二次场测试其 polynomial reproduction。将 ghost relation 显式消元后，与 matrix-free ghost-fill-plus-stencil apply 的结果逐项比较。
+\item 实现一个 linear coarse-to-fine ghost extension，并通过常数场、线性场和二次场测试其 polynomial reproduction。将 ghost relation 显式消元后，与 无矩阵 Ghost Fill 与 stencil 算子应用 的结果逐项比较。
 \item 设计 manufactured-solution AMR convergence experiment。保持 refinement region 的物理位置与形状可比，对所有 level spacing 同时减半，报告 composite $L_2$、$L_\infty$ error 与式~\eqref{eq:amr-observed-order} 的 observed order；同时单独报告 interface-near error。
 \item 实现式~\eqref{eq:amr-regrid-piecewise-transfer} 的两层 regridding transfer。构造 $\mathcal R_{\mathrm{keep}}$、$\mathcal R_{\mathrm{refine}}$ 与 $\mathcal R_{\mathrm{derefine}}$，分别执行 overlap copy、AMR interpolation 与 average-down；检查 constant preservation、conserved integral 与 transfer error。
 \end{enumerate}
@@ -1466,7 +1466,7 @@ average-down 与 AMR interpolation 则描述同一物理状态在不同分辨率
 \subsection*{AMR 诊断与设计}
 \begin{enumerate}[label=\arabic*.]
 \item 给定 stencil depth $g$ 与每个 patch 方向的 cell count $n$，同时考虑式~\eqref{eq:amr-interface-fraction}、ghost storage 和 patch scheduling，分析为什么无限减小 patch size 不会单调提高 AMR 并行性能。区分几何上的 interface fraction 与具体机器上的性能结论。
-\item 比较显式 composite matrix 与 matrix-free ghost-fill/stencil apply。说明在 fixed linear interpolation 下两者怎样表示同一个线性 operator；再讨论 nonlinear limiter 出现后为什么需要改变 operator abstraction。
+\item 比较显式 composite matrix 与 无矩阵 Ghost Fill/stencil 算子应用。说明在 fixed linear interpolation 下两者怎样表示同一个线性 operator；再讨论 nonlinear limiter 出现后为什么需要改变 operator abstraction。
 \item 一个实现的 manufactured-solution error 看起来二阶，但 $\|K-K^T\|/\|K\|=10^{-3}$。提出至少三个可证伪的 interface hypotheses，并为每个 hypothesis 设计一个最小 diagnostic case。不要把“误差阶正确”当作对称性正确的证据。
 \item 比较 AMR interpolation/average-down 与后续 multigrid prolongation/restriction。按“作用空间、传递对象、发生时机、守恒要求、是否属于 solver iteration”五个维度建立对照，并给出一个混用后会改变数学问题的具体例子。
 \end{enumerate}

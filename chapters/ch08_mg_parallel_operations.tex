@@ -13,7 +13,7 @@
 u_\ell,\quad b_\ell,\quad r_\ell,\quad e_\ell,\quad A_\ell,\quad \text{geometry/coefficient data}.}
 \label{eq:mg-parallel-level-data}
 \end{equation}
-其中 $u_\ell$ 是当前近似，$b_\ell$ 是当前层右端，$r_\ell=b_\ell-A_\ell u_\ell$ 是残差，$e_\ell$ 用于粗层误差修正。若采用 matrix-free 算子，$A_\ell$ 不一定以 CSR 形式存在，但 stencil 系数、面系数或几何信息仍然必须驻留。
+其中 $u_\ell$ 是当前近似，$b_\ell$ 是当前层右端，$r_\ell=b_\ell-A_\ell u_\ell$ 是残差，$e_\ell$ 用于粗层误差修正。若采用 无矩阵 算子，$A_\ell$ 不一定以 CSR 形式存在，但 stencil 系数、面系数或几何信息仍然必须驻留。
 
 在二维/三维结构网格中，数组通常采用某个方向连续的一维存储。以三维 $x$ 连续布局为例：
 \begin{equation}

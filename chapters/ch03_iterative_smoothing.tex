@@ -417,9 +417,9 @@ p_{m-1}(A)\bm r_0,
 
 这给出一个很重要的统一视角：平稳迭代预先固定了同一个误差传播算子；Krylov 方法则根据已经获得的信息，自适应地选择更好的多项式修正。CG 与 GMRES 都工作在同一个 Krylov 空间里，但“怎样选出这个空间里的最好向量”完全不同。
 
-\subsection{Krylov 方法与 matrix-free 算子}
+\subsection{Krylov 方法与 无矩阵 算子}
 
-\chapref{ch:discretization}已经区分显式矩阵和 matrix-free 算子。Krylov 方法通常不需要任意访问 $A_{ij}$，其核心接口是
+\chapref{ch:discretization}已经区分显式矩阵和 无矩阵 算子。Krylov 方法通常不需要任意访问 $A_{ij}$，其核心接口是
 \begin{equation}
 \bm v
 \longmapsto
@@ -427,7 +427,7 @@ A\bm v,
 \end{equation}
 再配合向量加法、数乘、点积和范数。
 
-因此只要程序能稳定、正确地实现算子应用（operator apply），就可以在没有已装配稀疏矩阵的情况下运行许多 Krylov 方法。这也是 matrix-free PDE 求解器与 Krylov 方法经常组合出现的根本原因。
+因此只要程序能稳定、正确地实现算子应用（operator apply），就可以在没有已装配稀疏矩阵的情况下运行许多 Krylov 方法。这也是 无矩阵 PDE 求解器与 Krylov 方法经常组合出现的根本原因。
 
 需要注意，式~\eqref{eq:krylov-space}中的幂向量并不会在实际代码里按定义式原样保存。若直接把
 \begin{equation}
@@ -743,7 +743,7 @@ CG 与 GMRES 都在 Krylov 子空间里寻找近似，但最优性不同。说�
 \item CG 为什么依赖 SPD，且为什么能用短递推；
 \item GMRES 为什么需要 Arnoldi 正交基；
 \item “GMRES 最小残差”为什么指整个 $\|\bm r\|_2$ 最小，而不是每个残差分量分别最小；
-\item 对一个 matrix-free 算子，实现 CG/GMRES 至少需要提供哪些基本操作。
+\item 对一个 无矩阵 算子，实现 CG/GMRES 至少需要提供哪些基本操作。
 \end{enumerate}
 \end{checkpointbox}
 
@@ -968,7 +968,7 @@ Jacobi/Gauss--Seidel 进入多重网格主线，不是因为它们是最强的�
 \item 从 Arnoldi 关系~\eqref{eq:arnoldi-relation}推导 GMRES 小型最小二乘问题~\eqref{eq:gmres-least-squares}。
 \item 解释为什么直接保存 $\bm r_0,A\bm r_0,A^2\bm r_0,\ldots$ 作为基在数值上不如 Arnoldi 正交基稳定。
 \item 解释为什么重启 GMRES 能控制内存，却可能损害收敛。
-\item 对一个只提供 matrix-free operator apply 的线性算子，列出实现 CG 或 GMRES 所需的最小向量操作集合。
+\item 对一个只提供 无矩阵算子应用 的线性算子，列出实现 CG 或 GMRES 所需的最小向量操作集合。
 \end{enumerate}
 
 \subsection*{预条件与柔性方法}
