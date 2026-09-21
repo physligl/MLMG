@@ -44,11 +44,11 @@ A\bm u=\bm b,
 
 \subsection{直接法}
 
-直接法通过有限次代数变换把系统化为更容易求解的形式。一般非奇异矩阵可以写成
+直接法通过有限次代数变换把系统化为更容易求解的形式。对一般非奇异矩阵，实际高斯消元通常需要行置换，可写成
 \begin{equation}
-A=LU,
+PA=LU,
 \end{equation}
-随后依次求解下三角和上三角系统。若 $A$ 对称正定，还可以使用 Cholesky 分解
+其中 $P$ 是置换矩阵；随后依次求解下三角和上三角系统。若 $A$ 对称正定，则不需要这种行主元选取，可使用 Cholesky 分解
 \begin{equation}
 A=LL^T.
 \end{equation}
@@ -113,12 +113,12 @@ M^{-1}\approx A^{-1},
                                   >{\centering\arraybackslash}p{2.2cm}
                                   >{\raggedright\arraybackslash}X}
 \toprule
-方法类别 & 核心动作 & 是否利用迭代历史 & 本书中的主要角色\\
+方法类别 & 核心动作 & 主要信息结构 & 本书中的主要角色\\
 \midrule
-LU / Cholesky & 分解后做三角求解 & 不适用 & 小规模问题、bottom solve、基准对照\\
-Jacobi / GS & 重复固定局部修正规则 & 否 & 基本 solver、multigrid smoother\\
-CG / GMRES & 在 Krylov 子空间中构造搜索方向 & 是 & 大规模外层迭代求解器\\
-Multigrid & 在不同尺度上处理不同误差成分 & 层级信息 & solver 或 preconditioner\\
+LU / Cholesky & 分解后做三角求解 & 稀疏因子 $L/U$ & 小规模问题、bottom solve、基准对照\\
+Jacobi / GS & 重复固定局部修正规则 & 固定近似矩阵 $M$ & 基本 solver、multigrid smoother\\
+CG / GMRES & 在 Krylov 子空间中构造搜索方向 & Krylov 历史与内积 & 大规模外层迭代求解器\\
+Multigrid & 在不同尺度上处理不同误差成分 & 层级、transfer 与 coarse operator & solver 或 preconditioner\\
 \bottomrule
 \end{tabularx}
 \caption{本书涉及的主要线性求解路线。这里给出的是角色地图，不替代后续各算法的正式推导。}
@@ -681,7 +681,7 @@ S_J\bm v^{(j)}
 \boxed{
 1-\rho(S_J)
 =
-\Oh(h^2).
+\Theta(h^2).
 }
 \label{eq:iteration-jacobi-gap-h2}
 \end{equation}
@@ -694,7 +694,7 @@ S_J\bm v^{(j)}
 \begin{equation}
 k
 =
-\Oh
+\Theta
 \left(
 h^{-2}\log\frac1\varepsilon
 \right).
@@ -702,7 +702,7 @@ h^{-2}\log\frac1\varepsilon
 \end{equation}
 若 $\varepsilon$ 固定，就是
 \begin{equation}
-\boxed{k=\Oh(h^{-2}).}
+\boxed{k=\Theta(h^{-2}).}
 \end{equation}
 
 所以 Jacobi 作为独立 solver 在细网格上变慢，不是因为某个实现“写得不好”，而是因为最慢误差模态的放大因子随着网格加密系统性逼近 1。
@@ -724,7 +724,7 @@ h^{-2}\log\frac1\varepsilon
 \end{equation}
 因此它改善了常数，却没有改变
 \begin{equation}
-k=\Oh(h^{-2})
+k=\Theta(h^{-2})
 \end{equation}
 这一网格依赖的量级。
 
@@ -916,13 +916,11 @@ S\bm e^{(k)},
 \end{equation}
 但“是否收敛”还不够：真正决定迭代次数的是渐近收敛因子。对一维 Poisson Jacobi，
 \begin{equation}
-\rho(S_J)
+1-\rho(S_J)
 =
-\cos\frac{\pi}{N+1}
-=
-1-\Oh(h^2),
+\Theta(h^2),
 \end{equation}
-所以固定误差降低目标需要的迭代数按 $\Oh(h^{-2})$ 增长。
+所以固定误差降低目标需要的迭代数按 $\Theta(h^{-2})$ 增长。
 
 这个网格依赖退化并不意味着 Jacobi/GS 对所有误差都同样无效。Weighted Jacobi 可以把高频误差快速压低，而留下在空间上更光滑的误差。于是下一章不再要求 smoother 独立解决整个系统，而是让 coarse-grid correction 专门处理这些局部迭代最难消除的低频成分。
 
@@ -977,7 +975,7 @@ A=
 1-\frac{\pi^2}{2(N+1)^2}
 +\Oh(N^{-4})
 \]
-推导固定 reduction factor 下 $k=\Oh(N^2)$，并转换成 $k=\Oh(h^{-2})$。
+推导固定 reduction factor 下 $k=\Theta(N^2)$，并转换成 $k=\Theta(h^{-2})$。
 \item 比较 $N=31,63,127,255$ 时 Jacobi 理论谱半径和把误差降低 $10^{-6}$ 所需的渐近迭代数。观察网格翻倍时迭代数如何增长。
 \item 对标准一维模型比较 $\rho(S_J)$ 与 $\rho(S_{GS})$ 的渐近展开。为什么 Gauss--Seidel 虽然更快，却仍没有消除 mesh dependence？
 \item 证明在有限维线性空间中 $\rho(S)<1$ 当且仅当 $S^k\to0$；可以使用 Jordan 标准形或你熟悉的等价结论。
@@ -994,7 +992,7 @@ A=
 在 $\theta\in[\pi/2,\pi]$ 上比较 $\omega=1/2,2/3,1$ 的最坏放大因子。
 \item 实现 Jacobi、weighted Jacobi、Gauss--Seidel 与 RBGS，对同一 Poisson 系统同时记录 residual norm 与已知解析解下的 error norm。
 \item 人为构造低频误差 $\sin(\pi x)$ 与接近 Nyquist 的高频误差，分别做若干轮 weighted Jacobi，比较误差形状与范数。
-\item 对一系列逐步加密网格，测量达到固定 residual reduction 所需的 Jacobi/GS 迭代数，并验证是否接近 $\Oh(h^{-2})$ 的趋势。
+\item 对一系列逐步加密网格，测量达到固定 residual reduction 所需的 Jacobi/GS 迭代数，并验证是否接近 $\Theta(h^{-2})$ 的趋势。
 \item 扫描 $\omega\in[0.1,1.2]$，分别记录完整系统的 convergence factor 与高频 smoothing factor。说明“独立 solver 最优参数”和“multigrid smoother 最优参数”为什么可能不同。
 \item 设计一个数值实验区分“这个迭代器最终收敛”和“它是一个好的 multigrid smoother”这两个命题。
 \end{enumerate}
