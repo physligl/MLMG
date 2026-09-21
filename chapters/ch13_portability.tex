@@ -11,10 +11,10 @@
 \begin{align}
 &\texttt{apply\_operator(level, u, r)},\qquad
 \texttt{smooth(level, u, b)},\\
-&\texttt{restrict(fine, coarse)},\qquad
-\texttt{prolong(coarse, fine)}.
+&\texttt{restrict(transfer, fine, coarse)},\qquad
+\texttt{prolong(transfer, coarse, fine)}.
 \end{align}
-接口固定读写语义，后端决定 task 如何映射。
+这里的 \texttt{transfer} 不是无语义的函数标签，而是已经固定了 DOF location、quantity semantics、geometry 与离散内积约定的传递算子描述；这一点与\chapref{ch:two-grid}建立的 $R/P$ 数学语义一致。接口固定的是读写集合、数学操作和依赖关系，后端才决定 task 如何映射。
 
 这种分层只有在数据布局也可描述时才成立。单纯抽象 execution policy，却让 host/device memory、ghost ownership、temporary workspace 仍然散落在算法逻辑中，最终仍会形成“可编译但不可维护”的后端分叉。
 
@@ -37,7 +37,7 @@
 \item memory view：多维索引与 stride；
 \item 异步任务与依赖：halo readiness、kernel DAG。
 \end{itemize}
-Restriction/prolongation 可以继续表达为 gather parallel-for；这样同一算法结构可以映射到 OpenMP loop、CUDA kernel、HIP/SYCL kernel 或 Kokkos execution policy。
+对本书当前以规则结构网格为主的 target-centric 实现，restriction/prolongation 常可表达为 gather parallel-for，从而映射到 OpenMP loop、CUDA kernel、HIP/SYCL kernel 或 Kokkos execution policy。但这不是 transfer 的一般定义：更复杂的传递可能表现为 sparse operator apply、scatter/reduction，或同时包含跨 rank 通信；可移植层必须保留这些语义差异。
 
 
 \section{同一个残差计算怎样跨后端保持语义}
@@ -83,7 +83,7 @@ r_i=b_i-(Au)_i
 
 \section{避免泄漏硬件细节}
 
-如果数值层开始直接出现“warp size”“MPI rank”“NUMA node”等硬件判断，说明抽象边界可能已经泄漏。更稳定的做法是数值层表达：
+如果数值层开始直接出现“warp size”“具体 GPU 型号”“NUMA node”或特定 MPI communicator/rank 编号等硬件与执行后端判断，说明抽象边界可能已经泄漏。更稳定的做法是数值层表达：
 \begin{equation}
 \text{parallel-for / reduction / halo dependency / memory view},
 \end{equation}
@@ -113,15 +113,38 @@ restriction/prolongation & 0.8 & 0.9\\
 
 \section{性能可移植性的评价}
 
-可以把某后端性能相对该平台最佳实现定义为
+先定义单个平台 $a$ 上的\textbf{归一化效率} $e_a$。若性能指标 $P$ 是越大越好，例如 throughput，可写成
 \begin{equation}
-\eta_a=\frac{P_{portable,a}}{P_{best,a}},
+e_a=\frac{P_{portable,a}}{P_{best,a}}.
+\label{eq:portability-platform-efficiency-throughput}
 \end{equation}
-但单个 kernel 的 $\eta_a$ 仍不足以评价 multigrid。更重要的是
+若评价对象是 time-to-solution，则更自然地写成
 \begin{equation}
-T_{solve}=\sum_{\ell}\sum_{op}T_{\ell,op},
+e_a=\frac{T_{best,a}}{T_{portable,a}},
+\label{eq:portability-platform-efficiency-time}
 \end{equation}
-包括粗层、transfer、reduction、communication 和 setup。一个框架若细层 stencil 很快但无法控制粗层重分布，整体性能仍可能很差。
+使得两种定义都满足 $0<e_a\le1$。这里的 $P_{best,a}$ 或 $T_{best,a}$ 必须来自同一个数值问题、同一精度目标和预先声明的参考实现集合，否则归一化本身就不可比较。
+
+单个平台的 $e_a$ 仍不是跨平台 performance portability。Pennycook、Sewall 与 Lee 提出的经典指标在目标平台集合 $\mathcal A$ 上使用效率的调和平均，并把目标平台上不能运行显式视为零 portability\cite{pennycook2019performance}：
+\begin{equation}
+\Phi(\mathcal A)=
+\begin{cases}
+\displaystyle
+\frac{|\mathcal A|}
+{\sum_{a\in\mathcal A}1/e_a},
+& \text{若所有 }a\in\mathcal A\text{ 都受支持},\\[1.0em]
+0,
+& \text{否则}.
+\end{cases}
+\label{eq:portability-pennycook-metric}
+\end{equation}
+这个定义的价值不在于宣称一个标量足够描述所有可移植性，而在于同时惩罚低效率平台和缺失平台；实际分析仍应保留各平台的 $e_a$ 分布。
+
+对 multigrid，$e_a$ 的评价对象也不应只是单个 fine-grid kernel，而应是完整、数值等价的 V-cycle 或 solve。特别是在异步后端中，不能把所有 kernel/MPI event duration 简单相加作为总时间。按照\chapref{ch:benchmarking}的计时约定，应直接测量
+\begin{equation}
+T_{solve}^{\mathrm{wall}},
+\end{equation}
+并把 level/operation 数据作为 exclusive accounting 或可重叠 event duration 分别报告。一个框架若细层 stencil 很快但无法控制粗层重分布，完整 solve 的 $e_a$ 仍可能很低。
 
 \section{本章小结}
 
@@ -130,13 +153,13 @@ T_{solve}=\sum_{\ell}\sum_{op}T_{\ell,op},
 \section*{习题}
 \subsection*{抽象边界与性能模型}
 \begin{enumerate}[label=\arabic*.]
-\item 某 portable backend 在 CPU/GPU 上分别达到各自原生最佳性能的 85\%/72\%。计算简单几何平均效率，并讨论该指标忽略了什么。
+\item 某 portable backend 在 CPU/GPU 上分别达到各自原生最佳 time-to-solution 效率的 85\%/72\%。按式~\eqref{eq:portability-pennycook-metric}计算两平台 performance portability；再计算算术平均与几何平均，并比较三种聚合方式对低效率平台的敏感性。
 \item 给定 V-cycle 五类 operation 时间，分别计算两个后端的 total cycle time，判断单独 stencil 快 20\% 是否足以让整体更快。
 \item 一个 backend 需要每 cycle 额外做两次 host-device sync，各 15 $\mu$s。计算在 100 $\mu$s 与 2 ms cycle 上的相对开销。
 
 \item 说明为什么 execution-space 抽象不能自动解决 memory-space 正确性。
 \item 给出“语义可移植、调度参数后端特化”不会改变数值结果的条件。
-\item 证明若 abstraction 隐藏了 halo ownership，则分布式 stencil 无法仅凭 local parallel-for 保证全局正确性。
+\item 构造一个反例说明：如果 abstraction 既不向数值层暴露 halo/ownership 语义，也没有在运行时内部编码相应的通信与依赖，那么仅靠 local parallel-for 不能保证分布式 stencil 的全局正确性。再说明为什么“隐藏具体 MPI rank”本身并不违反这一条件。
 \end{enumerate}
 \subsection*{跨后端验证}
 \begin{enumerate}[label=\arabic*.]
