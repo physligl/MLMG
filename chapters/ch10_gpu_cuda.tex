@@ -878,7 +878,7 @@ GPU 多重网格可以沿一条统一因果链重建：
 \item 比较 weighted Jacobi 与 RBGS 的 GPU dependency DAG：证明 Jacobi 可以在一个 sweep 内完全点并行，而 RBGS 至少需要 red/black 两个有序阶段。
 \end{enumerate}
 
-\subsection*{GPU 实验与 Profiling}
+\subsection*{GPU 实验与性能剖析}
 \begin{enumerate}[label=\arabic*.]
 \item 实现一个 one-thread-per-cell 七点 residual baseline。先验证数值正确性，再分别测试 128、256、512 threads/block；记录时间、achieved bandwidth、registers/thread 与 occupancy。
 \item 在同一 residual kernel 中交换 thread mapping：版本 A 让相邻 lanes 沿 $x$，版本 B 让相邻 lanes 沿 $y$。用 Nsight Compute 的 memory workload 指标验证两种布局的 global-memory transaction 差异。

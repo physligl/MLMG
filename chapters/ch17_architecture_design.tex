@@ -88,7 +88,7 @@ MPI+OpenMP 可以减少 rank 数和网络 endpoints，但需要处理 NUMA、thr
 
 \section*{习题}
 
-\subsection*{约束与 Break-Even 推导}
+\subsection*{约束与平衡点推导}
 \begin{enumerate}[label=\arabic*.]
 \item 一个三维问题有 $800^3$ cells，每 cell 核心数据 96 byte。计算单份数据内存；若 V-cycle hierarchy 额外放大 $8/7$、工作区再乘 2.5，估算总内存并判断 80 GiB GPU 是否可容纳。
 \item 全局 $512^3$ 网格在 8、64、512 ranks 下立方分解。计算 local cube 边长、每 rank unknowns 和 surface/volume，作为架构候选的局部粒度输入。

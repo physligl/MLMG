@@ -571,7 +571,7 @@ C_h=I-PA_H^{-1}RA_h,
 \item 对同一个规则 cell-centered Poisson 问题，分别实现 coarse rediscretization 与 Galerkin coarse operator。比较常系数、平滑变系数和强跳变系数下二者的矩阵差异与 two-grid convergence factor。
 \end{enumerate}
 
-\subsection*{Transfer 诊断与迁移}
+\subsection*{传递算子诊断与迁移}
 \begin{enumerate}[label=\arabic*.]
 \item 一个代码库同时支持 nodal FD 与 cell-centered FV。设计 transfer API 时，哪些信息必须显式携带才能避免把“nodal injection”“volume average”“integrated residual sum”错误地统一成一个无语义的 \texttt{restrict()}？至少从 DOF location、quantity semantics、geometry 与 inner product 四个方面回答。
 
