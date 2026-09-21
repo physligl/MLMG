@@ -1,4 +1,6 @@
-MLMG v0.10
-Release date: 2026-09-20
+MLMG v0.10.1
+Release date: 2026-09-21
 Public source release based on the current canonical manuscript state.
-Chapter 2 includes the mental-model review of composite DOFs, hierarchy storage, ghost extension, coarse-fine flux closure, and explicit AMR interpolation/average-down formulas.
+Clarifies distributed-GPU dependency DAGs, coarse-rank contraction, active-rank and MPI collective semantics.
+Strengthens transfer-operator portability abstractions and performance-portability evaluation.
+Defines wall time, exclusive phase time, and overlapped event duration consistently across Chapters 12--15.
