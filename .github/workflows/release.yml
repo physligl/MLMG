@@ -1,0 +1,59 @@
+name: Release PDF
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - VERSION.txt
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          version="$(sed -n '1s/^MLMG v//p' VERSION.txt)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install TeX toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y             latexmk             biber             texlive-xetex             texlive-lang-chinese             texlive-latex-extra             texlive-science
+
+      - name: Build PDF
+        run: |
+          latexmk -xelatex -interaction=nonstopmode -halt-on-error main.tex
+          cp main.pdf "MLMG-v${{ steps.version.outputs.version }}.pdf"
+
+      - name: Upload PDF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MLMG-v${{ steps.version.outputs.version }}
+          path: MLMG-v${{ steps.version.outputs.version }}.pdf
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          ASSET: MLMG-v${{ steps.version.outputs.version }}.pdf
+        shell: bash
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" --clobber
+          else
+            gh release create "$TAG" "$ASSET"               --target "$GITHUB_SHA"               --title "MLMG $TAG"               --generate-notes
+          fi
