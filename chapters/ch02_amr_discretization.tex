@@ -343,30 +343,17 @@ FV 路线固定复合控制体和面法向，区分连续精确通量 $Q$ 与数
 当两条路线共享同一 $\widehat Q$ 时，它们可以产生同一个复合代数算子。守恒不能代替一致性分析，一致性也不能自动保证守恒。
 \end{keybox}
 
-\section{界面类型与离散闭合}
-\label{sec:amr-interface-classification}
+到这里，复合控制体平衡式还差最后一个实现层面的判断：\textbf{每个面应由哪一种关系闭合。}同层内部面直接使用同层 numerical flux；物理边界 $\partial\Omega$ 由 Dirichlet、Neumann、Robin 等 PDE 边界条件闭合；coarse--fine interface 则完全不同，它位于 $\Omega$ 内部，只表示同一个连续解从一种离散尺度切换到另一种离散尺度，因此必须由跨层耦合闭合，而不能把 fine patch 外缘当成新的 PDE 边界。若 fine patch 本身触碰 $\partial\Omega$，则由 finest available representation 在真正的物理边界上执行相应边界离散。
 
-\chapref{ch:discretization}已经讨论 Dirichlet、Neumann、Robin、周期和 DtN 边界怎样进入离散系统。AMR 中还必须区分另一类几何对象：\textbf{coarse--fine interface 是复合离散内部的尺度转换界面，而不是 PDE 的物理边界。}
+这一区分决定了后面的推导目标：我们不再为 coarse--fine interface 额外指定一个连续边界条件，而是构造一个与复合离散一致的跨层 numerical flux。下面先在一维中把这个 flux 从局部状态消元推导出来，再推广到多维 coarse face 与 fine subfaces 的配对。
 
-物理边界 $\partial\Omega$ 表示连续计算域在这里结束，因此需要外部给定的边界关系闭合未知通量或边界值；coarse--fine interface 位于 $\Omega$ 内部，只是同一个连续解在两种离散尺度之间切换。若把 fine patch 的外缘误当成 Dirichlet 或 Neumann boundary，就等价于在原 PDE 内部人为加入一条新的边界，所解问题已经改变。
-
-对于 cell-centered 守恒离散，一个 valid cell 的邻接至少分成三类：
-\begin{enumerate}
-\item \textbf{same-level interior：}相邻有效 cells 位于同一 AMR level；FV 使用同层 numerical flux，flux-difference FD 使用同一半点/面耦合；
-\item \textbf{coarse--fine interface：}相邻有效区域属于不同尺度；FV 需要 coarse face 与 fine subfaces 的通量配对，守恒型 FD 需要与之对应的跨层 flux/stencil closure；
-\item \textbf{physical boundary：}连续计算域在这里结束；FV 闭合 boundary numerical flux，FD 闭合 boundary stencil、ghost relation 或边界自由度。
-\end{enumerate}
-若 fine patch 本身触碰 $\partial\Omega$，则由 finest available representation 在该物理边界上执行相应边界离散；被 finer level 覆盖的 coarse cells 不再独立贡献另一套边界方程。
-
-在 FV 表示中，这三个分支都可以直接写入式~\eqref{eq:amr_fv_balance}；在守恒型 FD 中，它们进入相应的离散散度/边界 stencil。两条路线可以共享 ghost filling 与数值通量数据，但不能因此把“状态延拓”“通量匹配”和“差分 stencil 闭合”视为同一个数学操作。
-
+\section{一维粗细网格接口}
+\label{sec:amr-1d-interface}
 
 \begin{keybox}
-\textbf{coarse--fine interface 上存在两个相关但不同的离散任务。}
+\textbf{先区分状态延拓与通量闭合。}
 
-一类任务是\textbf{状态延拓}：当 fine stencil 缺少同层邻居时，用 coarse data 构造 ghost/interface state，使 stencil 有定义。它回答“缺失位置应使用什么离散状态”。另一类任务是\textbf{通量闭合}：为同一个物理 coarse--fine interface 构造并共享 numerical flux，使 coarse contribution 与所有 fine-subface contributions 严格配对。它回答“界面两侧如何交换同一个离散通量”。
-
-因此
+当 fine stencil 缺少同层邻居时，可以由 coarse data 构造 ghost/interface state，使 stencil 有定义；这是\textbf{状态延拓}。但复合守恒还要求 coarse 与 fine 两侧对同一个物理界面交换一致的 numerical flux；这是\textbf{通量闭合}。二者解决的是不同问题，因此
 \[
 \boxed{
 \text{coarse-to-fine interpolation}
@@ -374,11 +361,8 @@ FV 路线固定复合控制体和面法向，区分连续精确通量 $Q$ 与数
 \text{coarse--fine flux matching}.
 }
 \]
-插值可以参与 numerical flux 的构造，但仅有一个看起来合理的 ghost value 并不能自动保证式~\eqref{eq:amr_flux_matching_general} 的离散守恒；反过来，严格通量守恒也不能证明插值具有目标一致性阶。
+插值可以参与 numerical flux 的构造，但一个看起来合理的 ghost value 并不能自动保证离散守恒；反过来，严格的 flux matching 也不能证明插值具有目标一致性阶。下面的一维推导就是要把第二个问题写成显式的 transmissibility。
 \end{keybox}
-
-\section{一维粗细网格接口}
-\label{sec:amr-1d-interface}
 
 \subsection{界面状态消元与传导系数}
 
