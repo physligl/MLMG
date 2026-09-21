@@ -197,56 +197,55 @@ V(\mathcal H)
 
 \subsection{规则 patch 与接口局部化}
 
-图~\ref{fig:amr-block-structured-composite} 同时画出“存储 hierarchy”和“真正的复合控制体集合”。左图中 coarse level 仍覆盖全域，fine patch 覆盖局部区域，因此 patch 内部可以继续使用规则 Cartesian stencil；右图去掉 covered coarse cells 后，才得到实际参与复合离散的控制体集合。coarse--fine interface 正是两种控制体尺度相接的位置。
+图~\ref{fig:amr-block-structured-composite} 中最重要的区别不是 fine patch 的几何形状，而是 covered coarse cells 在两种表示中的\textbf{身份变化}。在 hierarchy storage 中，它们仍然作为 coarse-level data 保留，因而同一物理区域可以同时存在 coarse 与 fine 两层存储；在 composite discretization 中，它们已经退出独立有效控制体集合，由 fine valid cells 接管。coarse--fine interface 则是 coarse valid region 与 fine valid region 真正发生离散耦合的位置。
 
 \begin{figure}[htbp]
 \centering
 \begin{tikzpicture}[x=0.50cm,y=0.50cm,>=Stealth,font=\small]
 \tikzset{
   cgrid/.style={draw=black!58,line width=0.55pt},
-  fgrid/.style={draw=black!78,line width=0.30pt},
-  iface/.style={draw=red!72!black,line width=1.2pt},
+  fgrid/.style={draw=green!45!black,line width=0.32pt},
+  iface/.style={draw=red!72!black,line width=1.15pt},
   validfill/.style={fill=blue!8},
-  coveredfill/.style={fill=gray!28},
+  coveredfill/.style={fill=gray!30},
   finefill/.style={fill=green!14}
 }
 
-% left panel: stored hierarchy
-\node[font=\bfseries] at (4,8.0) {(a) hierarchy 中的存储表示};
+% (a) hierarchy storage: covered coarse cells remain stored,
+% while the fine-patch grid is superposed on the same physical region.
+\node[font=\bfseries] at (4,8.0) {(a) hierarchy：粗细层重叠存储};
 \fill[validfill] (0,0) rectangle (8,6);
 \fill[coveredfill] (3,1) rectangle (6,5);
 \draw[cgrid] (0,0) rectangle (8,6);
 \foreach \x in {1,2,3,4,5,6,7}{\draw[cgrid] (\x,0)--(\x,6);}
 \foreach \y in {1,2,3,4,5}{\draw[cgrid] (0,\y)--(8,\y);}
-\fill[finefill,opacity=0.72] (3,1) rectangle (6,5);
-\draw[iface] (3,1) rectangle (6,5);
 \foreach \x in {3.5,4,4.5,5,5.5}{\draw[fgrid] (\x,1)--(\x,5);}
 \foreach \y in {1.5,2,2.5,3,3.5,4,4.5}{\draw[fgrid] (3,\y)--(6,\y);}
-\node[align=center,fill=white,fill opacity=0.82,text opacity=1,inner sep=1.2pt] at (4.5,3) {fine patch\\$\mathcal L_{\ell+1}$};
+\draw[iface] (3,1) rectangle (6,5);
 
-% right panel: composite partition
+% (b) composite discretization: coarse grid lines disappear in the
+% covered region because those coarse cells are no longer valid unknowns.
 \begin{scope}[xshift=6.0cm]
-\node[font=\bfseries] at (4,8.0) {(b) 复合离散中的有效控制体};
+\node[font=\bfseries] at (4,8.0) {(b) composite：有效控制体不重叠};
 \fill[validfill] (0,0) rectangle (8,6);
 \draw[cgrid] (0,0) rectangle (8,6);
 \foreach \x in {1,2,3,4,5,6,7}{\draw[cgrid] (\x,0)--(\x,6);}
 \foreach \y in {1,2,3,4,5}{\draw[cgrid] (0,\y)--(8,\y);}
 \fill[white] (3,1) rectangle (6,5);
 \fill[finefill] (3,1) rectangle (6,5);
-\draw[iface] (3,1) rectangle (6,5);
 \foreach \x in {3,3.5,4,4.5,5,5.5,6}{\draw[fgrid] (\x,1)--(\x,5);}
 \foreach \y in {1,1.5,2,2.5,3,3.5,4,4.5,5}{\draw[fgrid] (3,\y)--(6,\y);}
-\node[align=center,fill=white,fill opacity=0.82,text opacity=1,inner sep=1.2pt] at (4.5,3) {fine valid\\cells};
+\draw[iface] (3,1) rectangle (6,5);
 \end{scope}
 
 % legend
 \node[anchor=west] at (1.1,-1.2) {\raisebox{0.35ex}{\tikz\fill[blue!8,draw=black!45] (0,0) rectangle (0.45,0.28);}\; coarse valid};
-\node[anchor=west] at (6.2,-1.2) {\raisebox{0.35ex}{\tikz\fill[gray!28,draw=black!45] (0,0) rectangle (0.45,0.28);}\; covered coarse storage};
-\node[anchor=west] at (13.5,-1.2) {\raisebox{0.35ex}{\tikz\fill[green!14,draw=black!45] (0,0) rectangle (0.45,0.28);}\; fine valid};
+\node[anchor=west] at (6.2,-1.2) {\raisebox{0.35ex}{\tikz\fill[gray!30,draw=black!45] (0,0) rectangle (0.45,0.28);}\; covered coarse storage};
+\node[anchor=west] at (13.5,-1.2) {\raisebox{0.35ex}{\tikz\fill[green!14,draw=green!45!black] (0,0) rectangle (0.45,0.28);}\; fine valid};
 \draw[iface] (18.1,-1.0)--(19.0,-1.0);
 \node[anchor=west] at (19.25,-1.0) {coarse--fine interface};
 \end{tikzpicture}
-\caption{二维 block-structured AMR 的两种视图，示意 refinement ratio $r=2$。左图强调 hierarchy 的存储：coarse level 可继续保存被 fine patch 覆盖的 coarse data；右图强调复合离散：covered coarse cells 被 fine cells 替代，不再重复作为独立控制体。红色边界表示 coarse--fine interface，patch 内部保持规则 Cartesian 结构。}
+\caption{二维 block-structured AMR 的 hierarchy storage 与 composite discretization，示意 refinement ratio $r=2$。左图中，被 fine patch 覆盖的 coarse cells 仍保存在 coarse level storage 中，因此灰色 coarse cells 与更细的绿色网格在同一物理区域重叠存在。右图中，covered coarse cells 不再属于复合离散的独立有效控制体集合，该区域完全由 fine valid cells 接管；外部 coarse valid cells 与内部 fine valid cells 共同构成一套不重复的复合控制体。红色边界表示两种有效控制体尺度真正相接并发生离散耦合的 coarse--fine interface。}
 \label{fig:amr-block-structured-composite}
 \end{figure}
 
