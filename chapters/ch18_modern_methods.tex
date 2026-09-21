@@ -2,28 +2,102 @@
 \label{ch:modern}
 
 \begin{keybox}
-\textbf{本章按“它解决哪个瓶颈”组织前沿工作，而不是按论文年份罗列。}讨论对象包括低精度计算、专用矩阵计算单元、matrix-free 高阶离散以及极大规模分布式粗网格算法；每一节都先说明它针对的成本项，再讨论具体技术。阅读本章每一种技术时都用同一个模板：
-\begin{equation}
-\boxed{
-\text{原瓶颈}
-\rightarrow
-\text{改变了哪种资源成本}
-\rightarrow
-\text{引入什么数值/实现风险}
-\rightarrow
-\text{用什么指标验证}
-}
-\end{equation}
-这样“前沿方法”就能挂回前面已经建立的模型：带宽与算术强度见\chapref{ch:parallel-model}、\chapref{ch:mg-parallel-operations}和\chapref{ch:gpu}，AMG 层级与稀疏复杂度见\chapref{ch:software}，分布式粗层通信见\chapref{ch:mpi}和\chapref{ch:distributed-gpu}。
+\textbf{现代多重网格沿两条相互耦合的轴线发展：一条改变“怎样构造粗空间与校正”，另一条改变“怎样把这些操作映射到现代硬件”。}本章因此不按论文年份罗列，而是先补非线性、子空间与代数粗空间的数学扩展，再讨论低精度、专用矩阵单元、matrix-free 高阶离散以及极大规模分布式粗网格算法。
+
+阅读每一种方法时都回答四个问题：它放宽了前文哪一个假设？改变了粗空间、平滑器还是执行成本？引入了什么新的数值风险？应当用什么验证量确认收益？这样现代方法就能挂回前文已经建立的对象，而不会变成术语目录。带宽与算术强度见\chapref{ch:parallel-model}、\chapref{ch:mg-parallel-operations}和\chapref{ch:gpu}，AMG 层级与稀疏复杂度见\chapref{ch:software}，分布式粗层通信见\chapref{ch:mpi}和\chapref{ch:distributed-gpu}。
 \end{keybox}
 
-\section{性能瓶颈分类}
-现代多重网格研究大致可以对应到四类约束：memory bandwidth、稀疏算子规则性、coarse-grid parallelism、distributed communication。阅读一篇新论文时，先问“作者主要想改变哪一个成本项”，再看它用了什么新数据结构或算法；这样比直接记技术名词更容易迁移。
+\section{现代方法改变了什么}
 
+前六章建立的经典路线可以概括为：线性离散系统、几何或代数层级、平滑器、粗网格校正以及递归 V-cycle。现代方法通常不是把这条链完全推翻，而是改变其中某一环：非线性问题需要改变“校正方程”的形式；复杂算子需要更自适应的粗空间；高阶离散改变算子的存储与应用方式；异构和极大规模机器则改变每一级操作的资源成本。
+
+因此可以同时沿两类问题阅读本章。数学轴线问
+\begin{equation}
+\boxed{\text{什么误差由哪个子空间或粗空间表示，校正方程怎样定义？}}
+\end{equation}
+执行轴线问
+\begin{equation}
+\boxed{\text{这些操作怎样减少字节搬运、同步、通信或低并行度开销？}}
+\end{equation}
+两者不能完全分开：一个数学上更强的 smoother 可能具有更差的并行结构，一个更稀疏的粗算子也可能改变收敛因子。
 
 \begin{warningbox}
-本章允许出现尚未在前文完整推导的现代术语，但只讲它们改变哪一类成本以及为什么可能有效。论文级算法细节不在本章强行展开；需要复核基础概念时，沿各节给出的交叉引用回到对应数学、执行或软件章节。
+本章只补足理解现代方法所需的最小模型，不试图替代非线性求解、有限元或 AMG 专著。凡是出现新的抽象，都要求读者至少能回答“未知量住在哪里、粗化改变什么、一次算子应用做什么”；论文级算法细节仍应回到专门文献。
 \end{warningbox}
+
+\section{从线性校正到 FAS}
+\label{sec:modern-fas}
+
+前文的 correction scheme 建立在线性系统
+\begin{equation}
+A_h u_h=f_h
+\end{equation}
+上。若当前近似为 $u_h$，残差 $r_h=f_h-A_hu_h$，粗层求的是误差近似 $e_H$，再 prolong 回细层。这一结构依赖于线性恒等式
+\begin{equation}
+A_h(u_h+e_h)=A_hu_h+A_he_h.
+\end{equation}
+
+对非线性离散方程
+\begin{equation}
+F_h(u_h)=f_h,
+\label{eq:modern-nonlinear-problem}
+\end{equation}
+一般不存在可以独立于当前状态求解的线性误差方程。\textbf{全近似格式（Full Approximation Scheme, FAS）}改为在粗层直接求一个完整状态 $u_H$。设 $I_h^H$ 把细层状态限制到粗层，$R_h^H$ 把残差限制到粗层，则粗层右端写成
+\begin{equation}
+f_H^{FAS}
+=
+F_H(I_h^H u_h)
++
+R_h^H\bigl(f_h-F_h(u_h)\bigr).
+\label{eq:modern-fas-rhs}
+\end{equation}
+粗层求解
+\begin{equation}
+F_H(u_H)=f_H^{FAS},
+\end{equation}
+再用
+\begin{equation}
+u_h\leftarrow u_h+P_H^h\bigl(u_H-I_h^H u_h\bigr)
+\label{eq:modern-fas-correction}
+\end{equation}
+更新细层。
+
+这个写法最值得检查的是一个一致性极限：如果细层当前近似已经满足 $F_h(u_h)=f_h$，那么式~\eqref{eq:modern-fas-rhs}退化为
+\begin{equation}
+f_H^{FAS}=F_H(I_h^H u_h),
+\end{equation}
+于是 $u_H=I_h^H u_h$ 本身就是粗层解，式~\eqref{eq:modern-fas-correction}不给出额外修正。换言之，FAS 不会把一个已经满足细层方程的状态无故推离解。
+
+在线性情形 $F_h(u)=A_hu$ 下，令
+\begin{equation}
+e_H=u_H-I_h^H u_h,
+\end{equation}
+代入粗层方程即可重新得到熟悉的 coarse-grid correction。因此 FAS 不是另一套无关算法，而是把前文线性 correction scheme 推广到“粗层也表示完整近似”的形式。
+
+\section{子空间校正视角}
+\label{sec:modern-subspace-correction}
+
+前文把 smoother 和 coarse-grid correction 分开介绍，但两者可以放进同一个框架。设离散空间被若干子空间覆盖
+\begin{equation}
+V=V_0+V_1+\cdots+V_m,
+\end{equation}
+其中 $V_0$ 可以是粗空间，其他 $V_i$ 可以对应一个点、一条线、一个 patch 或一个子域。一次局部校正的本质是：\textbf{只在某个子空间内寻找能够降低当前误差的修正。}
+
+点 Jacobi/Gauss--Seidel 可理解为极小局部子空间上的校正；line smoother 把一整条强耦合方向放进同一子空间；patch smoother 或 Schwarz 方法则在重叠局部区域上解小问题；coarse-grid correction 使用的是跨越全局低频误差的粗空间。这个视角解释了为什么“更强的局部求解”通常能处理更复杂的耦合，却也可能增加同步、局部因子分解和数据搬运成本。
+
+若所有子空间校正并行计算后相加，得到的是 additive 结构；若前一个子空间的更新立即影响后一个子空间，则是 multiplicative 结构。现代并行实现经常在这两者之间做折中：数学上希望较强耦合，硬件上又希望减少顺序依赖。这与\chapref{ch:iterative-smoothing}中 Jacobi/Gauss--Seidel 的并行差异以及\chapref{ch:gpu}中的 patch/line kernel 设计是同一个矛盾在更一般空间中的表现。
+
+\section{代数粗空间的现代扩展}
+\label{sec:modern-amg-coarse-space}
+
+几何多重网格利用坐标和规则粗化直接给出 $V_H$；AMG 则必须从离散算子本身判断哪些自由度应保留、哪些误差模式必须进入粗空间。经典 strength-of-connection 只是这一问题的一种答案。更一般地，现代 AMG 设计常围绕三个问题组织：
+\begin{enumerate}
+\item 当前 smoother 留下了哪些难以消除的误差？
+\item 选出的 coarse variables / coarse basis 是否能表示这些误差？
+\item prolongation 是否在保持近似能力的同时控制了算子复杂度和通信量？
+\end{enumerate}
+
+compatible relaxation、energy-minimizing interpolation、aggressive coarsening 等思想虽然具体算法不同，但都在回答上述问题。这里更重要的不是记住名称，而是把它们放回\chapref{ch:two-grid}的两条基本性质：\textbf{smoothing property 决定什么误差被留下，approximation property 决定粗空间能否表示这些误差。}现代 AMG 的许多“自适应”机制，本质上是在更复杂的系数、各向异性或图结构下重新估计这两个性质，而不是假定几何低频必然等于代数慢模态。
 
 \section{混合精度多重网格}
 
@@ -75,9 +149,51 @@
 \end{equation}
 如果数组布局让 stencil 很快但通信必须重新 pack/unpack，大规模运行仍可能受限。
 
+\section{高阶离散的最小模型}
+\label{sec:modern-high-order-minimal-model}
+
+前文的七点 stencil 可以把每个未知量想成一个节点值或 cell 值；高阶有限元和 DG 的数据组织不同。一个网格单元 $K$ 内通常有多个局部自由度，它们描述某个次数为 $p$ 的多项式近似。算子应用不再只是读取固定几个几何邻居，而是对每个单元执行
+\begin{equation}
+\boxed{\text{取局部 DOF}\rightarrow\text{基函数/梯度运算}\rightarrow\text{局部积分}\rightarrow\text{散射回全局 DOF}.}
+\end{equation}
+连续有限元的相邻单元可能共享全局自由度；DG 则保留单元局部自由度，并通过数值通量耦合单元面。这里不需要掌握完整弱形式，只需要看到：\textbf{一个 element-local operator 往往可以由少量几何/系数和基函数规则现场重建，因此显式保存完整稀疏矩阵并不是唯一选择。}
+
+高阶问题还引入了两个不同的粗化方向：
+\begin{itemize}
+\item $h$-coarsening：减少网格单元数，几何尺度变粗；
+\item $p$-coarsening：保留网格拓扑，但降低每个单元的多项式次数和局部自由度数。
+\end{itemize}
+例如从 $p=7$ 降到 $p=3$，几何单元没有消失，但每个单元的近似空间显著缩小。这就是后文 $hp$-multigrid 中字母 $h$ 与 $p$ 分别代表的结构变化。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.9]
+  \draw[thick] (0,0) rectangle (3,3);
+  \draw (1.5,0)--(1.5,3); \draw (0,1.5)--(3,1.5);
+  \foreach \x in {0.3,0.9,1.8,2.4} {
+    \foreach \y in {0.3,0.9,1.8,2.4} {\fill (\x,\y) circle (1.2pt);}
+  }
+  \node[below] at (1.5,-0.25) {$h$-粗化：减少单元};
+  \draw[->,thick] (3.5,1.5)--(5,1.5);
+  \draw[thick] (5.5,0.75) rectangle (7,2.25);
+  \foreach \x in {5.8,6.7} {\foreach \y in {1.05,1.95}{\fill (\x,\y) circle (1.2pt);}}
+
+  \draw[thick] (9,0) rectangle (12,3);
+  \foreach \x in {9.3,9.9,10.5,11.1,11.7}{\foreach \y in {0.3,0.9,1.5,2.1,2.7}{\fill (\x,\y) circle (1.0pt);}}
+  \draw[->,thick] (12.5,1.5)--(14,1.5);
+  \draw[thick] (14.5,0) rectangle (17.5,3);
+  \foreach \x in {15.1,16.0,16.9}{\foreach \y in {0.6,1.5,2.4}{\fill (\x,\y) circle (1.2pt);}}
+  \node[below] at (13.25,-0.25) {$p$-粗化：同一单元上减少局部 DOF};
+\end{tikzpicture}
+\caption{$h$-粗化与 $p$-粗化改变的是不同结构。示意图只表达“单元数量”与“每单元近似空间维数”的区别，不代表具体有限元节点布局。}
+\label{fig:modern-h-p-coarsening}
+\end{figure}
+
+sum factorization 的作用可以在这个最小模型上理解：若高维基函数具有张量积结构，就不必把一个 $d$ 维局部算子当成稠密大矩阵直接乘，而可以分解成若干一维变换，从而减少计算复杂度与数据搬运。它并不改变离散问题，只改变 element-local operator 的执行方式。
+
 \section{Matrix-Free 高阶多重网格}
 
-高阶有限元/DG 中，显式矩阵会产生大量内存流量，matrix-free operator 能用更多局部 FLOP 换更少 bytes。2025 年 GPU Stokes multigrid 工作使用 matrix-free、局部 patch smoother、shared-memory access 优化与 mixed precision，代表了“提高 arithmetic intensity 来适应 GPU”的另一条路线\cite{stokesgpu2025}。
+在\secref{sec:modern-high-order-minimal-model}的高阶离散中，显式矩阵会产生大量内存流量，matrix-free operator 能用更多局部 FLOP 换更少 bytes。2025 年 GPU Stokes multigrid 工作使用 matrix-free、局部 patch smoother、shared-memory access 优化与 mixed precision，代表了“提高 arithmetic intensity 来适应 GPU”的另一条路线\cite{stokesgpu2025}。
 
 对于低阶七点 Poisson，这种思路的发挥空间有限；但对高阶算子，sum factorization、fast diagonalization 和 element-local kernels 可以把算法从 bandwidth-bound 推向更高算术强度区间。
 
@@ -102,12 +218,13 @@
 这也解释了为什么“单 GPU kernel 已达到很高带宽”并不代表 distributed MLMG 已经解决。
 
 \section{本章小结}
-本章建立了 mixed precision、FP16、Tensor Core、data blocking、high-order matrix-free、$hp$-multigrid 与 exascale communication。它们不是彼此独立的“新潮技术”，而是分别针对带宽、算子结构、算术强度和粗层通信等既有瓶颈。
+现代多重网格并不只有“把经典 V-cycle 搬到新硬件”这一条路线。FAS 改变了非线性问题的粗层方程，子空间校正把点、线、patch 与 coarse correction 放进统一框架，现代 AMG 继续追问 smoother 留下的慢模态怎样进入粗空间；高阶 $hp$ 方法又增加了 $p$-粗化这一维度。与此同时，mixed precision、Tensor Core、data blocking、matrix-free 与 exascale communication 则重新分配字节搬运、算术强度、同步和粗层通信成本。判断现代方法时，应同时检查收敛机制和 time-to-solution，而不是只看某个新硬件特性或算法名称。
 
 \section*{习题}
 
 \subsection*{计算题}
 \begin{enumerate}[label=\arabic*.]
+\item 一个三维高阶单元在每个方向使用 $p+1$ 个局部基函数。分别计算 $p=7$ 与 $p=3$ 时每单元局部 DOF 数，并估计一次 $p$-coarsening 后局部未知量减少比例。
 \item 一个层级数据集包含 $4N$ 个 FP64 标量。计算其存储量；若其中 $2N$ 个改为 FP32，计算新存储量和理论 bytes 减少比例。
 \item 一个 memory-bound V-cycle 每次从 DRAM 搬运 800 GB 数据，硬件可持续带宽 1.6 TB/s。若 mixed precision 将流量降到 520 GB，但增加 15\% FLOP 且仍 bandwidth-bound，估算理想时间变化。
 \item 某 low-precision coarse correction 每次把 residual 降低到原来的 0.25，但随后高精度 refinement 有固定 0.1 ms 成本。计算达到 $10^{-8}$ 需要多少 correction steps，并建立总时间表达式。
@@ -116,6 +233,8 @@
 
 \subsection*{推导与证明题}
 \begin{enumerate}[label=\arabic*.]
+\item 从式~\eqref{eq:modern-fas-rhs}出发，在线性情形 $F_h(u)=A_hu$ 下令 $e_H=u_H-I_h^H u_h$，推导它如何退化为标准 coarse-grid correction，并指出需要怎样选择 coarse operator 才与前文 Galerkin 结构一致。
+\item 对一个由点子空间、line 子空间和 coarse space 组成的抽象分解，解释 additive 与 multiplicative 校正的执行依赖差异，并判断哪一种更容易并行。
 \item 若低精度 correction 满足 $\|e_{k+1}\|\le q\|e_k\|$、$q<1$，推导达到给定误差阈值所需 correction 次数，并说明何时高精度 outer refinement 可以容忍低精度 inner solve。
 \item 从 bytes/FLOP 模型说明 mixed precision 对 memory-bound multigrid 首先影响的是数据流量，而不是“自动增加 FLOP/s”。
 \item 解释 Tensor Core/矩阵专用硬件为什么不能直接加速任意稀疏 SpMV；从数据布局与运算形态给出必要条件。
