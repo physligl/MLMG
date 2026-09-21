@@ -90,14 +90,13 @@ Restriction、prolongation、coarse redistribution 也需要同时考虑 device 
   \draw[->] (unpack)--(bdry);
   \draw[->] (bdry)--(restrict);
   \draw[->] (interior)--(restrict);
-  \draw[->] (pack.south) |- (interior.west);
   \node[align=center,below=2mm of interior] {通信在途时执行不依赖 ghost 的内部工作};
 \end{tikzpicture}
 \caption{一次分布式 GPU residual/restriction 的依赖轨迹。关键不是把通信“藏起来”，而是让内部计算位于通信的独立分支上，并在 restriction 前重新汇合。}
 \label{fig:distributed-gpu-residual-trace}
 \end{figure}
 
-第一步，每个 rank 只打包自己拥有的边界数据，并立即发起非阻塞 halo 交换。第二步，在消息尚未完成时，GPU 计算不依赖 ghost 的内部 residual。第三步，收到邻居数据后解包到 ghost 区，再计算边界 residual。到这里，内部和边界两条分支才重新合并；因此 restriction 不能早于这两个依赖都完成。这个例子说明，所谓“通信重叠”不是把若干 API 并排调用，而是\textbf{改变依赖图，使独立工作真正进入通信关键路径之外}。
+每个 rank 为通信打包自己拥有的边界数据并发起非阻塞 halo 交换；与此同时，只读取 owned 区且不依赖 ghost 的内部 residual 可以沿独立执行分支启动。收到邻居数据后，GPU 解包 ghost 并计算边界 residual。只有内部 residual 与边界 residual 都完成以后，restriction 才能启动。这里要区分\textbf{依赖关系}与\textbf{一种具体调度顺序}：图中的 pack 与 interior residual 没有数据依赖，实际运行时可以先后启动，也可以在不同 stream 或执行队列上并发。所谓“通信重叠”不是把若干 API 并排调用，而是让独立工作真正离开通信关键路径。
 
 继续按三个方向各粗化 2 倍，则全局未知量依次为
 \begin{equation}
@@ -110,7 +109,19 @@ Restriction、prolongation、coarse redistribution 也需要同时考虑 device 
 \quad 6.55\times10^4,
 \quad 8.19\times10^3.
 \end{equation}
-假设工程上把 $16{,}384$ unknowns/GPU 作为一个\emph{示意性}最小粒度，那么到 $32^3$ 层时四 GPU 已低于阈值。此时可以把四个 rank 的粗层数据重新分布到两个 rank/GPU，使每块 GPU 恢复到 $16{,}384$ unknowns；再向下粗化时还可能进一步收缩到单 GPU。于是一次完整 V-cycle 的并行拓扑不是固定的
+假设工程上把 $16{,}384$ unknowns/GPU 作为一个\emph{示意性}最小有效粒度。忽略拓扑与分区约束时，可以先用
+\begin{equation}
+P_\ell^{\mathrm{target}}
+=
+\min\!\left(
+P_{\ell-1},
+\max\!\left(1,\left\lfloor\frac{N_\ell}{n_{gpu,min}}\right\rfloor\right)
+\right)
+\label{eq:distributed-gpu-target-ranks}
+\end{equation}
+估计该层值得保留的 GPU 数，再把结果投影到实际允许的 rank/device 拓扑。对 $32^3$ 层，四 GPU 时只有 $8{,}192$ unknowns/GPU，因此示意策略会收缩到两个 rank/GPU，使每块 GPU 恢复到 $16{,}384$ unknowns。继续粗化到 $16^3$ 时，即使收缩到单 GPU 也只剩 $4{,}096$ unknowns；这说明 $n_{gpu,min}$ 是\textbf{效率启发式阈值}，不是必须满足的可行性约束。到达单 GPU 后，继续粗化仍会发生设备并行度塌缩，只是已经不能再通过减少 GPU 数来补偿。
+
+因此一次完整 V-cycle 的并行拓扑不是固定的
 \begin{equation}
 4\rightarrow4\rightarrow4\rightarrow4,
 \end{equation}
@@ -119,10 +130,10 @@ Restriction、prolongation、coarse redistribution 也需要同时考虑 device 
 \boxed{4\rightarrow4\rightarrow4\rightarrow2\rightarrow1.}
 \end{equation}
 
-这一步还揭示了两个必须同时核对的正确性条件。其一，rank 集合改变以后，粗层向量的所有权和 communicator 必须同步改变；其二，回程 prolongation 前必须把 coarse correction 按反向映射送回原来的细层所有者。也就是说，coarse redistribution 不是单纯的负载均衡，而是 V-cycle 数据依赖图的一部分。
+这一步还揭示了两个必须同时核对的正确性条件。其一，rank 集合改变以后，粗层向量的所有权、active rank set 与 collective participation 必须彼此一致；实现上可以建立更小的 communicator，也可以保留原 communicator 并显式区分 active/inactive ranks，二者都只是实现选择。其二，回程 prolongation 前必须把 coarse correction 按反向映射送回原来的细层所有者。也就是说，coarse redistribution 不是单纯的负载均衡，而是 V-cycle 数据依赖图的一部分。
 
 \begin{checkpointbox}
-\textbf{即时检查：}如果上述 $32^3$ 层已经收缩到两个 GPU，而下一层 $16^3$ 仍保留两个 GPU，每块 GPU 只有多少 unknowns？若最小粒度阈值仍为 $16{,}384$，这一层是否还应继续收缩？这个计算用于检查“粗层并行度应随问题规模变化”这一机制，而不是提供固定调参常数。
+\textbf{即时检查：}如果上述 $32^3$ 层已经收缩到两个 GPU，而下一层 $16^3$ 暂时仍保留两个 GPU，每块 GPU 只有 $2{,}048$ unknowns；若继续收缩到单 GPU，也只有 $4{,}096$ unknowns。为什么这并不违反式~\eqref{eq:distributed-gpu-target-ranks}？这个检查用于确认两件事：粗层并行度应随问题规模变化；而一旦已经缩到单 GPU，低于 $n_{gpu,min}$ 只能被视为进入低利用率 bottom region，而不能继续靠 communicator shrink 解决。
 \end{checkpointbox}
 
 \section{粗网格的双重并行度塌缩}
@@ -144,11 +155,20 @@ Restriction、prolongation、coarse redistribution 也需要同时考虑 device 
 
 多 GPU Krylov+MG 中，一次外层迭代可能包含：算子应用、若干点积与全局归约、一次 MG 预条件器，以及向量更新。MG 内部主要使用近邻 halo，而 Krylov 点积需要全局 collective；两类通信具有不同的扩展特性。
 
-因此性能 trace 应区分：
+为了做可加和的阶段记账，可以把一次外层迭代划分成互斥的 accounting bins：
 \begin{equation}
-T_{Krylov}=T_{op}+T_{global\ reduce}+T_{MG\ preconditioner}+T_{vector},
+T_{Krylov}^{\mathrm{wall}}
+=
+T_{op}^{\mathrm{excl}}
++
+T_{global\ reduce}^{\mathrm{excl}}
++
+T_{MG\ preconditioner}^{\mathrm{excl}}
++
+T_{vector}^{\mathrm{excl}}.
+\label{eq:distributed-gpu-krylov-exclusive-cost}
 \end{equation}
-其中 $T_{op}$ 表示离散算子应用；显式稀疏矩阵路径中它可能表现为 SpMV，matrix-free 路径中则是 stencil/kernel apply。预条件器的数学角色已经在\secref{sec:mg-preconditioner}建立；这里关注它与全局归约共同形成的执行关键路径。
+其中上标 $\mathrm{excl}$ 表示同一时刻的 wall-clock 时间只归入一个桶；$T_{op}$ 表示离散算子应用，显式稀疏矩阵路径中它可能表现为 SpMV，matrix-free 路径中则是 stencil/kernel apply。若 profiler 记录的是原始 kernel、copy 或 MPI event duration，由于它们可能重叠，这些 duration 不能直接相加得到 wall time。\chapref{ch:benchmarking}会正式区分 wall time、exclusive phase time 与可重叠 event duration。预条件器的数学角色已经在\secref{sec:mg-preconditioner}建立；这里关注它与全局归约共同形成的执行关键路径。
 
 \section{本章小结}
 
