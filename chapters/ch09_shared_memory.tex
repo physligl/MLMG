@@ -30,7 +30,7 @@ u[p],\quad b[p],\quad r[p],\qquad p=i+n_x[(j-1)+n_y(k-1)].
 \end{equation}
 它描述的是 cache/workset 放大，而不是 MPI 通信量。tile 越小，边界相对比例越大，多个线程可能重复触及相邻 cache lines。
 
-\section{Jacobi、Residual 与 Transfer 的线程映射}
+\section{Jacobi、残差与网格间传递的线程映射}
 
 Jacobi 和 residual 都是“一个输出点一个 writer”的 stencil gather。线程只需处理自己的 tile，并读取相邻 tile 的旧状态；因为输入阶段是只读的，不需要对跨 tile load 加锁。
 
@@ -69,7 +69,7 @@ Lexicographic GS 的链式依赖不适合简单 parallel-for。RBGS 把任务拆
 
 更一般的图着色或 block smoother 可以扩大单个 task 粒度，但会增加 setup、工作集和颜色数。共享内存优化不能只比较单 sweep 时间，还必须比较 V-cycle convergence factor 与总 time-to-solution。
 
-\section{Reduction 与收敛检查}
+\section{归约与收敛检查}
 
 线程级 residual norm 通常先做每线程局部累加：
 \begin{equation}

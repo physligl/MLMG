@@ -123,7 +123,7 @@ N_0+\frac{N_0}{2^d}+\frac{N_0}{2^{2d}}+\cdots
 \textbf{即时检查：}三维中从 $128^3$ 连续 full coarsen 四次，各层自由度数分别是多少？把它们相加，与最细层 $128^3$ 相比增加了多少比例的网格工作量？再比较一维情形，解释为什么一维粗层占比显著更大。
 \end{checkpointbox}
 
-\subsection{线性复杂度会在什么情况下失效}
+\subsection{线性复杂度的失效条件}
 
 式~\eqref{eq:mg-vcycle-general-linear-work}把线性复杂度的假设暴露得很清楚。至少有三类情况会使简单的 $\Oh(N)$ 结论失效或失去预测力。
 
@@ -141,7 +141,7 @@ N_0+\frac{N_0}{2^d}+\frac{N_0}{2^{2d}}+\cdots
 \end{equation}
 这个分解将在\chapref{ch:parallel-model}和\chapref{ch:mg-parallel-operations}中转化为并行性能模型。
 
-\subsection{Full Multigrid}
+\subsection{全多重网格（FMG）}
 
 普通 V-cycle 通常从最细离散空间上的某个初值开始。Full Multigrid（FMG）采用嵌套迭代：先在最粗离散空间求一个低分辨率解，再把\textbf{解的近似}延拓到更细离散空间，并在每一级做少量 V-cycle 修正。
 
@@ -171,7 +171,7 @@ A^{-1}\bm r.
 \end{equation}
 这里 $B_{MG}$ 表示“给定残差 $\bm r$，执行一次预先定义好的 multigrid cycle 后返回近似误差修正”。
 
-\subsection{作为独立迭代求解器}
+\subsection{独立多重网格迭代}
 
 若直接反复执行
 \begin{equation}
@@ -193,7 +193,7 @@ I-B_{MG}A.
 \end{equation}
 理想情况下，平滑器处理高频误差，粗网格校正处理低频误差，因此 $E_{MG}$ 在整个误差空间上都保持较小的收缩因子。
 
-\subsection{作为外层 Krylov 方法的预条件器}
+\subsection{Krylov 方法中的多重网格预条件}
 
 若把
 \begin{equation}
@@ -207,7 +207,7 @@ A^{-1}\bm r
 
 这就是“多重网格求解器”和“多重网格预条件器”的核心区别：两者都执行近似相同的 $B_{MG}\bm r$，但控制迭代历史的算法层不同。
 
-\subsection{与 PCG 的对称性兼容}
+\subsection{PCG 的对称正定兼容性}
 
 若外层使用预条件共轭梯度法（PCG），则不能只检查原矩阵 $A$ 是否 SPD；整个多重网格预条件器也必须保持与所用内积相容的对称正定结构。
 
@@ -244,7 +244,7 @@ B_k\bm r_k,
 \]
 \end{keybox}
 
-\subsection{一次 Krylov 与多重网格组合迭代的执行结构}
+\subsection{Krylov--多重网格组合迭代的执行结构}
 
 一次预条件 Krylov iteration 不只包含 V-cycle。典型关键路径包括
 \begin{equation}
@@ -297,7 +297,7 @@ u_{\mathrm{comp}}\in V(\mathcal H).
 \end{equation}
 本节的目标，是把\chapref{ch:two-grid}建立的粗空间校正作用到这个\textbf{本身已经混合多种物理分辨率}的求解空间上。这里的“粗”有两种完全不同的来源：AMR 的粗层描述物理解的空间分辨率，多重网格的粗空间描述误差校正所需的低分辨率表示。后面的推导始终把这两种含义分开。
 
-\subsection{复合残差不能按 AMR 层级独立求解}
+\subsection{复合残差的跨 AMR 层级耦合}
 
 把复合向量按有效粗层自由度与细层自由度分块：
 \begin{equation}
@@ -381,7 +381,7 @@ A_1
 \end{equation}
 也可以在 $W^{(1)}$ 上重新离散一个粗空间校正算子。它与\chapref{ch:two-grid}讨论的 Galerkin 构造和重新离散具有同样的取舍，只是这里的细空间算子已经是复合 AMR 算子。
 
-\subsection{一次两层复合校正}
+\subsection{两层复合校正}
 \label{sec:fac-cycle-skeleton}
 
 把上述对象放进一次两层循环，可以得到不依赖具体软件调度的基本流程：

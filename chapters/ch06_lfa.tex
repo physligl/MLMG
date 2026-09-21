@@ -108,7 +108,7 @@ S_\omega=I-\omega D^{-1}A_h,
 \end{equation}
 这里 $\mu$ 是 smoothing factor。它说明一次最优 weighted Jacobi 会把最坏 high-frequency amplitude 至少压到原来的 $1/3$；当 $\theta\to0$ 时，$\widetilde S_\omega(\theta)\to1$，光滑误差几乎不动。
 
-\section{一维粗化与 harmonic pair}
+\section{一维粗化与谐波对}
 \label{sec:lfa-1d-aliasing}
 
 Two-grid LFA 与单独分析 smoother 的关键差别，是 coarse grid 会让不同 fine-grid frequencies 发生 aliasing。对 coarse nodes $j=2I$，有
@@ -178,7 +178,7 @@ c=\cos\theta,
 4\alpha\beta=1-c^2=\sin^2\theta.
 \end{equation}
 
-\subsection{Fine operator 与 smoother 的 harmonic symbol}
+\subsection{细网格算子与平滑器的谐波符号}
 
 在基
 \begin{equation}
@@ -224,7 +224,7 @@ s_1
 \end{align}
 下标 $0,1$ 只表示 harmonic pair 中的两个分量，不表示 multigrid level。
 
-\subsection{Restriction 与 prolongation 的 harmonic symbol}
+\subsection{限制与延拓的谐波符号}
 
 对 full-weighting
 \begin{equation}
@@ -283,7 +283,7 @@ p_0-p_1=\cos\theta.
 
 这里 $\widetilde R^{(2)}$ 与 $\widetilde P^{(2)}$ 数值上看起来互为转置；它们来自\chapref{ch:two-grid}中 $R=\frac12P^T$ 的离散 transfer，但 harmonic basis 的归一化已经吸收了网格点计数带来的缩放。
 
-\subsection{Galerkin coarse operator}
+\subsection{Galerkin 粗网格算子}
 
 coarse frequency 是 $2\theta$，且 $H=2h$。直接在 coarse grid 上重新离散 Poisson 给出
 \begin{align}
@@ -308,7 +308,7 @@ Galerkin 计算给出同样结果：
 \end{align}
 这就是附录~\ref{app:galerkin}逐点推导在 Fourier 空间中的压缩版本。
 
-\subsection{Coarse-grid correction 的 $2\times2$ symbol}
+\subsection{粗网格校正的谐波矩阵符号}
 
 由
 \begin{equation}
@@ -345,7 +345,7 @@ C_h=I-PA_H^{-1}RA_h
 \end{equation}
 第一式说明由 prolongation 生成的 coarse-space component 被精确消除；第二式说明 harmonic pair 中仍存在一个 coarse grid 无法消除的互补方向。这正是\chapref{ch:two-grid}中 coarse-space projection 的频率域版本。
 
-\subsection{完整 two-grid symbol 与收敛因子}
+\subsection{两网格符号与收敛因子}
 
 取一次 pre-smoothing 与一次 post-smoothing，并使用同一个 weighted Jacobi。由式~\eqref{eq:two_grid_error}，
 \begin{equation}
@@ -499,7 +499,7 @@ C_h=I-PA_H^{-1}RA_h
 \label{eq:lfa-3d-jacobi-optimal}
 \end{equation}
 
-\section{多维 harmonic 子空间与两网格 symbol}
+\section{多维谐波子空间与两网格符号}
 
 二维 full coarsening 时，$x,y$ 两个方向都存在“是否加 $\pi$”的二元选择。对基本低频 $\bm\theta=(\theta_x,\theta_y)$，coarse grid 无法区分四个 fine-grid harmonics：
 \begin{equation}

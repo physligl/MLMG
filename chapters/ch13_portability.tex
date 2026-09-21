@@ -40,7 +40,7 @@
 对本书当前以规则结构网格为主的 target-centric 实现，restriction/prolongation 常可表达为 gather parallel-for，从而映射到 OpenMP loop、CUDA kernel、HIP/SYCL kernel 或 Kokkos execution policy。但这不是 transfer 的一般定义：更复杂的传递可能表现为 sparse operator apply、scatter/reduction，或同时包含跨 rank 通信；可移植层必须保留这些语义差异。
 
 
-\section{同一个残差计算怎样跨后端保持语义}
+\section{残差计算的跨后端语义一致性}
 \label{sec:portability-residual-trace}
 
 抽象是否有效，最好不要从 API 名字判断，而要跟踪同一个数值操作。设某一层已经完成 halo exchange，需要计算
@@ -92,7 +92,7 @@ r_i=b_i-(Au)_i
 但抽象也不能抹掉必要信息。例如 line smoother 的任务不是 pointwise；distributed halo 具有 owner/ghost 语义；这些属于算法本身，应保留在接口中，而不是为了“统一 API”伪装成普通 map。
 
 
-\section{从单个内核到完整 V-Cycle 的评价}
+\section{V-Cycle 的分层性能评价}
 
 下面给一个\emph{示意性}例子，说明为什么单个 stencil 的性能比例不足以代表求解器。设某 GPU 上原生后端与可移植后端的一次 V-cycle 时间分解如下：
 \begin{center}

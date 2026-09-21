@@ -30,7 +30,7 @@ A_p:u_p^{local}\longrightarrow r_p^{owned}.
 
 本地数组通常把 owned region 与 ghost layers 放在同一个可索引容器中。这样热点 stencil 不需要知道邻居究竟来自本 rank 还是远端 rank：通信阶段先把 remote owner 的值复制到 ghost，随后 operator kernel 只执行普通本地索引。
 
-\section{Halo Exchange 的来源}
+\section{Halo 交换机制}
 \label{sec:mpi-halo}
 
 考虑 rank 子域最右侧的 owned cell。其 residual task 需要右邻居 $u_{i+1}$，但这个值由另一个 rank 拥有。于是通信不是“MPI 特有的附加步骤”，而是\chapref{ch:mg-parallel-operations}中跨所有权边界读取在分布式地址空间下的必然实现。
@@ -46,7 +46,7 @@ A_p:u_p^{local}\longrightarrow r_p^{owned}.
 
 二维子域主要交换四个边带，三维主要交换六个 face halos；若 stencil 还需要 edge/corner neighbors，则通信区域要扩展到棱角或通过多阶段 face exchange 传播。
 
-\section{通信量与 Surface-to-Volume}
+\section{表面积--体积比与通信量}
 
 对每方向约 $n$ cells 的三维立方子域，一层 face halo 数据量约为
 \begin{equation}
@@ -67,7 +67,7 @@ T_{msg}\approx\alpha+\beta m.
 
 \section{MPI 中的 MG 操作映射}
 
-\subsection{Smoother 与 Residual}
+\subsection{平滑器与残差}
 
 Jacobi/residual 的 interior tasks 只依赖本 rank owned values，可以在 halo 尚未到达时先计算；靠近分区边界的 tasks 必须等待 ghost readiness。于是自然形成
 \begin{equation}
@@ -91,7 +91,7 @@ Jacobi/residual 的 interior tasks 只依赖本 rank owned values，可以在 ha
 \end{algorithm}
 这四步清楚地区分了通信边界与物理边界：boundary residual cells 是“靠近 rank 分区边界”的 owned cells，它们仍然使用同一个 PDE stencil，而不是施加新的物理边界条件。
 
-\subsection{Restriction 与 Prolongation}
+\subsection{限制与延拓}
 
 如果 fine/coarse partition 保持嵌套，同一 rank 可以本地完成大部分 transfer；跨 rank 的 coarse ownership 变化则需要 redistribution。特别是在 coarse levels 减少活跃 ranks 时，restriction 不再只是数值 gather，还承担把 coarse right-hand side 迁移到新的 rank 集合。
 

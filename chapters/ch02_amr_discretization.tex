@@ -71,7 +71,7 @@
 \label{fig:amr-hierarchy-one-dimensional}
 \end{figure}
 
-\subsection{块结构 hierarchy 的数学表示}
+\subsection{块结构层级的数学表示}
 
 真正的 block-structured AMR 通常不逐个管理零散的 fine cells，而是把相邻细单元组织成矩形或长方体 patch。为了把“patch 是一个软件对象”和“patch 决定离散空间”区分开，先给出一个最小的数学表示。
 
@@ -195,7 +195,7 @@ V(\mathcal H)
 \label{fig:amr-three-representations}
 \end{figure}
 
-\subsection{规则 patch 与接口局部化}
+\subsection{规则 Patch 与接口局部化}
 
 图~\ref{fig:amr-block-structured-composite} 中最重要的区别不是 fine patch 的几何形状，而是 covered coarse cells 在两种表示中的\textbf{身份变化}。在 hierarchy storage 中，它们仍然作为 coarse-level data 保留，因而同一物理区域可以同时存在 coarse 与 fine 两层存储；在 composite discretization 中，它们已经退出独立有效控制体集合，由 fine valid cells 接管。coarse--fine interface 则是 coarse valid region 与 fine valid region 真正发生离散耦合的位置。
 
@@ -558,7 +558,7 @@ Q_C
 \end{equation}
 只有 fine subfaces 等面积时，才可退化成简单算术平均。因而\textbf{守恒对象是积分通量，而不是通量密度的数值本身。}
 
-\subsection{切向重构与 subface 状态}
+\subsection{切向重构与子面状态}
 
 多维接口还存在一维中没有的切向几何。图~\ref{fig:amr-two-dimensional-face-split} 中各 fine subface center 位于 coarse face 上不同的切向位置，而一个 coarse cell 只有一个中心状态 $u_C$。若所有 subfaces 都直接使用同一个 $u_C$，等价于忽略 coarse solution 沿界面的切向变化。
 
@@ -614,7 +614,7 @@ T_k
 \end{equation}
 此时 matrix graph 同时向多个 fine unknowns 和多个 coarse reconstruction neighbors 扩展。是否仍能得到对称矩阵，取决于 fine-side equation 与 coarse-side flux sum 是否来自同一个对称离散构造；“连续算子是自伴的”本身并不足以保证这一点。
 
-\subsection{三维接口与 patch 棱角}
+\subsection{三维接口与 Patch 棱角}
 
 三维 $r=2$ 时，一个 coarse face 被 $2\times2=4$ 个 fine subfaces 覆盖，并且 coarse-side state 需要在两个切向坐标上重构。对规则 Cartesian 几何，若一维插值算子分别为 $I_x,I_y,I_z$，一个可分离的三维构造可以组织为
 \begin{equation}
@@ -634,7 +634,7 @@ I_{c\rightarrow f}^{3D}
 \section{粗细接口的离散延拓与 Ghost Fill}
 \label{sec:amr-ghost-extension}
 
-\subsection{Ghost fill 作为离散延拓算子}
+\subsection{Ghost Fill 与离散延拓算子}
 
 fine patch 内部的 stencil 希望继续作用在规则 fine-grid 上，但靠近 patch 外缘时，某些 stencil locations 不属于当前 patch 的真实 fine cells。ghost cells 的作用就是把复合离散场\textbf{延拓}到这些辅助位置，使内部 stencil 可以保持统一形式。
 
@@ -959,7 +959,7 @@ p_{\mathrm{obs}}
 \section{粗细层状态一致性与细到粗同步}
 \label{sec:amr-average-down}
 
-\subsection{Cell-average 的 conservative projection}
+\subsection{单元平均量的守恒投影}
 
 coarse-to-fine extension 为 fine stencil 提供 coarse-side 信息；反方向还需要维持同一物理场在 coarse storage 与 fine representation 之间的一致性。对被 fine level 覆盖的 coarse cell，若 $u_F$ 表示 finite-volume cell average，则最自然的 coarse representation 是体积加权 projection：
 \begin{equation}

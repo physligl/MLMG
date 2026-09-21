@@ -5,7 +5,7 @@
 \textbf{本章把同一个多重网格算法翻译成并行计算语言。}在讨论 OpenMP、GPU 或 MPI 之前，先固定每个 MG level 的数据对象，再逐个分析 smoother、算子/残差、restriction、prolongation、correction、norm 与 ghost fill 的读写集合和依赖。后面的硬件章节只改变“这些 task 在哪里执行”，不改变本章建立的算法语义。
 \end{keybox}
 
-\section{每个 MG Level 的数据模型}
+\section{MG 层的数据模型}
 
 对最常见的线性多重网格，一个 MG level $\ell$ 至少需要以下逻辑对象：
 \begin{equation}
@@ -69,9 +69,9 @@ r_i=b_i-(Au)_i,
 
 若子域只保存自己的 owned cells，靠近分区边界的 residual task 还需要邻区值。这一“缺少邻居数据”的事实在共享地址空间只是跨块 load，在分布式内存中则演化成 ghost/halo 交换，见\chapref{ch:mpi}。
 
-\section{Restriction 与 Prolongation}
+\section{限制与延拓}
 
-\subsection{Restriction 的 Gather 映射}
+\subsection{限制算子的 Gather 映射}
 
 把 restriction 写成 gather 最容易并行：每个 coarse task 负责一个 $b_H(I)$，读取一组 fine residual：
 \begin{equation}
@@ -79,7 +79,7 @@ b_H(I)=\sum_{j\in\mathcal S(I)}w_{Ij}r_h(j).
 \end{equation}
 每个 coarse 输出具有唯一 writer，因此无需原子操作。二维 full-weighting 读取最多九点，三维 tensor-product full-weighting 读取最多二十七点；维数提升直接扩大每个 task 的输入 footprint。
 
-\subsection{Prolongation 的 Gather 映射}
+\subsection{延拓算子的 Gather 映射}
 
 若让每个 coarse task 把贡献 scatter 到多个 fine cells，就可能出现多个 coarse tasks 同时更新同一个 fine output。更适合并行实现的方式是反过来：每个 fine task 主动读取需要的 coarse neighbors，计算
 \begin{equation}
@@ -87,7 +87,7 @@ e_h(i)=\sum_{I\in\mathcal C(i)}p_{iI}e_H(I).
 \end{equation}
 这样仍然保持一个输出一个 writer。对 GPU 和线程并行，这种 gather 形式通常比原子 scatter 更自然。
 
-\section{Correction、Norm 与 Ghost Fill}
+\section{校正、范数与 Ghost Fill}
 
 Correction
 \begin{equation}
@@ -103,7 +103,7 @@ u_h\leftarrow u_h+e_h
 
 Ghost fill 的语义是：在执行依赖邻居的 stencil task 之前，使本地辅助区域保存足够的邻居状态。共享内存通常不需要复制 ghost；block/patch 数据结构为了保持规则 stencil 仍可能显式保存 ghost。MPI 中 ghost 必须由 owner 的最新数据刷新。AMR coarse--fine ghost 则还可能需要\chapref{ch:amr-discretization}中的插值，而不只是同层复制。
 
-\section{完整 V-Cycle 的 Task Graph}
+\section{V-Cycle 任务图}
 
 一次 V-cycle 可以写成阶段 DAG：
 \begin{equation}
@@ -133,7 +133,7 @@ Ghost fill 的语义是：在执行依赖邻居的 stencil task 之前，使本�
 \end{itemize}
 因此“怎么算”和“怎么存”必须一起设计。减少临时向量可以降低内存，但过度复用也可能制造额外同步或破坏并发。
 
-\section{作为预条件器时的嵌套执行图}
+\section{预条件模式下的嵌套执行图}
 
 \secref{sec:mg-preconditioner}把一次固定 V-cycle 记为近似逆 $B_{MG}$。当它嵌入 Krylov 方法以后，V-cycle 不再是最外层循环，而成为一个\textbf{preconditioner apply 子图}：
 \begin{equation}

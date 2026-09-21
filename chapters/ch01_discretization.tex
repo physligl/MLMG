@@ -557,7 +557,7 @@ T_{PN}:=\frac{A_f}{d_{PN}}.
 下一节把连续模型推广到变系数椭圆算子。两条路线都将继续保留：FD 侧检查差分/半点通量近似的一致性，FV 侧检查控制体积分、面通量和求积的一致性；当两者使用相同的离散通量时，再判断它们是否在代数层面重合。
 
 
-\section{从 Poisson 到一般椭圆算子}
+\section{一般椭圆算子的离散}
 \label{sec:discretization-general-elliptic}
 
 考虑标量扩散型算子
@@ -1438,7 +1438,7 @@ A\bm u=\bm b.
 
 这两个层次不能混在一起。把 $A$ 写成矩阵，并不意味着程序一定要把所有非零矩阵条目逐项保存下来。显式矩阵和 matrix-free 讨论的正是同一个离散算子的两种程序表示。
 
-\subsection{从三个未知量看同一个算子的两种表示}
+\subsection{离散算子的两种程序表示}
 
 先回到最小的可检查例子。考虑一维 Poisson 方程
 \begin{equation}
@@ -1524,7 +1524,7 @@ A\text{ 是数学对象；explicit / matrix-free 是程序表示。}
 \]
 \end{keybox}
 
-\subsection{从 stencil 到矩阵：什么叫 assembly}
+\subsection{Stencil 与矩阵装配}
 
 式~\eqref{eq:discretization-mf-three-point} 已经给出了局部离散关系。若选择显式矩阵表示，程序需要把这些局部关系转成全局矩阵条目。以内点 $i$ 为例，
 \begin{equation}
@@ -1566,7 +1566,7 @@ A\bm x.
 
 这两个流程必须产生与同一离散算子一致的结果。若边界条件、变系数平均方式或几何系数在两条路径中处理不同，那么所谓“显式与 matrix-free 等价”就已经失效。验证一个 matrix-free 实现时，最直接的正确性测试之一，就是在一个足够小的问题上同时构造显式矩阵，并比较两种路径得到的 $A\bm x$。
 
-\subsection{显式稀疏矩阵在程序中怎样存}
+\subsection{显式稀疏矩阵的存储结构}
 
 对真实 PDE 网格，$A$ 往往非常大，但上一节已经说明它通常是稀疏的。显式表示并不会存一个 $N\times N$ 的稠密数组，而是只保存非零条目以及它们的位置。
 
@@ -1585,7 +1585,7 @@ CSR 的意义不是改变数学上的矩阵，而是避免保存大量必然为�
 
 显式矩阵也不一定非要使用 CSR。规则 stencil 可以使用固定对角线或固定邻接格式，某些块系统还会使用 block sparse 格式。这里真正决定“显式”的不是具体容器，而是：\textbf{局部代数系数已经被预先物化并长期保存，后续 $A\bm x$ 直接读取这些系数。}
 
-\subsection{Matrix-Free 到底没有存什么}
+\subsection{Matrix-Free 算子的存储对象}
 
 Matrix-free 省略的是 assembled matrix entries 及其通用稀疏索引结构，不是把算子所需的数据全部消失。
 
@@ -1619,7 +1619,7 @@ matrix-free 实现仍可能需要保存
 Matrix-free 不存完整 assembled sparse matrix，但仍然必须拥有足够的信息，使程序能够对任意输入 $\bm x$ 正确返回 $A\bm x$。
 \end{keybox}
 
-\subsection{为什么迭代算法只需要算子应用}
+\subsection{迭代算法的算子应用接口}
 
 把“矩阵”和“算子应用”区分开以后，就能理解为什么 matrix-free 可以与许多迭代算法配合。以残差为例，
 \begin{equation}
@@ -1637,7 +1637,7 @@ A\bm x.
 
 不过，\textbf{能做 $A\bm x$ 并不意味着所有算法都天然适合 matrix-free。}直接因子分解需要显式代数结构；某些 AMG setup、稀疏矩阵重排或依赖矩阵图的算法也需要访问矩阵条目或等价的邻接信息。于是 matrix-free 是否合适，不只由 PDE 决定，还取决于后续算法究竟需要“算子作用”，还是需要“矩阵本身”。
 
-\subsection{真正的工程取舍：少搬数据还是少做计算}
+\subsection{存储、数据搬运与计算量的权衡}
 
 显式矩阵把局部系数提前算好。它的优点是后续应用时不必重新推导这些系数，而且可以直接交给通用稀疏线性代数软件。代价是每次计算 $A\bm x$ 时，不仅要读取输入向量，还要从内存读取 matrix values 和索引。
 
@@ -1654,7 +1654,7 @@ Matrix-free 则把一部分工作推迟到 operator apply 阶段：程序从 ste
 \end{equation}
 在现代 CPU/GPU 上，许多低阶 stencil kernel 更容易受 memory bandwidth 而不是峰值浮点吞吐限制，所以“多做少量计算、少搬大量矩阵数据”可能是有利的；但这不是无条件结论，必须结合系数复杂度、缓存、后端实现和完整求解流程判断。
 
-\subsection{三维七点问题：把概念放大到内存预算}
+\subsection{三维七点问题的内存预算}
 
 现在再看内存预算，它的作用只是量化前面已经建立的表示差异，而不是定义 matrix-free。
 
@@ -1739,7 +1739,7 @@ N+3N\approx4N
 索引宽度、稀疏格式、系数是否共享、ghost/boundary storage、向量数量、求解器工作区和并行分区都会改变实际 RSS。预算时应先数清楚“每个未知量需要多少 value、多少 index、多少辅助向量”，再乘以问题规模。
 \end{warningbox}
 
-\subsection{怎样判断采用哪一种表示}
+\subsection{算子表示的选择准则}
 
 现在可以把选择标准压缩成两个问题。
 

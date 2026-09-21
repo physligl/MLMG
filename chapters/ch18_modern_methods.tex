@@ -7,7 +7,7 @@
 阅读每一种方法时都回答四个问题：它放宽了前文哪一个假设？改变了粗空间、平滑器还是执行成本？引入了什么新的数值风险？应当用什么验证量确认收益？这样现代方法就能挂回前文已经建立的对象，而不会变成术语目录。带宽与算术强度见\chapref{ch:parallel-model}、\chapref{ch:mg-parallel-operations}和\chapref{ch:gpu}，AMG 层级与稀疏复杂度见\chapref{ch:software}，分布式粗层通信见\chapref{ch:mpi}和\chapref{ch:distributed-gpu}。
 \end{keybox}
 
-\section{现代方法改变了什么}
+\section{现代多重网格方法的主要扩展}
 
 前六章建立的经典路线可以概括为：线性离散系统、几何或代数层级、平滑器、粗网格校正以及递归 V-cycle。现代方法通常不是把这条链完全推翻，而是改变其中某一环：非线性问题需要改变“校正方程”的形式；复杂算子需要更自适应的粗空间；高阶离散改变算子的存储与应用方式；异构和极大规模机器则改变每一级操作的资源成本。
 
@@ -25,7 +25,7 @@
 本章只补足理解现代方法所需的最小模型，不试图替代非线性求解、有限元或 AMG 专著。凡是出现新的抽象，都要求读者至少能回答“未知量住在哪里、粗化改变什么、一次算子应用做什么”；论文级算法细节仍应回到专门文献。
 \end{warningbox}
 
-\section{从线性校正到 FAS}
+\section{非线性校正与 FAS}
 \label{sec:modern-fas}
 
 前文的 correction scheme 建立在线性系统

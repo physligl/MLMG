@@ -7,7 +7,7 @@
 本章先用一维 Poisson 把“网格依赖收敛”和“平滑性质”算清楚，再建立两网格方法。后半章沿两条贯穿全书的离散路线展开：\textbf{节点型有限差分（nodal FD）}与\textbf{单元中心有限体积/守恒型有限差分（cell-centered FV / conservative FD）}。两条路线的自由度几何和网格间传递公式可以不同，但在线性代数层共享同一个 coarse-space correction 结构。
 \end{keybox}
 
-\section{局部平稳迭代为什么随网格加密变慢}
+\section{平稳迭代的网格依赖收敛性}
 \label{sec:smoother-grid-dependence}
 
 \chapref{ch:linear-solvers}已经给出一般平稳迭代
@@ -143,10 +143,10 @@ k=\Theta(h^{-2})
 多重网格的问题因此不是“怎样让 Jacobi 多迭代几轮”，而是“怎样利用它对不同误差模态不均匀的处理能力”。
 \end{keybox}
 
-\section{从收敛因子到平滑因子}
+\section{平滑性质与平滑因子}
 \label{sec:smoothing-property}
 
-\subsection{普通 Jacobi 对高频误差并不理想}
+\subsection{Jacobi 的高频误差传播}
 
 对齐次误差方程，普通 Jacobi 满足
 \begin{equation}
@@ -249,7 +249,7 @@ I-\omega D^{-1}A.
 
 \chapref{ch:lfa}会把这里的模态分析推广到 Fourier symbol，并正式计算两网格收敛因子。
 
-\section{从光滑误差到粗空间}
+\section{粗空间与低频误差}
 
 前两节已经建立了本章最重要的反差：Jacobi/Gauss--Seidel 作为独立求解器会随网格加密显著变慢，但合适的平滑器却能在少量平滑扫描中快速削弱细网格上的振荡误差。于是平滑后真正拖慢全局收敛的主要是空间上缓慢变化的剩余误差。粗网格之所以有用，不是因为“粗网格计算便宜”这一事实本身，而是因为这类误差可以用更少的自由度表示。
 
@@ -328,7 +328,7 @@ A_he_h=r_h.
 
 \section{网格间传递算子}
 
-\subsection{Restriction 的角色}
+\subsection{限制算子的作用}
 \label{sec:restriction}
 
 从细空间数据构造粗空间数据的映射记作
@@ -344,7 +344,7 @@ r_H=Rr_h,
 
 不同离散路线可以给出不同的 $R$。本章下面分别建立 nodal 与 cell-centered 两个最小模型。
 
-\subsection{Nodal FD 的网格间传递}
+\subsection{节点型 FD 的网格间传递}
 
 设 fine nodes 为 $x_j=jh$，coarse nodes 为 $X_I=2Ih$。粗节点与 fine node $j=2I$ 对齐。最简单的 injection restriction 只取偶数点：
 \begin{equation}
@@ -368,7 +368,7 @@ r_H=Rr_h,
 \end{align}
 这里 $R$ 把 细网格残差 对 coarse nodal basis 的响应压缩成粗层右端，而不是简单抽样。
 
-\subsection{Prolongation 的角色}
+\subsection{延拓算子的作用}
 \label{sec:prolongation}
 
 从粗误差空间到细空间的映射记作
@@ -394,7 +394,7 @@ P\bm e_H=(0,1,2,1,0)^T.
 \end{equation}
 所以 $P$ 的数学角色是把粗空间中的误差形状重新表达为 fine-space correction，而不是把 coarse solution 覆盖到 fine grid。
 
-\subsection{Cell-centered FV 与守恒型 FD 的网格间传递}
+\subsection{单元中心 FV 与守恒型 FD 的网格间传递}
 \label{sec:twogrid-cell-centered-transfer}
 
 现在考虑 fine control volumes
@@ -483,7 +483,7 @@ R=\frac12P^T,
 
 多维 transfer 的第一原则仍然不是记 stencil，而是先确定自由度布局与粗空间。规则 Cartesian 网格上，tensor product 提供了最简单的构造方式。
 
-\subsection{Nodal 多维网格间传递}
+\subsection{节点型离散的多维网格间传递}
 
 一维 nodal full-weighting 权重为 $(1,2,1)/4$。二维 tensor-product full-weighting 因而得到九点模板
 \begin{equation}
@@ -508,7 +508,7 @@ P_{3D}=P_z\otimes P_y\otimes P_x.
 \end{equation}
 一个 coarse node 的 full-weighting 最多访问 $3^3=27$ 个 fine nodes，三线性 prolongation 的 fine value 则由邻近 coarse nodes 的 tensor-product basis 共同决定。
 
-\subsection{Cell-centered 多维网格间传递}
+\subsection{单元中心离散的多维网格间传递}
 
 对 $2{:}1$ full coarsening，一个 $d$ 维 coarse control volume 包含 $2^d$ 个 fine control volumes。若向量表示 volume-normalized residual，则
 \begin{equation}

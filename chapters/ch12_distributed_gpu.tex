@@ -67,7 +67,7 @@ D\rightarrow\text{network}\rightarrow D.
 Restriction、prolongation、coarse redistribution 也需要同时考虑 device data movement 与 rank ownership changes。因此“GPU kernel 很快”并不能保证多 GPU V-cycle 快；如果 kernel 被网络或全局 reduction 的关键路径串住，单 kernel 优化收益会被削弱。
 
 
-\section{一个四 GPU V-Cycle 的执行轨迹}
+\section{四 GPU V-Cycle 执行轨迹}
 \label{sec:distributed-gpu-trace}
 
 前面的所有机制可以压缩到一个可追踪例子中。考虑一个 $256^3$ 的规则三维问题，采用 $2\times2\times1$ 空间分区，每个 MPI rank 绑定一块 GPU。于是细层每块 GPU 约拥有
@@ -151,7 +151,7 @@ P_{\ell-1},
 \end{equation}
 时，把 coarse data 聚合到更少 ranks/GPUs。之后后续 levels 只在缩小后的 communicator 上执行。最粗层还可以转 CPU direct solve，但必须把 device--host transfer 纳入成本。
 
-\section{全局归约与 Krylov 外循环}
+\section{全局归约与 Krylov 外层迭代}
 
 多 GPU Krylov+MG 中，一次外层迭代可能包含：算子应用、若干点积与全局归约、一次 MG 预条件器，以及向量更新。MG 内部主要使用近邻 halo，而 Krylov 点积需要全局 collective；两类通信具有不同的扩展特性。
 

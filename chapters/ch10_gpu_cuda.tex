@@ -150,7 +150,7 @@ constant memory/cache & device & 程序运行期 & 少量只读常量、kernel �
 CUDA 里的 \texttt{local memory} 名称很容易误导。它是“逻辑上每个 thread 私有”，不等于“物理上位于快速片上存储”。当寄存器不足、编译器发生 register spill，数据可能落到 device memory 支持的 local address space，访问代价会明显上升。
 \end{warningbox}
 
-\subsection{数据驻留与 Host--Device 传输}
+\subsection{数据驻留与主机--设备传输}
 
 对多重网格，最重要的内存决策通常不是“某个数组用哪个 CUDA API 分配”，而是\textbf{V-cycle 期间数据是否持续留在 device 上}。如果每个 smoother、residual 或 restriction 前后都把数据搬回 host，那么一次本来应当在 device 内完成的 stencil 会被扩展成
 \[
@@ -191,7 +191,7 @@ p(i,j,k)=i+n_x\bigl(j+n_y k\bigr).
 \end{equation}
 如果连续 thread IDs 对应连续 $i$，则一个 warp 中相邻 lanes 会访问相邻的 $x$ cells。
 
-\subsection{Global Memory Coalescing}
+\subsection{全局内存合并访问（Coalescing）}
 
 GPU global-memory 访问不是“每个 thread 单独发一个 DRAM 请求”。一个 warp 执行 load/store 时，hardware 会把各 lanes 的地址合并成尽量少的 memory transactions。当前 CUDA Programming Guide 以 32-byte transaction 为基础解释 coalescing；连续 threads 访问连续字时可以高效利用传输的数据，而大 stride 的 lane-to-lane 地址则可能产生大量额外 transaction\cite{cudaProgramming2026}。
 
@@ -228,7 +228,7 @@ p(i+t,j+1,k)=p(i,j+1,k)+t,
 \label{fig:gpu-coalescing-offset}
 \end{figure}
 
-\subsection{边界分支与 Warp Divergence}
+\subsection{边界分支与 Warp 发散}
 
 物理边界、AMR patch 边界和 embedded boundary 会让少量 cells 执行不同逻辑。如果一个 warp 中只有部分 lanes 进入边界分支，其余 lanes 会被掩码等待，形成 divergence。最直接的策略有两种：
 
@@ -267,7 +267,7 @@ GPU stencil 的性能问题可以压缩成三个层次：
 
 这三个层次分别对应内存带宽/缓存、占用率与资源压力、以及粗层并行度，不能混成一个笼统的“GPU utilization”。
 
-\subsection{七点 Residual 的算术强度}
+\subsection{七点残差 Kernel 的算术强度}
 
 考虑常系数三维 Poisson residual：
 \begin{equation}
@@ -298,7 +298,7 @@ r_{i,j,k}
 
 Roofline 中真正应该使用的是与所分析 memory level 对应的实际 traffic，而不是简单把源码 load 次数乘以 8\cite{nsightCompute2026}。
 
-\subsection{Occupancy 与 Latency Hiding}
+\subsection{占用率与延迟隐藏}
 
 Global-memory load 往往具有很高延迟。GPU 的基本策略不是让单个 warp 像 CPU core 一样低延迟完成，而是当一个 warp 等数据时，SM 调度另一个 ready warp。于是需要足够多 resident warps 来隐藏延迟。
 
@@ -325,7 +325,7 @@ Occupancy 通常定义为
 
 粗网格经常不是“occupancy 太低”，而是\textbf{总 block 数已经少于 SM 数}；这时即使每个 block 的 theoretical occupancy 很高，也仍然有很多 SM 完全空闲。
 
-\subsection{Register Pressure 与 Spill}
+\subsection{寄存器压力与 Spill}
 
 每个 thread 使用的 registers 越多，一个 SM 能同时容纳的 threads/blocks 越少。编译器若无法把 thread-local 数据保存在 registers 中，还可能 spill 到 local memory。于是一个看似“减少 global loads”的复杂 fused kernel，可能因为 register pressure 上升而降低 occupancy，甚至产生额外 local-memory traffic。
 
@@ -340,7 +340,7 @@ Occupancy 通常定义为
 \]
 因此 fusion 必须通过 profile 验证，而不是默认“越多越好”。
 
-\subsection{Shared-Memory Tiling 与数据复用}
+\subsection{共享内存分块与数据复用}
 
 设一个三维 block 计算 $B_xB_yB_z$ 个内部 cells，stencil 半径为 1。如果为了编程简单直接把完整 halo cuboid 搬进 shared memory，需要的 tile 大小为
 \begin{equation}
@@ -373,7 +373,7 @@ Shared memory 还会引入：
 \end{itemize}
 现代 GPU cache 已经能捕捉一部分规则 stencil reuse，因此 shared-memory tiling 是否有收益必须实测。对高阶 stencil、多次重用、多个场联合计算，它更可能值得；对简单七点 stencil，它未必胜过 cache-friendly global-memory kernel。
 
-\subsection{Shared-Memory Bank Conflict}
+\subsection{共享内存 Bank 冲突}
 
 Shared memory 并不是一块“任何地址都可同时访问”的理想 SRAM，而是划分为多个 banks。一个 warp 发起 shared-memory 指令时，如果不同 lanes 访问可以由不同 banks 同时服务，吞吐较高；如果多个 lanes 需要同一 bank 中的不同地址，请求可能被分解为多个阶段，从而形成 bank conflict\cite{cudaProgramming2026}。
 
@@ -427,7 +427,7 @@ V-cycle 是高度重复的 kernel DAG。CUDA Graphs 允许先定义 kernel、cop
 
 因此 graphs 解决的是 DAG submission 问题，不是 coarse-grid parallelism collapse。
 
-\subsection{Allocation 与同步}
+\subsection{内存分配与同步}
 
 频繁的 \texttt{cudaMalloc/cudaFree} 不是普通指针操作：allocation/free 可能进入 runtime/driver 的全局管理路径，并妨碍不同 streams 的并发。CUDA 提供 stream-ordered allocator（例如 \texttt{cudaMallocAsync/cudaFreeAsync}），把 allocation lifetime 与 stream 顺序联系起来，并允许 memory pool 在不同 operations 之间复用物理内存\cite{cudaProgramming2026}。
 
@@ -438,7 +438,7 @@ V-cycle 是高度重复的 kernel DAG。CUDA Graphs 允许先定义 kernel、cop
 
 现在回到\chapref{ch:mg-parallel-operations}的操作表。GPU 章的重点不再是重新介绍数值算法，而是说明每个 operation 的 dependency pattern 如何决定 kernel 形状、访存和同步。
 
-\subsection{Weighted Jacobi}
+\subsection{加权 Jacobi}
 
 Weighted Jacobi 的一个 sweep 可写成
 \begin{equation}
@@ -480,7 +480,7 @@ RBGS 可以原地更新 $u$，但一个完整 sweep 至少包含
 
 数值上更强的 smoother 不一定得到更短的 time-to-solution；应比较“每 cycle 收敛因子 × 每 cycle 成本”。这一原则与\chapref{ch:lfa}的数值分析闭合。
 
-\subsection{Chebyshev Smoother}
+\subsection{Chebyshev 平滑器}
 
 Chebyshev smoother 通常由 repeated operator applications 与 vector recurrences 组成。它的优点是没有 GS 式点间顺序依赖，因此 GPU 并行性高；缺点是一个 degree-$m$ smoother 往往意味着 $m$ 次 operator application，加上若干向量 recurrence。如果每一步都分别落成 kernel，就会产生多次 memory passes 与 launches。
 
@@ -492,7 +492,7 @@ Chebyshev smoother 通常由 repeated operator applications 与 vector recurrenc
 \]
 Chebyshev 还依赖谱区间估计，因此它是一个很好的例子：\textbf{数值可并行性强，不代表实现自动高效；实现高效也不保证谱参数选得正确。}
 
-\subsection{Line/Plane Smoother 的并行结构}
+\subsection{线/面平滑器的并行结构}
 
 各向异性问题常需要 line/plane smoother。这里 logical task 不再自然等于一个 cell。假设沿 $z$ 方向每条 line 需要解三对角系统：
 \begin{itemize}
@@ -502,7 +502,7 @@ Chebyshev 还依赖谱区间估计，因此它是一个很好的例子：\textbf
 \end{itemize}
 因此 line/plane smoother 是否适合 GPU，不取决于名字，而取决于\textbf{可同时存在多少独立 lines/planes，以及每个内部 solve 的 dependency depth}。这正是\chapref{ch:parallel-model}强调“先分析 dependency，再选硬件映射”的原因。
 
-\subsection{Residual Kernel}
+\subsection{残差 Kernel}
 
 Residual 最适合用于建立 GPU stencil baseline。一个 thread 负责一个 $r_i$，读取邻域 $u$、$b_i$ 和系数，写唯一输出。最基础的伪代码是：
 
@@ -520,7 +520,7 @@ Residual 最适合用于建立 GPU stencil baseline。一个 thread 负责一个
 
 这个 kernel 的首要优化顺序通常是：先验证 thread-to-data mapping 与 coalescing，再看实际 DRAM/L2 traffic，再看 occupancy/registers，最后才考虑 shared-memory tile。
 
-\subsection{Restriction Kernel}
+\subsection{限制 Kernel}
 
 Restriction 最自然的并行方式是每个 coarse output 一个 thread：
 \begin{equation}
@@ -528,7 +528,7 @@ b_H(I)=\sum_{j\in\mathcal S(I)}w_{Ij}r_h(j).
 \end{equation}
 这样没有 atomic writes。问题在于 task 数在三维 full coarsening 后立刻减少到约 $1/8$，所以 restriction 本身常是第一个明显看到 grid-level parallelism 下降的操作。
 
-\subsection{Prolongation 与 Correction Kernel}
+\subsection{延拓与校正 Kernel}
 
 对 prolongation，优先让每个 fine output thread gather 需要的 coarse values，而不是让 coarse threads scatter 到多个 fine outputs。这样保持唯一 writer。
 
@@ -538,7 +538,7 @@ u_h\leftarrow u_h+Pe_H,
 \]
 可以把 prolongation 与 correction 融合成一个 fine-output kernel，直接读取 coarse $e_H$ 并更新 $u_h$，省掉显式 $e_h$ 向量的一次 write/read。这是一个典型的\textbf{数值语义允许、内存流量驱动的 fusion}。
 
-\subsection{Reduction Kernel}
+\subsection{归约 Kernel}
 
 Norm、dot product 和 Krylov 内积都需要 reduction。与 stencil 的“一输出一 thread”不同，reduction 的输出数量会不断收缩。设输入有 $N$ 个值、每个 block 处理约 $T$ 个元素，最常见的第一阶段是
 \[
@@ -554,7 +554,7 @@ N\ \text{values}
 
 所以 convergence check 的正确问题不是“能不能少检查几次”，而是：\textbf{停止准则需要哪些标量、这些标量在哪一级产生、何时必须让 host 看见它们，以及能否在不改变数值语义的前提下延迟同步。}
 
-\subsection{物理边界、Ghost 与 Irregular Work}
+\subsection{物理边界、Ghost 与不规则工作量}
 
 规则 interior kernel 最容易高效。物理边界、AMR coarse--fine ghost 和 EB/cut-cell 会增加分支、额外系数或不规则索引。一个常用架构是：
 \begin{itemize}
@@ -618,7 +618,7 @@ Norm/dot & warp/block 分层归约 & tail + sync & warp/block reduction；避免
 
 于是显存优化的第一原则不是“把所有数组都压成最小类型”，而是先画出 live ranges，找出不会同时活跃的 workspace，再做复用。
 
-\subsection{Hierarchy 的基础显存预算}
+\subsection{多重网格层级的基础显存预算}
 
 三维 full coarsening 下，所有 levels 的 cell 总数近似
 \begin{equation}
@@ -651,7 +651,7 @@ M_{ubr}
 
 但 matrix-free 不是免费：复杂 cut-cell、非结构几何或高阶 operator 可能需要更多几何数据和分支。是否值得必须回到实际 memory traffic 与 kernel complexity。
 
-\subsection{Kernel Fusion 的适用条件}
+\subsection{Kernel 融合的适用条件}
 
 两个 operations 是否适合 fusion，可以依次问：
 \begin{enumerate}
@@ -662,7 +662,7 @@ M_{ubr}
 
 Prolongation+correction 通常满足前两条且代价较小；residual+restriction 则更复杂，因为一个 coarse output 需要多个 fine residuals，若不显式保存 $r_h$，可能需要重复 stencil 计算或 block-level cooperation。
 
-\section{粗层执行与 Bottom Solver}
+\section{粗层执行与最粗层求解器}
 \label{sec:gpu-coarse-collapse}
 
 GPU multigrid 最重要、也最容易被“fine-grid kernel 很快”掩盖的问题，是粗化本身在消灭可并行 task。
@@ -677,7 +677,7 @@ B_\ell\approx\left\lceil\frac{N_\ell}{T}\right\rceil.
 \label{eq:gpu-block-count-per-level}
 \end{equation}
 
-\subsection{粗化与 Grid-Level Parallelism}
+\subsection{粗化与层级并行度}
 
 取 $256^3$ cells、$T=256$ threads/block。Fine level 约有
 \[
@@ -732,7 +732,7 @@ CPU 上把 box 再 tile 成更小块有助 cache/threads；GPU 上却可能反�
 \end{itemize}
 GPU 情形通常让大量 threads 每个只处理少量 cells；CPU 情形则由普通嵌套 loop 或 OpenMP 执行。关键不是“一个 API 同时支持 CPU/GPU”本身，而是\textbf{cell-level 数值语义与 execution policy 被分开}。如果一个 loop 含真正的 iteration dependency，就不能因为写进 \texttt{ParallelFor} 而自动变成合法 GPU kernel；AMReX 文档也专门区分了适合独立 iterations 的 \texttt{ParallelFor} 与更一般的 \texttt{For} 用法\cite{amrexGPUdocs2026}。
 
-\subsection{Streams、Arena 与 Residency}
+\subsection{CUDA Streams、Arena 与数据驻留}
 
 AMReX 当前文档描述了几项与本章直接对应的 GPU 策略\cite{amrexGPUdocs2026}：
 \begin{itemize}
@@ -744,7 +744,7 @@ AMReX 当前文档描述了几项与本章直接对应的 GPU 策略\cite{amrexG
 
 这些是当前 AMReX 的具体工程选择，不应被误认为 CUDA 的一般定律。它们的价值在于展示：前面建立的 residency、stream independence、memory pool 和 task granularity 最终怎样进入真实 block-structured AMR 软件。
 
-\section{Profiling 与性能诊断}
+\section{性能剖析与性能诊断}
 \label{sec:gpu-profiling}
 
 GPU 优化最危险的做法是“从源码猜瓶颈”。本章建议固定使用两级证据链：
@@ -760,7 +760,7 @@ GPU 优化最危险的做法是“从源码猜瓶颈”。本章建议固定使�
 
 Nsight Systems 适合回答“时间到底花在哪个阶段、是否存在主机端空档、内存拷贝、同步、过多短 kernel，以及 stream 是否真正重叠”；Nsight Compute 则用于深入某个具体 kernel，检查启动配置、内存访问、occupancy、warp 状态和 Roofline\cite{nsightSystems2026,nsightCompute2026}。
 
-\subsection{Timeline 级诊断}
+\subsection{时间线级诊断}
 
 对完整 V-cycle，先标记每个 MG level 和操作（例如用 NVTX ranges），然后检查：
 \begin{itemize}

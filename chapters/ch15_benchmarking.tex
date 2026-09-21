@@ -122,7 +122,7 @@ MPI 增加：
 
 \section{端到端求解成本}
 
-\subsection{收敛因子与 Time-to-Solution}
+\subsection{收敛因子与端到端求解时间}
 
 测每 V-cycle residual reduction：
 \begin{equation}
@@ -145,7 +145,7 @@ N_B\approx\frac{\ln10^{-8}}{\ln0.2}\approx11.4.
 \end{equation}
 粗略总时间分别约 \SI{73}{ms} 与 \SI{34}{ms}。只比较收敛因子会得出错误结论。
 
-\subsection{Setup 与 Solve 成本}
+\subsection{构建与求解成本}
 
 GMG hierarchy 通常便宜，但 AMR regrid 后也可能需要重建；AMG setup 则可能很昂贵。总成本应写成
 \begin{equation}
