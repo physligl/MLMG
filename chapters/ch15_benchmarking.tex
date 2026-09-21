@@ -84,12 +84,26 @@ S(P;P_0)=\frac{T(P_0)}{T(P)},
 
 还必须明确计时边界。Setup、第一次数据迁移、一次 V-cycle、完整 solve、输出与 checkpoint 不能混在同一个数字里。后文\chapref{ch:diagnosis}的 profiler 诊断只有在计时边界稳定时才有意义。
 
+\paragraph{Wall time、互斥阶段时间与可重叠事件时间。}
+异步 CPU/GPU/MPI 程序至少要区分三种时间语义。第一，\textbf{wall time} 是从阶段开始到结束的实际经过时间，本质上由执行 DAG 的关键路径决定。第二，\textbf{exclusive phase time} 把每一段 wall-clock 时间唯一归入某个阶段，因此可以满足
+\begin{equation}
+T_{wall}=\sum_k T_k^{\mathrm{exclusive}}.
+\label{eq:benchmark-exclusive-time}
+\end{equation}
+第三，profiler 常直接报告 kernel、memory copy、MPI request 等\textbf{event duration}；这些事件可以彼此重叠，因此一般只有
+\begin{equation}
+T_{wall}\neq\sum_j T_j^{\mathrm{event}}.
+\label{eq:benchmark-overlap-event-time}
+\end{equation}
+例如 halo 通信与 interior residual 并发时，两者 event duration 都是真实成本，但其重叠部分只在 wall time 中出现一次。报告逐层 breakdown 时必须注明采用的是 exclusive accounting 还是 raw event duration；只有前者可以无条件求和。
+
 \section{逐层性能计数}
 
 建议对每层记录：
 \begin{equation}
 \{N_\ell,\#boxes_\ell,\#ranks_\ell,T_{smooth},T_{res},T_R,T_P,T_{halo},T_{bottom}\}.
 \end{equation}
+若这些 $T$ 用于可加和的 phase breakdown，默认应采用式~\eqref{eq:benchmark-exclusive-time}的 exclusive accounting；若来自 profiler 的 raw event duration，则应显式标注为 event time，并允许总和大于 wall time。
 对显式稀疏/AMG hierarchy，还应记录 $\mathrm{nnz}(A_\ell)$，并用\chapref{ch:software}的式~\eqref{eq:grid-complexity}与式~\eqref{eq:operator-complexity}报告 grid/operator complexity。否则两个 solve 时间相近的配置，可能具有完全不同的 setup 内存和粗层稠密化成本。
 GPU 再增加：
 \begin{equation}
