@@ -46,7 +46,7 @@ N_\ell:=\dim W^{(\ell)},
 \end{algorithmic}
 \end{algorithm}
 
-这里 \texttt{BottomSolve} 指递归到达最粗 MG level 后用于终止递归的求解过程。因为最粗问题已经很小，它可以是若干次平滑、小规模直接法，或 Krylov 迭代。Krylov 方法的最低可用定义放在\secref{sec:mg-preconditioner}；不同硬件上 bottom solver 为什么会改变，则分别在\chapref{ch:shared-memory}、\chapref{ch:gpu}、\chapref{ch:mpi}和\chapref{ch:distributed-gpu}讨论。
+这里 \texttt{BottomSolve} 指递归到达最粗 MG level 后用于终止递归的求解过程。因为最粗问题已经很小，它可以是若干次平滑、小规模直接法，或 Krylov 迭代。\chapref{ch:iterative-smoothing}的\secref{sec:linear-solver-map}已经把直接法、stationary iteration、Krylov 与 multigrid 放在同一求解器地图中；本章后面的\secref{sec:mg-preconditioner}进一步解释 multigrid 怎样作为 CG/GMRES 的预条件器。不同硬件上 bottom solver 为什么会改变，则分别在\chapref{ch:shared-memory}、\chapref{ch:gpu}、\chapref{ch:mpi}和\chapref{ch:distributed-gpu}讨论。
 
 “V”来自访问层级的路径：从细层逐层向粗层下降，再逐层返回。它不是矩阵形状，而是递归调用轨迹的形象表示。为了让递归不只停留在伪代码里，考虑三层 $\ell=0,1,2$。一次 V-cycle 的实际访问顺序是
 \begin{align}
@@ -158,10 +158,11 @@ N_0+\frac{N_0}{2^d}+\frac{N_0}{2^{2d}}+\cdots
 \section{多重网格求解器与预条件器}
 \label{sec:mg-preconditioner}
 
-\chapref{ch:iterative-smoothing}已经把线性求解写成修正问题
+\chapref{ch:iterative-smoothing}已经先建立了线性求解器地图，并把 stationary iteration 写成修正问题
 \begin{equation}
 A\,\delta u=r.
 \end{equation}
+其中同章的\secref{sec:linear-solver-map}只给出 CG/GMRES 的最低可用定位；这里开始补上它们与 multigrid 近似逆之间真正需要的连接。
 如果能够精确求解，就有
 \begin{equation}
 \delta u=A^{-1}r.

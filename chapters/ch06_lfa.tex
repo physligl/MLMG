@@ -2,8 +2,8 @@
 \label{ch:lfa}
 
 \begin{keybox}
-\textbf{本章把前几章的机制变成可计算的收敛因子。}
-\chapref{ch:iterative-smoothing}已经解释 smoother 为什么主要削弱振荡误差，\chapref{ch:two-grid}又把 coarse-grid correction 解释成 coarse-space projection。本章用 Fourier mode 同时表示这两个动作，并完整算完一套一维 two-grid symbol。
+\textbf{本章把前几章的全局谱认识推进到局部频率与 two-grid 收敛分析。}
+\chapref{ch:iterative-smoothing}已经对有限区间一维 Poisson 算出 Jacobi 的全局谱、网格依赖收敛因子，并用高频放大因子解释 weighted Jacobi 的平滑动机；\chapref{ch:two-grid}又把 coarse-grid correction 解释成 coarse-space projection。本章不重复“是否收敛”的基础结论，而是转向平移不变局部模型，用 Fourier symbol 同时表示 smoother 与 coarse-grid correction，并完整算完一套一维 two-grid convergence factor。
 
 核心路线是
 \[

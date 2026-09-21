@@ -1,156 +1,372 @@
-\chapter{基本迭代方法与平滑性质}
+\chapter{线性系统求解、基本迭代与平滑性质}
 \label{ch:iterative-smoothing}
 
-\chapref{ch:discretization}和\chapref{ch:amr-discretization}已经完成从连续 PDE 到离散线性系统的构造：既包括 FD 路线，也包括 FV 路线；在某些规则守恒格式中两条路线会得到同一个 $A$，在其他布局或网格上则得到不同的离散算子。从本章开始，分析对象主要提升到代数层 $A\bm u=\bm b$。除非特别指出某个结论依赖局部守恒、对称性、stencil 几何或系数位置，否则 Jacobi、Gauss--Seidel、残差与误差传播并不要求 $A$ 必须来自 FD 或 FV 中的某一种。本章为了把迭代机制看清楚，先退回最简单的一维 Poisson 单层系统；后面建立的误差、残差和迭代算子同样适用于更一般的离散系统。在选择任何迭代公式之前，先明确“当前近似离真解还有多远”以及“计算机实际能观测什么”。因此本章先建立误差、残差与修正方程，再让 Jacobi 和 Gauss--Seidel 真正迭代起来；最后才抽象出平滑性质、误差传播矩阵和谱半径。
+\chapref{ch:discretization}和\chapref{ch:amr-discretization}已经把连续 PDE 变成离散线性系统
+\begin{equation}
+A\bm u=\bm b.
+\end{equation}
+从这里开始，问题发生了性质上的变化：离散方程已经给定，接下来要回答的是\textbf{怎样求这个线性系统，以及怎样判断一个求解过程是否真的有效}。在进入 Jacobi、Gauss--Seidel 或 multigrid 之前，本章先建立线性求解方法的基本地图，再深入最简单的平稳迭代，并用误差传播、谱半径、收敛因子和网格依赖性解释它们为什么既“能收敛”，又可能随着网格加密迅速变慢。
+
+本章仍然以一维 Poisson 为最小可检查模型，但分析对象已经提升到代数层。除非特别指出结论依赖局部守恒、对称性、stencil 几何或系数位置，否则误差、残差、stationary iteration 和谱收敛并不要求 $A$ 必须来自 FD 或 FV 中某一种特定构造。
 
 \begin{keybox}
-\textbf{本章要建立的心智模型：}
+\textbf{本章要建立的主线：}
 \[
 \boxed{
-\text{当前近似}
+A\bm u=\bm b
 \rightarrow
-\text{误差与可计算残差}
+\text{求解器类型}
 \rightarrow
-\text{构造局部修正}
+\text{误差/残差}
 \rightarrow
-\text{不同误差形态的衰减速度不同}
+\text{局部迭代}
+\rightarrow
+\text{误差传播}
+\rightarrow
+\text{收敛速度}
+\rightarrow
+\text{网格依赖退化}
+\rightarrow
+\text{平滑性质}
 }
 \]
-多重网格并不要求平滑器独立解决全部误差；它只要求平滑器迅速处理其中一类误差。
+第四章的 coarse-grid correction 将由本章最后暴露出的“低频误差难以被局部迭代消除”自然触发。
+\end{keybox}
+
+\section{离散线性系统的求解方法地图}
+\label{sec:linear-solver-map}
+
+面对
+\begin{equation}
+A\bm u=\bm b,
+\end{equation}
+“求解矩阵”并不只有 Jacobi 或 Gauss--Seidel 一条路线。对 PDE 离散产生的大型稀疏系统，至少应先区分四类基本策略；预条件则是横跨多类迭代方法的加速机制。
+
+\subsection{直接法}
+
+直接法通过有限次代数变换把系统化为更容易求解的形式。一般非奇异矩阵可以写成
+\begin{equation}
+A=LU,
+\end{equation}
+随后依次求解下三角和上三角系统。若 $A$ 对称正定，还可以使用 Cholesky 分解
+\begin{equation}
+A=LL^T.
+\end{equation}
+
+“直接”并不意味着浮点计算中绝对没有误差，而是指算法不依赖“第 $k$ 轮近似逐渐趋近真解”这一收敛过程。在精确算术下，分解与回代经过有限步骤即可得到解。
+
+对 PDE 稀疏矩阵，直接法的主要困难是\textbf{fill-in}：原矩阵中为零的位置在消元后可能产生新的非零元，使因子 $L/U$ 比原始 stencil 矩阵稠密得多。因此直接法非常适合中小规模问题、粗层问题或需要重复求解且因子可以复用的场景，但在大规模三维 PDE 上，内存和分解成本可能成为限制。
+
+\subsection{平稳迭代}
+
+另一类方法不一次完成消元，而是从初始猜测 $\bm u^{(0)}$ 出发，重复固定的更新规则。很多方法都可以写成
+\begin{equation}
+\bm u^{(k+1)}
+=
+\bm u^{(k)}
++
+M^{-1}\left(\bm b-A\bm u^{(k)}\right),
+\label{eq:iteration-stationary-preview}
+\end{equation}
+其中 $M$ 在每一轮保持不变，并且比完整的 $A$ 更容易处理。
+
+Jacobi、weighted Jacobi、Gauss--Seidel 和 SOR 都属于\textbf{平稳迭代（stationary iteration）}。本章会重点研究这一类，因为 Jacobi/GS 不仅可以独立求解小问题，更重要的是它们会成为 multigrid 中的 smoother。
+
+\subsection{Krylov 子空间方法}
+
+Krylov 方法也从初始残差
+\begin{equation}
+\bm r_0=\bm b-A\bm u^{(0)}
+\end{equation}
+出发，但它不会每轮机械重复同一个固定修正，而是逐步利用
+\begin{equation}
+\mathcal K_m(A,\bm r_0)
+=
+\operatorname{span}
+\left\{
+\bm r_0,\,
+A\bm r_0,\,
+A^2\bm r_0,\ldots,
+A^{m-1}\bm r_0
+\right\}
+\label{eq:iteration-krylov-space}
+\end{equation}
+中累积的信息构造新的近似。
+
+此处只需要建立最低可用认识：Conjugate Gradient（CG）是 SPD 系统的重要代表；GMRES 面向更一般的非对称线性系统。它们的搜索方向和历史信息组织比 stationary iteration 更丰富。后续\chapref{ch:mg-cycles}会在 multigrid 已经形成近似逆以后，正式讨论 CG/GMRES/FGMRES 与 multigrid preconditioner 的组合。
+
+\subsection{多重网格与预条件}
+
+Multigrid 与前两类迭代的核心差异，是显式利用误差的\textbf{尺度结构}：局部平滑器处理细网格上变化快的误差，coarse-grid correction 处理在细网格上变化慢的误差。本章只先建立前半部分的 smoother 机制；\chapref{ch:two-grid}和\chapref{ch:mg-cycles}分别完成 coarse-grid correction 与多层递归。
+
+预条件（preconditioning）则不应被理解成与上述方法平行的“第五种求解器”。它的目标是构造一个容易应用的近似逆
+\begin{equation}
+M^{-1}\approx A^{-1},
+\end{equation}
+把原问题变成对迭代算法更友好的形式。Jacobi 的 $D^{-1}$ 可以看成极简单的近似逆；一个完整 V-cycle 则可以成为更强的 multigrid preconditioner。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{0.96\textwidth}{>{\raggedright\arraybackslash}p{3.0cm}
+                                  >{\raggedright\arraybackslash}p{4.5cm}
+                                  >{\centering\arraybackslash}p{2.2cm}
+                                  >{\raggedright\arraybackslash}X}
+\toprule
+方法类别 & 核心动作 & 是否利用迭代历史 & 本书中的主要角色\\
+\midrule
+LU / Cholesky & 分解后做三角求解 & 不适用 & 小规模问题、bottom solve、基准对照\\
+Jacobi / GS & 重复固定局部修正规则 & 否 & 基本 solver、multigrid smoother\\
+CG / GMRES & 在 Krylov 子空间中构造搜索方向 & 是 & 大规模外层迭代求解器\\
+Multigrid & 在不同尺度上处理不同误差成分 & 层级信息 & solver 或 preconditioner\\
+\bottomrule
+\end{tabularx}
+\caption{本书涉及的主要线性求解路线。这里给出的是角色地图，不替代后续各算法的正式推导。}
+\label{tab:iteration-solver-map}
+\end{table}
+
+\begin{keybox}
+\textbf{本章的范围边界：}
+这里不展开 LU pivoting、完整 CG recurrence 或 Arnoldi/GMRES 推导。本章深入 stationary iteration，是因为它既能建立最基本的线性收敛理论，又直接解释 multigrid smoother 为什么有效、为什么又不够。
 \end{keybox}
 
 \section{误差、残差与修正方程}
 
-迭代过程中必须区分三个对象：真解、误差和残差。
-
 设真解为 $\bm u^\star$，当前近似为 $\bm u^{(k)}$。定义
 \begin{equation}
-\bm e^{(k)}=\bm u^\star-\bm u^{(k)}
+\bm e^{(k)}
+=
+\bm u^\star-\bm u^{(k)}
 \label{eq:iteration-error-def}
 \end{equation}
-为\textbf{误差（error）}。误差最直接反映“离真解还有多远”，但实际计算中通常不知道 $\bm u^\star$，所以无法直接得到 $\bm e^{(k)}$。
+为\textbf{误差（error）}。它直接表示当前解离真解有多远，但实际计算中通常不知道 $\bm u^\star$，因此无法直接计算 $\bm e^{(k)}$。
 
 把当前近似代回原方程，定义
 \begin{equation}
-\bm r^{(k)}=\bm b-A\bm u^{(k)}
+\bm r^{(k)}
+=
+\bm b-A\bm u^{(k)}
 \label{eq:iteration-residual-def}
 \end{equation}
-为\textbf{残差（residual）}。残差可以直接计算。因为 $A\bm u^\star=\bm b$，有
+为\textbf{残差（residual）}。因为 $A\bm u^\star=\bm b$，
 \begin{equation}
 \bm r^{(k)}
-=A\left(\bm u^\star-\bm u^{(k)}\right)
-=A\bm e^{(k)}.
+=
+A\left(\bm u^\star-\bm u^{(k)}\right)
+=
+A\bm e^{(k)}.
 \label{eq:iteration-residual-error-relation}
 \end{equation}
-所以残差不是误差本身，而是误差经过离散算子 $A$ 作用后的结果。更重要的是，式~\eqref{eq:iteration-residual-error-relation} 也可以读成一个\textbf{修正方程}：如果能够求出 $\delta\bm u$ 使
+因此残差不是误差本身，而是误差经过算子 $A$ 作用后的结果。
+
+式~\eqref{eq:iteration-residual-error-relation} 还可以反过来读成\textbf{修正方程}：
 \begin{equation}
-A\,\delta\bm u=\bm r^{(k)},
+A\,\delta\bm u
+=
+\bm r^{(k)}.
 \label{eq:iteration-correction-equation}
 \end{equation}
-那么精确修正就是 $\delta\bm u=\bm e^{(k)}$，更新 $\bm u^{(k+1)}=\bm u^{(k)}+\delta\bm u$ 后即可得到真解。实际迭代方法的本质，是用比“直接精确求解 $A\delta\bm u=\bm r$”更便宜的规则逐步近似这个修正。
-
-例如考虑三未知量系统
+若能够精确求解它，就有
 \begin{equation}
-A=\begin{bmatrix}2&-1&0\\-1&2&-1\\0&-1&2\end{bmatrix},
+\delta\bm u
+=
+A^{-1}\bm r^{(k)}
+=
+\bm e^{(k)},
+\end{equation}
+于是
+\begin{equation}
+\bm u^{(k+1)}
+=
+\bm u^{(k)}+\delta\bm u
+=
+\bm u^\star.
+\end{equation}
+所以许多迭代方法都可以理解成：\textbf{用一个比精确求解 $A\delta\bm u=\bm r$ 更便宜的过程，近似构造误差修正。}
+
+例如
+\begin{equation}
+A=
+\begin{bmatrix}
+2&-1&0\\
+-1&2&-1\\
+0&-1&2
+\end{bmatrix},
 \qquad
-\bm b=\begin{bmatrix}1\\1\\1\end{bmatrix},
+\bm b=
+\begin{bmatrix}
+1\\1\\1
+\end{bmatrix},
 \qquad
 \bm u^{(0)}=\bm0.
 \end{equation}
-此时无需知道真解，也能立即算出初始残差 $\bm r^{(0)}=\bm b$。这就是后面每一种迭代法真正可见的输入：当前近似 $\bm u^{(k)}$ 和由它计算出的残差 $\bm r^{(k)}$。
+即使不知道真解，也可以立即得到
+\begin{equation}
+\bm r^{(0)}=\bm b.
+\end{equation}
+这就是迭代程序实际能够直接观测的量。
+
+\subsection{小残差是否一定意味着小误差}
+
+若 $A$ 可逆，由
+\begin{equation}
+\bm e=A^{-1}\bm r
+\end{equation}
+可得
+\begin{equation}
+\|\bm e\|
+\le
+\|A^{-1}\|\,\|\bm r\|.
+\label{eq:iteration-error-residual-bound}
+\end{equation}
+因此残差怎样映射成误差，取决于 $A^{-1}$ 的放大能力。
+
+定义矩阵条件数
+\begin{equation}
+\kappa(A)
+=
+\|A\|\,\|A^{-1}\|.
+\label{eq:iteration-condition-number}
+\end{equation}
+当 $\bm b=A\bm u^\star\neq0$ 时，可以得到相对量的基本上界
+\begin{equation}
+\frac{\|\bm e\|}{\|\bm u^\star\|}
+\le
+\kappa(A)
+\frac{\|\bm r\|}{\|\bm b\|}.
+\label{eq:iteration-relative-residual-error}
+\end{equation}
+这并不是说条件数完全决定每一次实际误差，而是说明一个重要事实：\textbf{同样大小的相对残差，在病态系统中可能对应更大的解误差。}
+
+纯 Neumann 问题存在常数零空间时，$A^{-1}$ 在整个空间上不存在；此时必须先进入满足兼容条件并固定 gauge 的可逆子空间，再谈类似的误差--残差关系。
 
 \begin{keybox}
-\textbf{误差与残差的角色不同：}
-\begin{itemize}
-\item 误差 $\bm e$ 是我们真正想消除的对象，但通常不可直接获得；
-\item 残差 $\bm r$ 是可以计算的量，并通过 $\bm r=A\bm e$ 携带误差信息；
-\item \chapref{ch:two-grid}的粗网格校正正是从残差方程 $A\bm e=\bm r$ 出发。
-\end{itemize}
+\textbf{三个对象要始终分开：}
+\[
+\boxed{
+\text{error：离真解多远}
+\qquad
+\text{residual：方程满足得多好}
+\qquad
+\text{conditioning：二者之间可能放大多少}
+}
+\]
 \end{keybox}
-
 
 \section{Jacobi 迭代}
 
 \subsection{Jacobi 点迭代公式}
 
-现在已经知道：理想修正满足 $A\delta\bm u=\bm r$，但精确求它与原问题同样困难。Jacobi 的思路是只利用每个点自己的对角系数和上一轮邻居值，构造一个极便宜的局部修正。回到一维 Poisson 离散，把统一的 $1/h^2$ 因子乘到右端后，一个内部点满足
+回到一维 Poisson 离散，把共同的 $1/h^2$ 因子乘到右端，一个内部点满足
 \begin{equation}
-2u_i-u_{i-1}-u_{i+1}=h^2f_i.
+2u_i-u_{i-1}-u_{i+1}
+=
+h^2f_i.
 \label{eq:iteration-point-equation}
 \end{equation}
 把中心未知量单独写出：
 \begin{equation}
- u_i=\frac12\left(h^2f_i+u_{i-1}+u_{i+1}\right).
+u_i
+=
+\frac12
+\left(
+h^2f_i+u_{i-1}+u_{i+1}
+\right).
 \label{eq:jacobi_point}
 \end{equation}
-如果右侧邻居暂时还不是真解，可以把当前近似代入右端，再生成下一轮近似。设第 $k$ 轮近似为 $u^{(k)}$，Jacobi 迭代定义为
+
+如果右侧邻居还不是真解，就用上一轮近似代替。Jacobi 定义为
 \begin{equation}
- u_i^{(k+1)}
- =\frac12\left(h^2f_i+u_{i-1}^{(k)}+u_{i+1}^{(k)}\right).
+u_i^{(k+1)}
+=
+\frac12
+\left(
+h^2f_i
++
+u_{i-1}^{(k)}
++
+u_{i+1}^{(k)}
+\right).
 \label{eq:iteration-jacobi-one-dimensional}
 \end{equation}
-同一轮中所有点都只读取旧数组 $u^{(k)}$，把结果写入新数组 $u^{(k+1)}$。因此各点之间没有“谁必须先算”的依赖。
+同一轮中所有点只读旧状态 $\bm u^{(k)}$，把结果写入新状态 $\bm u^{(k+1)}$。因此一轮内部没有逐点先后依赖。
 
 \subsection{三未知量离散系统}
 
-取三个内部未知量 $u_1,u_2,u_3$，两端 Dirichlet 边界均为零，并令缩放后的右端满足
+取三个内部未知量，两端 Dirichlet 边界为零，并令
 \begin{equation}
- h^2f_i=1,\qquad i=1,2,3.
+h^2f_i=1,
+\qquad i=1,2,3.
 \end{equation}
 从
 \begin{equation}
 \bm u^{(0)}=(0,0,0)^T
 \end{equation}
-开始。第一轮 Jacobi 中，每个点都读取旧值，因此
+开始，第一轮得到
 \begin{equation}
 \bm u^{(1)}
-=\left(\frac12,\frac12,\frac12\right)^T.
+=
+\left(
+\frac12,\frac12,\frac12
+\right)^T,
 \end{equation}
 第二轮得到
 \begin{equation}
 \bm u^{(2)}
-=\left(\frac34,1,\frac34\right)^T.
+=
+\left(
+\frac34,1,\frac34
+\right)^T.
 \end{equation}
-这已经展示了迭代求解最基本的机制：并不是一次直接求出 $\bm u$，而是不断用当前近似产生新的近似。
+
+这展示了迭代求解最基本的机制：不是一次直接构造 $\bm u^\star$，而是重复一个便宜的局部规则，让近似逐步变化。
 
 \begin{checkpointbox}
 \textbf{即时检查 3.1}
 
-继续用 Jacobi 计算上例的 $\bm u^{(3)}$。注意这一轮三个新值仍然只能读取 $\bm u^{(2)}$，不能读取本轮刚刚算出的其他分量。
+继续计算 $\bm u^{(3)}$。这一轮三个新值为什么必须全部读取 $\bm u^{(2)}$，而不能读取本轮刚算出的其他分量？
 \end{checkpointbox}
 
 \section{Gauss--Seidel 迭代}
 
-Jacobi 明确区分旧数组和新数组。另一种自然选择是：如果某个邻居在本轮已经算出了新值，就立即使用它。
+Jacobi 明确区分旧数组和新数组。另一种自然选择是：如果某个邻居在本轮已经算出新值，就立即使用它。
 
-对一维 Poisson，若按 $i=1,2,\ldots,N$ 从左到右扫描，则 Gauss--Seidel 写成
+对一维 Poisson，若按 $i=1,2,\ldots,N$ 从左到右扫描，
 \begin{equation}
- u_i^{(k+1)}
- =\frac12\left(
- h^2f_i+u_{i-1}^{(k+1)}+u_{i+1}^{(k)}
- \right).
+u_i^{(k+1)}
+=
+\frac12
+\left(
+h^2f_i
++
+u_{i-1}^{(k+1)}
++
+u_{i+1}^{(k)}
+\right).
 \label{eq:iteration-gs-one-dimensional}
 \end{equation}
-左邻居已经属于本轮新值，右邻居还只能使用上一轮旧值。
+左邻居已经属于本轮新状态，右邻居仍使用旧状态。
 
-仍用上一节的三个未知量示例，从零向量开始做一次从左到右的 Gauss--Seidel sweep：
+对上一节三未知量例子，从零向量开始做一次 sweep：
 \begin{align}
- u_1^{(1)}&=\frac12,\\
- u_2^{(1)}&=\frac12\left(1+u_1^{(1)}+u_3^{(0)}\right)=\frac34,\\
- u_3^{(1)}&=\frac12\left(1+u_2^{(1)}\right)=\frac78.
+u_1^{(1)}&=\frac12,\\
+u_2^{(1)}&=\frac12\left(1+u_1^{(1)}+u_3^{(0)}\right)=\frac34,\\
+u_3^{(1)}&=\frac12\left(1+u_2^{(1)}\right)=\frac78.
 \end{align}
-因此
+所以
 \begin{equation}
 \bm u^{(1)}_{GS}
-=\left(\frac12,\frac34,\frac78\right)^T,
+=
+\left(
+\frac12,\frac34,\frac78
+\right)^T.
 \end{equation}
-与 Jacobi 第一轮的 $(1/2,1/2,1/2)^T$ 已经不同。
 
-这里最重要的不是“哪个数更接近真解”，而是数据依赖已经改变：Jacobi 的一轮更新可以同时进行；lexicographic Gauss--Seidel 则具有明确的扫描顺序。
+这里最重要的不是第一轮“谁更接近真解”，而是数据依赖已经改变：Jacobi 一轮中的点更新彼此独立；lexicographic Gauss--Seidel 则具有明确扫描顺序。
 
 \subsection{红黑 Gauss--Seidel}
 
-二维五点网格可以按 $(i+j)\bmod 2$ 染成红、黑两色。同一颜色的点之间没有直接 stencil 耦合，因此可以先更新全部红点，再更新全部黑点。这就是 red--black Gauss--Seidel（RBGS）。
+二维五点网格可以按 $(i+j)\bmod2$ 染成红、黑两色。同一颜色的点之间没有直接 stencil 耦合，因此可以先更新全部红点，再更新全部黑点。这就是 red--black Gauss--Seidel（RBGS）。
 
 \begin{algorithm}[htbp]
 \caption{Red--Black Gauss--Seidel 单次 sweep}
@@ -162,247 +378,623 @@ Jacobi 明确区分旧数组和新数组。另一种自然选择是：如果某�
 \end{algorithmic}
 \end{algorithm}
 
-RBGS 没有消除 Gauss--Seidel 的数据依赖，而是把逐点依赖重组为两个颜色阶段。这里先只保留数值含义；当执行模型进入共享内存以后，\chapref{ch:shared-memory}的\secref{sec:shared-rbgs}会把这两个颜色阶段具体化为线程同步成本。
+RBGS 没有消除 Gauss--Seidel 的依赖，而是把逐点依赖重组为两个颜色阶段。\chapref{ch:shared-memory}的\secref{sec:shared-rbgs}会把这种数学依赖进一步解释成线程同步成本。
 
 \section{多维网格上的迭代结构}
 
-一维 Jacobi/GS 给出了最小模型，但维数提升后数据依赖发生了新的几何组织。对二维 Poisson，Jacobi 更新为
+对二维 Poisson，Jacobi 更新为
 \begin{equation}
 u_{i,j}^{(k+1)}
-=\frac{1}{2(h_x^{-2}+h_y^{-2})}
+=
+\frac{1}{2(h_x^{-2}+h_y^{-2})}
 \left[
- f_{i,j}
-+h_x^{-2}(u_{i-1,j}^{(k)}+u_{i+1,j}^{(k)})
-+h_y^{-2}(u_{i,j-1}^{(k)}+u_{i,j+1}^{(k)})
+f_{i,j}
++h_x^{-2}
+\left(
+u_{i-1,j}^{(k)}+u_{i+1,j}^{(k)}
+\right)
++h_y^{-2}
+\left(
+u_{i,j-1}^{(k)}+u_{i,j+1}^{(k)}
+\right)
 \right].
 \label{eq:iteration-two-dimensional-jacobi}
 \end{equation}
-三维再增加 $z$ 向两个邻居。Jacobi 的关键性质仍然不变：同一 sweep 中所有输出只读旧状态，因此二维、三维都具有 pointwise 并行结构。
+三维再增加 $z$ 向两个邻居。Jacobi 的关键性质仍然不变：同一 sweep 的输出全部只读旧状态，因此二维、三维仍然具有 pointwise 并行结构。
 
-Gauss--Seidel 则不同。二维字典序扫描时，$(i-1,j)$ 和通常的 $(i,j-1)$ 已经是新值，而 $(i+1,j)$、$(i,j+1)$ 仍是旧值；到了三维，还会出现“当前切片之前/之后”的依赖。于是 lexicographic GS 的方向偏置会随着维数增加而更加明显。
+Gauss--Seidel 则不同。二维字典序扫描时，$(i-1,j)$ 和通常的 $(i,j-1)$ 已经是新值，而 $(i+1,j)$、$(i,j+1)$ 仍是旧值；进入三维以后，还会出现当前切片之前/之后的依赖。因此 lexicographic GS 的方向偏置会随着维数增加而更加明显。
 
-对标准 Cartesian 五点/七点 stencil，可以按坐标奇偶性做二着色：二维颜色由 $(i+j)\bmod2$ 决定，三维由 $(i+j+k)\bmod2$ 决定。任意两个直接 stencil 邻居颜色相反，所以同一颜色内部没有直接耦合。RBGS 因而把逐点顺序依赖改造成“颜色内并行、颜色间同步”。但对更宽 stencil、非结构图或 AMR coarse--fine coupling，二着色是否仍然足够必须重新检查 matrix graph，不能从五点/七点格式机械外推。
+对标准 Cartesian 五点/七点 stencil，可以按坐标奇偶性做二着色；但对更宽 stencil、非结构图或 AMR coarse--fine coupling，二着色是否仍然足够必须重新检查 matrix graph，不能从五点/七点格式机械外推。
 
-最后，维数提升还会暴露 point smoother 的局限。若
+若
 \begin{equation}
--\epsilon u_{xx}-u_{yy}=f,\qquad \epsilon\ll1,
+-\epsilon u_{xx}-u_{yy}=f,
+\qquad
+\epsilon\ll1,
 \end{equation}
-不同方向的耦合强度相差很大，单点 Jacobi/GS 可能无法有效处理沿强耦合方向组织起来的误差。line/plane smoother 与 semicoarsening 正是从这一多维结构产生，定量分析见\chapref{ch:lfa}。
+不同方向的耦合强度又会严重不均衡，point smoother 可能无法有效处理沿强耦合方向组织的误差。line/plane smoother、semicoarsening 等方法由此产生，定量分析见\chapref{ch:lfa}。
+
+\section{迭代矩阵与误差传播}
+
+现在把具体更新抽象成统一形式。写
+\begin{equation}
+A=D+L+U,
+\end{equation}
+其中 $D$ 是对角部分，$L$、$U$ 分别为严格下三角和严格上三角部分。
+
+一般 stationary iteration 为
+\begin{equation}
+\bm u^{(k+1)}
+=
+\bm u^{(k)}
++
+M^{-1}
+\left(
+\bm b-A\bm u^{(k)}
+\right),
+\label{eq:iteration-stationary-general}
+\end{equation}
+其中 $M$ 固定不变且容易求解。Jacobi 取
+\begin{equation}
+M=D,
+\end{equation}
+Gauss--Seidel 取
+\begin{equation}
+M=D+L.
+\end{equation}
+
+用真解减去式~\eqref{eq:iteration-stationary-general} 两边：
+\begin{align}
+\bm e^{(k+1)}
+&=
+\bm e^{(k)}
+-
+M^{-1}A\bm e^{(k)}
+\\
+&=
+\left(
+I-M^{-1}A
+\right)\bm e^{(k)}.
+\end{align}
+定义
+\begin{equation}
+S
+=
+I-M^{-1}A
+\label{eq:error_prop_general}
+\end{equation}
+为\textbf{误差传播矩阵（error-propagation matrix）}，则
+\begin{equation}
+\bm e^{(k)}
+=
+S^k\bm e^{(0)}.
+\label{eq:iteration-error-power}
+\end{equation}
+
+这一步非常关键：我们不再只问“更新公式长什么样”，而是开始问
+\begin{equation}
+\boxed{
+S^k\bm e^{(0)}
+\quad
+\text{是否趋于零，以及趋于零有多快？}
+}
+\end{equation}
+
+\section{收敛性、收敛阶与收敛因子}
+\label{sec:iteration-convergence}
+
+\subsection{谱半径决定是否最终收敛}
+
+若
+\begin{equation}
+S\bm v=\lambda\bm v,
+\end{equation}
+则这个特征方向经过 $k$ 轮以后变成
+\begin{equation}
+S^k\bm v
+=
+\lambda^k\bm v.
+\end{equation}
+所以 $|\lambda|<1$ 时该分量衰减，$|\lambda|>1$ 时增长，$|\lambda|=1$ 时幅值不会消失。
+
+定义谱半径
+\begin{equation}
+\rho(S)
+=
+\max_i|\lambda_i|.
+\end{equation}
+对于有限维线性 stationary iteration，从任意初始误差出发都收敛到真解的充要条件是
+\begin{equation}
+\boxed{
+\rho(S)<1.
+}
+\label{eq:iteration-spectral-convergence}
+\end{equation}
+
+这里不能把“$\rho(S)<1$”误读成“每一轮误差范数都严格缩小”。若 $S$ 非正规（non-normal），某些范数下可能出现短暂增长；但只要 $\rho(S)<1$，最终仍有 $S^k\to0$。对任意相容矩阵范数，Gelfand 公式给出
+\begin{equation}
+\lim_{k\to\infty}
+\|S^k\|^{1/k}
+=
+\rho(S),
+\label{eq:iteration-gelfand}
+\end{equation}
+因此谱半径控制的是最坏情形的渐近指数衰减尺度。
+
+\subsection{“收敛阶”与“收敛因子”不是一回事}
+
+一般非线性迭代中，经典收敛阶 $p$ 可以由
+\begin{equation}
+\lim_{k\to\infty}
+\frac{
+\|\bm e^{(k+1)}\|
+}{
+\|\bm e^{(k)}\|^p
+}
+=
+C
+\label{eq:iteration-convergence-order}
+\end{equation}
+定义。$p=1$ 称为线性收敛，$p=2$ 称为二次收敛；当 $p=1$ 时通常还要求 $0<C<1$。
+
+Jacobi、Gauss--Seidel 这类固定线性 stationary iteration 的典型渐近行为本来就是
+\begin{equation}
+\|\bm e^{(k)}\|
+\sim
+q^k\|\bm e^{(0)}\|,
+\qquad
+0<q<1,
+\label{eq:iteration-geometric-convergence}
+\end{equation}
+所以仅仅说“它们是一阶收敛”区分度很低。更有信息量的是\textbf{收敛因子（convergence factor）} $q$ 有多大。
+
+若渐近阶段可以用固定 $q$ 近似，并希望把误差降到初始值的 $\varepsilon$ 倍，则
+\begin{equation}
+q^k\approx\varepsilon,
+\end{equation}
+于是
+\begin{equation}
+\boxed{
+k
+\approx
+\frac{\log\varepsilon}{\log q}.
+}
+\label{eq:iteration-count-from-factor}
+\end{equation}
+当 $q$ 接近 1 时，哪怕仍然满足“收敛”，所需迭代数也可能非常大。
+
+还必须把这里的“迭代收敛阶”与 PDE 离散中的网格收敛阶区分开。二阶空间离散
+\begin{equation}
+\|u-u_h\|=\Oh(h^2)
+\end{equation}
+描述的是 $h\to0$ 时离散解逼近连续解；式~\eqref{eq:iteration-geometric-convergence} 描述的是固定离散系统上 $k\to\infty$ 时代数误差的衰减。两者的自变量、误差来源和评价方法都不同。
+
+\begin{checkpointbox}
+\textbf{即时检查 3.2}
+
+若两个迭代法的渐近收敛因子分别为 $q=0.2$ 和 $q=0.95$，把误差降低到 $10^{-6}$ 倍大约各需要多少轮？为什么“二者都满足 $q<1$”并不能说明它们同样有效？
+\end{checkpointbox}
+
+\section{Jacobi 的网格依赖收敛}
+\label{sec:jacobi-grid-dependent}
+
+现在对一维 Dirichlet Poisson 做一个完整的谱计算。设有 $N$ 个内部点，
+\begin{equation}
+A
+=
+\frac1{h^2}
+\begin{bmatrix}
+2&-1&&\\
+-1&2&-1&\\
+&\ddots&\ddots&\ddots\\
+&&-1&2
+\end{bmatrix},
+\end{equation}
+则
+\begin{equation}
+D=\frac2{h^2}I,
+\end{equation}
+Jacobi 误差传播矩阵为
+\begin{equation}
+S_J
+=
+I-D^{-1}A
+=
+\frac12
+\begin{bmatrix}
+0&1&&\\
+1&0&1&\\
+&\ddots&\ddots&\ddots\\
+&&1&0
+\end{bmatrix}.
+\label{eq:iteration-jacobi-error-matrix}
+\end{equation}
+
+取离散正弦模态
+\begin{equation}
+v_i^{(j)}
+=
+\sin(i\theta_j),
+\qquad
+\theta_j
+=
+\frac{j\pi}{N+1},
+\qquad
+j=1,\ldots,N.
+\label{eq:iteration-jacobi-eigenmode}
+\end{equation}
+由恒等式
+\begin{equation}
+\frac12
+\left[
+\sin((i-1)\theta)
++
+\sin((i+1)\theta)
+\right]
+=
+\cos\theta\,\sin(i\theta),
+\end{equation}
+得到
+\begin{equation}
+S_J\bm v^{(j)}
+=
+\lambda_j\bm v^{(j)},
+\qquad
+\lambda_j
+=
+\cos
+\left(
+\frac{j\pi}{N+1}
+\right).
+\label{eq:iteration-jacobi-spectrum}
+\end{equation}
+所以
+\begin{equation}
+\rho(S_J)
+=
+\cos
+\left(
+\frac{\pi}{N+1}
+\right).
+\label{eq:iteration-jacobi-rho}
+\end{equation}
+
+当 $N$ 很大，
+\begin{equation}
+\cos x
+=
+1-\frac{x^2}{2}
++\Oh(x^4),
+\end{equation}
+于是
+\begin{equation}
+\rho(S_J)
+=
+1-
+\frac{\pi^2}{2(N+1)^2}
++
+\Oh(N^{-4}).
+\label{eq:iteration-jacobi-rho-asymptotic}
+\end{equation}
+在单位区间上 $h=1/(N+1)$，因此
+\begin{equation}
+\boxed{
+1-\rho(S_J)
+=
+\Oh(h^2).
+}
+\label{eq:iteration-jacobi-gap-h2}
+\end{equation}
+
+这意味着网格越细，
+\begin{equation}
+\rho(S_J)\to1.
+\end{equation}
+对固定误差降低目标 $\varepsilon$，由式~\eqref{eq:iteration-count-from-factor} 与 $\log(1-c h^2)\sim-c h^2$，
+\begin{equation}
+k
+=
+\Oh
+\left(
+h^{-2}\log\frac1\varepsilon
+\right).
+\label{eq:iteration-jacobi-iteration-complexity}
+\end{equation}
+若 $\varepsilon$ 固定，就是
+\begin{equation}
+\boxed{k=\Oh(h^{-2}).}
+\end{equation}
+
+所以 Jacobi 作为独立 solver 在细网格上变慢，不是因为某个实现“写得不好”，而是因为最慢误差模态的放大因子随着网格加密系统性逼近 1。
+
+对这个标准一维模型，lexicographic Gauss--Seidel 有
+\begin{equation}
+\rho(S_{GS})
+=
+\cos^2
+\left(
+\frac{\pi}{N+1}
+\right)
+=
+1-
+\frac{\pi^2}{(N+1)^2}
++
+\Oh(N^{-4}),
+\label{eq:iteration-gs-rho-model}
+\end{equation}
+因此它改善了常数，却没有改变
+\begin{equation}
+k=\Oh(h^{-2})
+\end{equation}
+这一网格依赖的量级。
+
+\begin{keybox}
+\textbf{这是 multigrid 的第一个关键动机：}
+\[
+\boxed{
+\text{局部 stationary iteration 可以收敛，}
+\quad
+\text{但其全局收敛速度会随网格加密恶化。}
+}
+\]
+接下来要进一步问：到底是哪一类误差拖慢了它？
+\end{keybox}
 
 \section{加权 Jacobi}
 
-\subsection{普通 Jacobi 的高频行为}
+\subsection{普通 Jacobi 的高频问题}
 
-在讨论“Jacobi 是否适合作为平滑器”之前，先看一个反例。对齐次误差方程，普通 Jacobi 的误差更新满足
+对齐次误差方程，普通 Jacobi 在一维满足
 \begin{equation}
- e_i^{(k+1)}
- =\frac12\left(e_{i-1}^{(k)}+e_{i+1}^{(k)}\right).
+e_i^{(k+1)}
+=
+\frac12
+\left(
+e_{i-1}^{(k)}
++
+e_{i+1}^{(k)}
+\right).
 \label{eq:iteration-jacobi-error-point}
 \end{equation}
-考虑远离边界的理想均匀网格，并取交替误差
+考虑交替误差
 \begin{equation}
- e_i^{(k)}=(-1)^i.
+e_i^{(k)}=(-1)^i.
 \label{eq:iteration-alternating-error}
 \end{equation}
 它的两个邻居都等于 $-e_i^{(k)}$，因此
 \begin{equation}
- e_i^{(k+1)}=-e_i^{(k)}.
+e_i^{(k+1)}
+=
+-e_i^{(k)}.
 \end{equation}
-误差只翻转符号，幅值并没有减小。
+误差只翻转符号，幅值没有减小。
 
-这说明“局部平均一定会消除最高频误差”并不成立。普通 Jacobi 虽然是一个合法的迭代方法，但作为多重网格平滑器时还需要更仔细地选择更新强度。
+这与上一节的谱完全一致：最高频离散模态对应的 Jacobi 特征值接近 $-1$。所以普通 Jacobi 虽然整体满足 $\rho(S_J)<1$，却不是理想的 multigrid smoother。
 
-\subsection{阻尼参数}
+\subsection{阻尼参数与加权误差传播}
 
-设 Jacobi 根据邻居计算出的候选新值为 $u_i^{J}$。加权 Jacobi 不完全接受这个候选值，而是取
+设普通 Jacobi 候选值为 $u_i^J$。Weighted Jacobi 定义
 \begin{equation}
- u_i^{(k+1)}
- =(1-\omega)u_i^{(k)}+\omega u_i^{J},
-\qquad 0<\omega\le 1.
+u_i^{(k+1)}
+=
+(1-\omega)u_i^{(k)}
++
+\omega u_i^J,
+\qquad
+0<\omega\le1.
 \label{eq:iteration-weighted-blend}
 \end{equation}
-其中 $\omega$ 称为\textbf{松弛参数（relaxation parameter）}或阻尼参数。
-
-对交替误差 \eqref{eq:iteration-alternating-error}，普通 Jacobi 候选值恰好是 $-e_i^{(k)}$，所以加权更新变成
+矩阵形式为
 \begin{equation}
- e_i^{(k+1)}
- =(1-\omega)e_i^{(k)}+\omega\left(-e_i^{(k)}\right)
- =(1-2\omega)e_i^{(k)}.
+\bm u^{(k+1)}
+=
+\bm u^{(k)}
++
+\omega D^{-1}
+\left(
+\bm b-A\bm u^{(k)}
+\right),
+\label{eq:iteration-weighted-jacobi}
+\end{equation}
+因此误差传播算子为
+\begin{equation}
+S_\omega
+=
+I-\omega D^{-1}A.
+\label{eq:iteration-weighted-error-matrix}
+\end{equation}
+
+对交替误差，普通 Jacobi 候选值恰好为 $-e_i^{(k)}$，所以
+\begin{equation}
+e_i^{(k+1)}
+=
+(1-2\omega)e_i^{(k)}.
 \label{eq:iteration-weighted-alt}
 \end{equation}
-若暂取
+若取
 \begin{equation}
 \omega=\frac23,
 \end{equation}
 则
 \begin{equation}
- e_i^{(k+1)}=-\frac13 e_i^{(k)}.
+e_i^{(k+1)}
+=
+-\frac13e_i^{(k)}.
 \end{equation}
-一次更新就把这类交替误差的幅值降到原来的 $1/3$。\chapref{ch:lfa}会用局部 Fourier 分析说明为什么 $2/3$ 在一维 Poisson 的经典高频分析中自然出现；这里先建立最直观的动机：\textbf{加权不是任意多出来的参数，而是在改变不同误差形态的衰减方式。}
 
-这里还要避免一个过早结论：若只盯着理想交替模式 $(-1)^i$，取 $\omega=1/2$ 甚至可以一步把它完全消掉；但真实误差包含一整段高频成分，而不是只有一个模式。因此“某一个模式被消掉”与“整个高频区的最坏衰减最好”是两个不同问题，后者将在\chapref{ch:lfa}通过 minimax 分析正式给出。
+更一般地，对上一节的正弦模态，weighted Jacobi 的放大因子为
+\begin{equation}
+\mu_\omega(\theta)
+=
+1-\omega(1-\cos\theta).
+\label{eq:iteration-weighted-mode-factor}
+\end{equation}
+若先把相对于 $2h$ 粗网格不可独立解析的高频区粗略记为
+\begin{equation}
+\frac{\pi}{2}\le|\theta|\le\pi,
+\end{equation}
+则
+\begin{equation}
+1-\cos\theta\in[1,2].
+\end{equation}
+选择 $\omega=2/3$ 时，
+\begin{equation}
+\max_{\pi/2\le|\theta|\le\pi}
+|\mu_\omega(\theta)|
+=
+\frac13.
+\label{eq:iteration-weighted-high-frequency-factor}
+\end{equation}
+也就是说，它并不是为了让所有频率都以同一个速度收敛，而是专门把高频区的最坏放大因子压下来。\chapref{ch:lfa}会在无限/周期局部模型上把这一分析正式写成 Fourier symbol，并继续构造 two-grid convergence factor。
 
 \begin{checkpointbox}
-\textbf{即时检查 3.2}
+\textbf{即时检查 3.3}
 
-对交替误差 $e_i=(-1)^i$，分别计算 $\omega=1$、$\omega=1/2$ 和 $\omega=2/3$ 时的放大因子 $1-2\omega$。哪一个完全消掉该理想化模式？为什么“对某一个模式最好”仍不等于“对完整多重网格最好”？
+对交替误差分别计算 $\omega=1$、$\omega=1/2$ 和 $\omega=2/3$ 的放大因子。哪一个能一步消掉这一单独模式？为什么“对一个模式最优”仍不等于“对整个高频区最优”？
 \end{checkpointbox}
 
 \section{平滑性质}
 \label{sec:smoothing-property}
 
-现在比较两种误差形态。第一种是在相邻点之间快速交替的误差；第二种是缓慢变化的光滑误差。对于后者，如果
-\begin{equation}
- e_{i-1}\approx e_i\approx e_{i+1},
-\end{equation}
-那么 Jacobi 候选值
-\begin{equation}
-\frac12(e_{i-1}+e_{i+1})
-\end{equation}
-本来就与 $e_i$ 很接近，一次局部更新不会产生很大的修正。
+现在把“全局收敛”和“作为 smoother 是否有效”分开。
 
-相反，对空间上快速振荡的误差，邻居平均与中心值差异很大，合适阻尼的 Jacobi 或 Gauss--Seidel 往往能在少数 sweep 中显著削弱这类成分。经过若干轮以后，剩余误差的空间变化通常更缓慢，看起来更加“光滑”。这就是\textbf{平滑性质（smoothing property）}。
+一个独立 solver 关心整个误差空间中的最慢衰减方向，因此自然看
+\begin{equation}
+\rho(S)
+\end{equation}
+或相应的全局 convergence factor。Multigrid smoother 的任务却更窄：它只需要快速削弱\textbf{细网格上振荡较快的误差}。
 
-这里的“高频”和“低频”暂时只按网格上的空间变化速度理解：相邻点变化越剧烈，频率越高；跨越许多网格点才发生明显变化，频率越低。\chapref{ch:lfa}才会用 Fourier 模态把这个说法严格化。
+对于缓慢变化的误差，
+\begin{equation}
+e_{i-1}\approx e_i\approx e_{i+1},
+\end{equation}
+邻居平均本来就与中心值接近，因此局部更新产生的修正很小。对快速振荡误差，中心点与邻居之间差异大，合适的 weighted Jacobi、Gauss--Seidel 或更强局部方法可以在少量 sweeps 中显著削弱其幅值。经过若干轮以后，剩余误差通常在空间上看起来更加光滑，这就是\textbf{平滑性质（smoothing property）}。
+
+因此必须区分两个评价对象：
+\begin{equation}
+\boxed{
+\text{global convergence factor}
+\neq
+\text{smoothing factor}.
+}
+\end{equation}
+前者问“整个系统作为独立 solver 收敛多快”；后者只问“被 coarse grid 视为高频的那部分误差压得多快”。一个方法完全可能不是好的独立 solver，却是很好的 smoother。
+
+这也解释了为什么上一节并不试图让 weighted Jacobi 把低频模态也迅速压掉。低频误差正是下一章 coarse-grid correction 要接手的对象。
 
 \begin{keybox}
-\textbf{平滑器的任务不是独立求解整个线性系统。}
-
-它只需要迅速削弱细网格上变化很快的误差。剩下的光滑误差虽然对当前网格上的局部迭代很“难”，但\chapref{ch:two-grid}会看到，它在更粗网格上会变得更容易表示和处理。
+\textbf{从本章到 two-grid 的逻辑闭环：}
+\[
+\boxed{
+\begin{aligned}
+&\text{局部迭代可收敛，但 } \rho(S)\to1 \text{ 随网格加密恶化};\\
+&\text{合适 smoother 能快速压低高频误差};\\
+&\text{剩余低频误差在细网格上仍然衰减很慢};\\
+&\Longrightarrow\text{需要一个能直接处理低频误差的粗空间。}
+\end{aligned}
+}
+\]
 \end{keybox}
-
-\section{迭代矩阵与误差传播}
-
-前面已经见过 Jacobi、weighted Jacobi 和 Gauss--Seidel。现在再把这些具体方法统一成线性代数形式。
-
-把矩阵写成
-\begin{equation}
- A=D+L+U,
-\end{equation}
-其中 $D$ 是对角部分，$L$ 和 $U$ 分别是严格下三角与严格上三角部分。
-
-Jacobi 的矩阵形式为
-\begin{equation}
-\bm u^{(k+1)}
-=\bm u^{(k)}+D^{-1}\left(\bm b-A\bm u^{(k)}\right),
-\end{equation}
-而 weighted Jacobi 为
-\begin{equation}
-\bm u^{(k+1)}
-=\bm u^{(k)}+\omega D^{-1}\left(\bm b-A\bm u^{(k)}\right).
-\label{eq:iteration-weighted-jacobi}
-\end{equation}
-Gauss--Seidel 则相当于使用下三角部分 $D+L$ 依次求出本轮更新。
-
-这些方法都可以写成统一的\textbf{平稳迭代（stationary iteration）}形式
-\begin{equation}
-\bm u^{(k+1)}
-=\bm u^{(k)}+M^{-1}\left(\bm b-A\bm u^{(k)}\right),
-\label{eq:iteration-stationary-general}
-\end{equation}
-其中 $M$ 是固定不变、并且比完整 $A$ 更容易处理的矩阵。对 Jacobi，$M=D$；对 weighted Jacobi，可以把权重并入修正；对 Gauss--Seidel，$M=D+L$。
-
-用真解减去式 \eqref{eq:iteration-stationary-general} 两边：
-\begin{align}
-\bm e^{(k+1)}
-&=\bm e^{(k)}-M^{-1}A\bm e^{(k)}\\
-&=\left(I-M^{-1}A\right)\bm e^{(k)}.
-\end{align}
-定义
-\begin{equation}
-S=I-M^{-1}A
-\label{eq:error_prop_general}
-\end{equation}
-为\textbf{误差传播矩阵（error-propagation matrix）}。因此
-\begin{equation}
-\bm e^{(k)}=S^k\bm e^{(0)}.
-\label{eq:iteration-error-power}
-\end{equation}
-这条式子把“迭代是否有效”转化成了一个更明确的问题：反复乘以 $S$ 以后，任意初始误差是否都会趋近于零？
-
-\section{谱半径与收敛}
-
-如果某个误差方向 $\bm v$ 满足
-\begin{equation}
-S\bm v=\lambda\bm v,
-\end{equation}
-那么经过 $k$ 轮迭代以后
-\begin{equation}
-S^k\bm v=\lambda^k\bm v.
-\end{equation}
-因此 $|\lambda|<1$ 时该误差分量会衰减，$|\lambda|>1$ 时会增长，$|\lambda|=1$ 时则不会在幅值上消失。
-
-所有特征值绝对值的最大值称为\textbf{谱半径（spectral radius）}：
-\begin{equation}
-\rho(S)=\max_i|\lambda_i|.
-\end{equation}
-对于有限维线性平稳迭代，若希望从任意初始误差出发都收敛到真解，核心条件是
-\begin{equation}
-\boxed{\rho(S)<1.}
-\label{eq:iteration-spectral-convergence}
-\end{equation}
-
-这里必须区分两个层次。条件 \eqref{eq:iteration-spectral-convergence} 讨论的是“最终是否收敛”；多重网格真正关心的还包括“不同空间形态的误差分别衰减多快”。一个方法即使整体收敛，也可能对某些光滑误差极慢。\chapref{ch:lfa}的局部 Fourier 分析会把 $S$ 对不同空间频率的作用定量化。
-
-\begin{checkpointbox}
-\textbf{即时检查 3.3}
-
-若某个误差方向对应特征值 $\lambda=0.2$，五轮后其幅值相对初始值约为多少？若另一个方向对应 $\lambda=0.95$，五轮后又是多少？这两个方向都满足 $|\lambda|<1$，但它们的实际衰减速度是否相近？
-\end{checkpointbox}
 
 \section{本章小结}
 
-本章从具体更新规则走到了一般迭代理论。Jacobi 只读取上一轮旧值；Gauss--Seidel 会立即使用本轮已经更新的值，因此具有顺序依赖。进入二维、三维以后，Jacobi 仍保持 pointwise 独立，而 GS 的扫描方向、红黑着色和强各向异性会引入新的几何结构，不能只把一维公式增加邻居项。误差 $\bm e$ 是真正要消除但通常不可直接观测的量，残差 $\bm r=\bm b-A\bm u$ 则可以计算，并满足 $\bm r=A\bm e$。
+本章第一次把“离散以后怎样求解”完整放在线性代数视角下。直接法通过分解和三角求解完成有限步骤消元；stationary iteration 重复固定修正规则；Krylov 方法利用不断扩展的 $\mathcal K_m(A,r_0)$ 和历史搜索信息；multigrid 则利用误差的尺度结构。预条件是横跨迭代方法的近似逆机制，而不是与这些方法并列的独立类别。
 
-普通 Jacobi 对理想化的最高振荡误差可能只翻转符号而不降低幅值，这给出了 weighted Jacobi 的直接动机。加入松弛参数后，不同误差形态可以具有不同的衰减因子。由此产生的“快速削弱振荡误差、留下较光滑误差”的行为就是平滑性质。
-
-最后，具体迭代可以统一写成
+对 stationary iteration，误差与残差满足
 \begin{equation}
-\bm e^{(k+1)}=S\bm e^{(k)},
+\bm r=A\bm e,
 \end{equation}
-而谱半径 $\rho(S)$ 描述平稳迭代的总体收敛性。\chapref{ch:two-grid}不再试图让同一个平滑器消除所有误差，而是专门利用“剩余误差已经变得光滑”这一事实构造粗网格校正。
+而 conditioning 决定“小残差”能够多可靠地转化成“小误差”。一般误差传播写成
+\begin{equation}
+\bm e^{(k+1)}
+=
+S\bm e^{(k)},
+\end{equation}
+有限维线性 stationary iteration 从任意初值收敛的核心条件是
+\begin{equation}
+\rho(S)<1.
+\end{equation}
+但“是否收敛”还不够：真正决定迭代次数的是渐近收敛因子。对一维 Poisson Jacobi，
+\begin{equation}
+\rho(S_J)
+=
+\cos\frac{\pi}{N+1}
+=
+1-\Oh(h^2),
+\end{equation}
+所以固定误差降低目标需要的迭代数按 $\Oh(h^{-2})$ 增长。
+
+这个网格依赖退化并不意味着 Jacobi/GS 对所有误差都同样无效。Weighted Jacobi 可以把高频误差快速压低，而留下在空间上更光滑的误差。于是下一章不再要求 smoother 独立解决整个系统，而是让 coarse-grid correction 专门处理这些局部迭代最难消除的低频成分。
 
 \section*{习题}
 
-本章把线性代数中的矩阵迭代与网格误差联系起来。计算题应手算迭代向量、残差、误差、迭代矩阵及其谱。
+本章习题围绕四种能力展开：识别求解路线、重构迭代机制、计算收敛因子、诊断网格依赖性。
 
-\subsection*{迭代机制与收敛推导}
+\subsection*{求解器地图与迭代机制}
 \begin{enumerate}[label=\arabic*.]
+\item 对以下任务分别说明更接近 direct、stationary、Krylov 还是 multigrid 思路，并解释理由：
+  (a) 小型 SPD 粗层系统反复求解；
+  (b) 大型 SPD 稀疏系统只提供 operator apply；
+  (c) 非对称大型系统配合一个固定 V-cycle；
+  (d) 只希望用两次廉价局部 sweep 压低高频误差。
 \item 对
 \[
-A=\begin{bmatrix}2&-1&0\\-1&2&-1\\0&-1&2\end{bmatrix},\qquad
-\bm b=\begin{bmatrix}1\\0\\1\end{bmatrix},\qquad \bm u^{(0)}=\bm0,
+A=
+\begin{bmatrix}
+2&-1&0\\
+-1&2&-1\\
+0&-1&2
+\end{bmatrix},
+\qquad
+\bm b=
+\begin{bmatrix}
+1\\0\\1
+\end{bmatrix},
+\qquad
+\bm u^{(0)}=\bm0,
 \]
-手算三轮 Jacobi，列出每轮 $\bm u^{(k)}$ 与 $\bm r^{(k)}=\bm b-A\bm u^{(k)}$。
-\item 对上一题手算一轮从左到右 Gauss--Seidel 和一轮从右到左 Gauss--Seidel。比较两个结果并指出顺序依赖出现在哪一步。
-\item 写出上一题矩阵的 Jacobi 误差传播矩阵 $S_J=I-D^{-1}A$，求其全部特征值与谱半径。
-\item 对 weighted Jacobi 写出 $S_\omega$。分别取 $\omega=1/2,2/3,1$，计算三个特征方向的放大因子，并比较哪一个权重对最高频方向抑制最强。
-\item 已知某次迭代的精确解 $\bm u^\star=(1,1,1)^T$、当前近似 $\bm u=(0.9,1.1,0.8)^T$，对给定 $A$ 计算误差 $\bm e$、残差 $\bm r$，并直接验证 $\bm r=A\bm e$。
-\item 某迭代矩阵在两个误差方向上的特征值为 $0.2$ 与 $0.95$，初始系数分别为 1 与 0.1。计算 1、5、20 轮后的两个分量大小，并判断何时慢模态开始主导。
-\item 对 $h_x=1/2,h_y=1/4$ 的二维 Poisson，使用式~\eqref{eq:iteration-two-dimensional-jacobi}写出一个内部点的 Jacobi 更新权重。再给 $3\times3$ 内部点按 $(i+j)\bmod2$ 标出红黑颜色，列出中心点直接耦合的四个邻居颜色。
-
-\item 从 $A\bm u^\star=\bm b$ 与残差定义证明 $\bm r=A\bm e$。
-\item 从一般 stationary iteration
+手算三轮 Jacobi，列出每轮 $\bm u^{(k)}$ 与 $\bm r^{(k)}$。
+\item 对上一题手算一轮从左到右 Gauss--Seidel 和一轮从右到左 Gauss--Seidel，指出顺序依赖出现在哪里。
+\item 从
 \[
-\bm u^{(k+1)}=\bm u^{(k)}+M^{-1}(\bm b-A\bm u^{(k)})
+\bm u^{(k+1)}
+=
+\bm u^{(k)}+M^{-1}(\bm b-A\bm u^{(k)})
 \]
-推导误差传播矩阵 $S=I-M^{-1}A$。
-\item 对矩阵分裂 $A=D+L+U$，推导 Jacobi 与 lexicographic Gauss--Seidel 的矩阵形式和各自的误差传播矩阵。
-\item 证明在有限维线性空间中，若 $\rho(S)<1$，则 $S^k\to0$；可使用 Jordan 标准形或任意你熟悉的等价结论。
-\item 对二维五点网格证明 red--black coloring 下同一颜色的网格点互不通过 stencil 直接耦合，从而说明一个颜色内部可并行更新。
+推导 $S=I-M^{-1}A$，并分别写出 Jacobi 与 lexicographic Gauss--Seidel 的 $M$。
+\item 已知精确解 $\bm u^\star=(1,1,1)^T$、当前近似 $\bm u=(0.9,1.1,0.8)^T$，计算误差与残差并验证 $\bm r=A\bm e$。
 \end{enumerate}
 
-\subsection*{频率与数值实验}
+\subsection*{收敛因子、条件数与网格依赖}
 \begin{enumerate}[label=\arabic*.]
-\item 实现 Jacobi、weighted Jacobi、Gauss--Seidel 与 RBGS。对同一 Poisson 系统同时记录 $\|r^{(k)}\|_2$ 与已知解析解下的 $\|e^{(k)}\|_2$。
-\item 人为构造低频误差 $\sin(\pi x)$ 与高频误差 $(-1)^i$，分别做若干轮 weighted Jacobi，画出误差形状和范数随迭代变化。
-\item 扫描 $\omega\in[0.1,1.2]$，对固定网格测量 weighted Jacobi 的收敛因子与高频 smoothing factor。比较“全局收敛最好”和“平滑最好”的权重是否相同。
-\item 数值求出小规模 Jacobi/GS 误差传播矩阵的特征值，并与理论推导比较。
+\item 某两种 stationary iteration 的渐近收敛因子分别为 $0.2$ 与 $0.95$。用式~\eqref{eq:iteration-count-from-factor}估计把误差降低 $10^{-8}$ 所需的迭代数。
+\item 从 $\bm e=A^{-1}\bm r$ 推导式~\eqref{eq:iteration-relative-residual-error}。这个上界为什么不能反过来说明“小误差一定要求极小残差”？
+\item 对一维 $N$ 点 Dirichlet Poisson，使用正弦模态完整推导式~\eqref{eq:iteration-jacobi-spectrum} 与谱半径式~\eqref{eq:iteration-jacobi-rho}。
+\item 由
+\[
+\rho(S_J)
+=
+1-\frac{\pi^2}{2(N+1)^2}
++\Oh(N^{-4})
+\]
+推导固定 reduction factor 下 $k=\Oh(N^2)$，并转换成 $k=\Oh(h^{-2})$。
+\item 比较 $N=31,63,127,255$ 时 Jacobi 理论谱半径和把误差降低 $10^{-6}$ 所需的渐近迭代数。观察网格翻倍时迭代数如何增长。
+\item 对标准一维模型比较 $\rho(S_J)$ 与 $\rho(S_{GS})$ 的渐近展开。为什么 Gauss--Seidel 虽然更快，却仍没有消除 mesh dependence？
+\item 证明在有限维线性空间中 $\rho(S)<1$ 当且仅当 $S^k\to0$；可以使用 Jordan 标准形或你熟悉的等价结论。
 \end{enumerate}
 
-\subsection*{平滑器选择与诊断}
+\subsection*{平滑性质与数值验证}
 \begin{enumerate}[label=\arabic*.]
-\item 对同一问题比较 Jacobi 与 RBGS 的“单 sweep 时间、迭代次数、达到同一 residual tolerance 的总时间”。为什么只比较每轮收敛强弱会误判？
-\item 解释“一个迭代器收敛”与“它是好的 multigrid smoother”之间的区别，并设计一个数值实验来区分两者。
-\item 若并行硬件上 Jacobi 每轮快 2 倍但需要 1.8 倍迭代数，而 RBGS 每轮有额外同步，给出决定 time-to-solution 优劣所需的最小测量集合。
+\item 对 weighted Jacobi 推导
+\[
+\mu_\omega(\theta)
+=
+1-\omega(1-\cos\theta).
+\]
+在 $\theta\in[\pi/2,\pi]$ 上比较 $\omega=1/2,2/3,1$ 的最坏放大因子。
+\item 实现 Jacobi、weighted Jacobi、Gauss--Seidel 与 RBGS，对同一 Poisson 系统同时记录 residual norm 与已知解析解下的 error norm。
+\item 人为构造低频误差 $\sin(\pi x)$ 与接近 Nyquist 的高频误差，分别做若干轮 weighted Jacobi，比较误差形状与范数。
+\item 对一系列逐步加密网格，测量达到固定 residual reduction 所需的 Jacobi/GS 迭代数，并验证是否接近 $\Oh(h^{-2})$ 的趋势。
+\item 扫描 $\omega\in[0.1,1.2]$，分别记录完整系统的 convergence factor 与高频 smoothing factor。说明“独立 solver 最优参数”和“multigrid smoother 最优参数”为什么可能不同。
+\item 设计一个数值实验区分“这个迭代器最终收敛”和“它是一个好的 multigrid smoother”这两个命题。
 \end{enumerate}
