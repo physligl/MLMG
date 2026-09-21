@@ -130,7 +130,7 @@ P_{\ell-1},
 \boxed{4\rightarrow4\rightarrow4\rightarrow2\rightarrow1.}
 \end{equation}
 
-这一步还揭示了两个必须同时核对的正确性条件。其一，rank 集合改变以后，粗层向量的所有权、active rank set 与 collective participation 必须彼此一致；实现上可以建立更小的 communicator，也可以保留原 communicator 并显式区分 active/inactive ranks，二者都只是实现选择。其二，回程 prolongation 前必须把 coarse correction 按反向映射送回原来的细层所有者。也就是说，coarse redistribution 不是单纯的负载均衡，而是 V-cycle 数据依赖图的一部分。
+这一步还揭示了两个必须同时核对的正确性条件。其一，rank 集合改变以后，粗层向量的所有权、active rank set 与 collective participation 必须彼此一致。常见实现是为活跃 ranks 建立更小的 communicator；也可以保留父 communicator 作为全局上下文，但任何在父 communicator 上发起的 collective 仍要求其全部成员按 MPI 语义参与，不能让所谓 inactive ranks 任意跳过。其二，回程 prolongation 前必须把 coarse correction 按反向映射送回原来的细层所有者。也就是说，coarse redistribution 不是单纯的负载均衡，而是 V-cycle 数据依赖图的一部分。
 
 \begin{checkpointbox}
 \textbf{即时检查：}如果上述 $32^3$ 层已经收缩到两个 GPU，而下一层 $16^3$ 暂时仍保留两个 GPU，每块 GPU 只有 $2{,}048$ unknowns；若继续收缩到单 GPU，也只有 $4{,}096$ unknowns。为什么这并不违反式~\eqref{eq:distributed-gpu-target-ranks}？这个检查用于确认两件事：粗层并行度应随问题规模变化；而一旦已经缩到单 GPU，低于 $n_{gpu,min}$ 只能被视为进入低利用率 bottom region，而不能继续靠 communicator shrink 解决。
