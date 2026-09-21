@@ -141,7 +141,7 @@ $C_g$ 回答“整个 hierarchy 一共保存多少未知量”；$C_o$ 则进一
 \subsection{几何多重网格与代数多重网格}
 
 现在再比较 GMG 与 AMG 就不会停留在名称层面。GMG 把“邻接、粗化、插值”主要从几何中得到；AMG 把同一组问题转化为 matrix graph、strength、coarse variables/aggregates 和 algebraic interpolation。二者进入 solve 阶段以后仍共享\chapref{ch:mg-cycles}的 V-cycle 骨架。
-\chapref{ch:portability}已经从执行模型角度介绍过 MueLu、Tpetra 和 Ginkgo，把它们视为多后端求解软件体系。本节进一步转向求解器内部结构：逐一考察这些框架怎样构造 hierarchy、存储 $P/R/A_c$、选择 smoother，并把这些算法对象映射到具体执行后端。
+\chapref{ch:portability}已经建立 execution space、memory space、后端特化与完整 solve 评价的统一抽象。本节把这些抽象落到具体求解软件：进一步考察 MueLu/Tpetra、Ginkgo 以及后续各框架怎样构造 hierarchy、存储 $P/R/A_c$、选择 smoother，并把这些算法对象映射到具体执行后端。
 
 在软件实现中，\textbf{setup} 指构造 hierarchy、传递算子和粗网格算子的阶段；\textbf{solve} 指复用已建立 hierarchy 执行一个或多个多重网格循环。GMG 通常 setup 更轻、operator 更规则；AMG 更通用，但 setup 可能包含 graph coarsening、interpolation construction 与 RAP/SpGEMM。是否值得付出这些成本，取决于几何信息是否可用、矩阵是否重复求解以及目标硬件上的 setup/solve 比例。
 
@@ -165,7 +165,7 @@ T_{iter}
 =T_{A\text{-apply}}+T_{reductions}+T_{MG\text{-apply}}+T_{vector},
 \label{eq:software-preconditioned-iteration-cost}
 \end{equation}
-而 $T_{MG\text{-apply}}$ 再按\chapref{ch:mg-parallel-operations}的 V-cycle 阶段细分。这样才能判断瓶颈来自 outer Krylov collective，还是 MG coarse level。
+而 $T_{MG\text{-apply}}$ 再按\chapref{ch:mg-parallel-operations}的 V-cycle 阶段细分。式~\eqref{eq:software-preconditioned-iteration-cost}只有在这些项被定义成互斥的 wall-clock accounting bins 时才可直接相加；若 profiler 输出的是可以重叠的 kernel、copy 或 MPI event duration，应按\chapref{ch:benchmarking}的计时语义分别解释。这样才能判断瓶颈来自 outer Krylov collective，还是 MG coarse level。
 
 \section{典型软件体系}
 
