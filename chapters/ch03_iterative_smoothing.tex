@@ -60,7 +60,7 @@ A\bm u=\bm b,
 \toprule
 方法 & 核心机制 & 主要结构条件 & 本书中的角色\\
 \midrule
-LU / Cholesky & 矩阵分解与三角求解 & Cholesky 需要 SPD & 小规模求解、bottom solve、基准对照\\
+LU / Cholesky & 矩阵分解与三角求解 & Cholesky 需要 SPD & 小规模求解、最粗层求解、基准对照\\
 Jacobi / Gauss--Seidel & 固定局部修正 & 取决于迭代矩阵谱 & 基本平稳迭代、后续平滑器\\
 CG & $A$-共轭搜索方向 & $A$ 为 SPD & SPD 大型稀疏系统的基础 Krylov 求解器\\
 GMRES & Arnoldi 正交基与残差最小化 & 一般非奇异系统 & 非对称系统的基础 Krylov 求解器\\
@@ -703,7 +703,7 @@ M^{-1/2}AM^{-1/2}.
 \section{柔性 GMRES 与可变预条件}
 \label{sec:fgmres}
 
-普通右预条件 GMRES 默认每一步都使用同一个线性 $M^{-1}$。但实际计算中，预条件步骤可能改变：inner solve 的容差不同、多重网格循环 的次数改变、粗层求解器不固定，或者预条件器本身是非线性的。
+普通右预条件 GMRES 默认每一步都使用同一个线性 $M^{-1}$。但实际计算中，预条件步骤可能改变：内层求解的容差不同、多重网格循环 的次数改变、粗层求解器不固定，或者预条件器本身是非线性的。
 
 若第 $j$ 步使用
 \begin{equation}
@@ -748,7 +748,7 @@ A\bm z_j
 }
 \]
 
-后续\chapref{ch:mg-cycles}会把 $M_j^{-1}$ 具体化为 多重网格 V-cycle，并讨论固定 cycle 与可变 cycle 分别适合怎样的外层方法。
+后续\chapref{ch:mg-cycles}会把 $M_j^{-1}$ 具体化为 多重网格 V-cycle，并讨论固定循环与可变循环 分别适合怎样的外层方法。
 
 \section{方法选择与本章边界}
 
