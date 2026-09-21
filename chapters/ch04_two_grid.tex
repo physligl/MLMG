@@ -20,7 +20,7 @@ C_h=I-PA_H^{-1}RA_h.}
 
 \section{从光滑误差到粗空间}
 
-\chapref{ch:iterative-smoothing}已经给出两条必须同时面对的事实：一方面，一维 Poisson 上的 Jacobi/GS 作为独立 solver 具有明显的 mesh dependence，固定误差降低目标所需迭代数随网格加密按 $\Oh(h^{-2})$ 增长；另一方面，合适的 weighted Jacobi 等 smoother 又能在少量 sweeps 中快速压低相对于网格尺度振荡较快的误差。于是平滑后真正拖慢全局收敛的主要是空间上缓慢变化的剩余误差。粗网格之所以有用，不是因为“粗网格计算便宜”这一事实本身，而是因为这类误差可以用更少的自由度表示。
+\chapref{ch:iterative-smoothing}已经给出两条必须同时面对的事实：一方面，一维 Poisson 上的 Jacobi/GS 作为独立 solver 具有明显的 mesh dependence，固定误差降低目标所需迭代数随网格加密按 $\Theta(h^{-2})$ 增长；另一方面，合适的 weighted Jacobi 等 smoother 又能在少量 sweeps 中快速压低相对于网格尺度振荡较快的误差。于是平滑后真正拖慢全局收敛的主要是空间上缓慢变化的剩余误差。粗网格之所以有用，不是因为“粗网格计算便宜”这一事实本身，而是因为这类误差可以用更少的自由度表示。
 
 令细层离散空间为 $V_h$，粗层空间为 $V_H$，其中 $H\approx2h$。在最抽象的层面，多重网格只要求有一个线性映射
 \begin{equation}
