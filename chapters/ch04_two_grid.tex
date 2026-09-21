@@ -2,28 +2,76 @@
 \label{ch:two-grid}
 
 \begin{keybox}
-\textbf{本章先回答一个核心问题：}如果局部平滑器已经把高频误差消掉，却留下缓慢变化的光滑误差，为什么“换到更粗的网格”能够继续有效处理它？本章只研究两个网格层级，先把 multigrid 的核心机制完整走通一次。
+\textbf{本章只解决一个问题：}平滑器已经快速削弱网格尺度附近的振荡误差，却留下缓慢变化的误差；怎样引入一个更小的粗空间，使这些剩余误差能够被低成本表示并校正？
+
+本章先在抽象空间 $V_h$ 与 $V_H$ 上建立 two-grid，再分别落到两条贯穿全书的离散路线：\textbf{nodal FD} 与 \textbf{cell-centered FV/守恒型 FD}。两条路线的自由度几何不同，transfer 公式也可以不同；但进入线性代数层以后，它们共享同一个结构
+\[
+\boxed{
+V_H\xrightarrow{\;P\;}V_h,
+\qquad
+r_h\xrightarrow{\;R\;}r_H,
+\qquad
+A_H=RA_hP,
+\qquad
+C_h=I-PA_H^{-1}RA_h.}
+\]
+因此本章把 FD 与 FV 作为两条并行的离散路线：它们用不同的自由度布局与离散构造实例化同一个 coarse-space correction 机制，并在线性代数层汇合。
 \end{keybox}
 
-\section{光滑误差与粗网格表示}
+\section{从光滑误差到粗空间}
 
-取一维区间 $[0,1]$，细网格步长 $h=1/8$，考虑误差
+\chapref{ch:iterative-smoothing}已经说明，局部平滑器的关键价值不是均匀地消除所有误差，而是优先压低相对于网格尺度振荡较快的分量。经过若干次平滑后，剩余误差通常在空间上变化较慢。粗网格之所以有用，不是因为“粗网格计算便宜”这一事实本身，而是因为这类误差可以用更少的自由度表示。
+
+令细层离散空间为 $V_h$，粗层空间为 $V_H$，其中 $H\approx2h$。在最抽象的层面，多重网格只要求有一个线性映射
 \begin{equation}
-e_j=\sin(\pi jh),\qquad j=0,1,\ldots,8.
+P:V_H\rightarrow V_h,
+\label{eq:twogrid-prolongation-map}
 \end{equation}
-在细网格上，相邻节点的误差变化缓慢，所以\chapref{ch:iterative-smoothing}的局部平滑器并不擅长快速消掉它。现在只保留偶数节点，相当于换到步长
+把粗空间中的向量表示到细空间。于是
 \begin{equation}
-H=2h
+\mathcal V_H:=\operatorname{range}(P)\subset V_h
+\label{eq:twogrid-coarse-subspace}
 \end{equation}
-的粗网格。粗网格看到的仍是同一个物理波形，但用更少的节点表示，因此它相对于网格分辨率“不再那么低频”。这就是多重网格最重要的尺度转换。
+就是细空间中能够由粗自由度表示的\textbf{粗空间像（coarse-space image）}。粗网格校正真正需要的是：平滑后剩余的主要误差方向应当靠近 $\mathcal V_H$。
+
+取一维区间上的光滑误差
+\begin{equation}
+e(x)=\sin(\pi x).
+\end{equation}
+若细层只是在更密的空间位置采样同一个物理波形，那么把分辨率从 $h$ 降到 $H=2h$ 并不会改变波形本身，却会让该波形相对于新的网格尺度显得更“高频”。这就是尺度转换的基本直觉。但必须注意：\textbf{“粗层自由度放在哪里”取决于离散路线。}nodal FD 的粗节点通常是细节点的子集，而 cell-centered 层级的粗 cell center 通常并不与 fine cell center 重合。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.78cm,y=0.78cm]
+  \node[anchor=east] at (-0.5,2.4) {nodal FD};
+  \draw[->] (0,2.4)--(9.2,2.4);
+  \foreach \x in {0,...,8}{\fill (\x,2.4) circle (1.8pt);}
+  \foreach \x in {0,2,4,6,8}{\draw[thick] (\x,2.17)--(\x,2.63);}
+  \node[below] at (4,2.05) {粗节点是细节点子集};
+
+  \node[anchor=east] at (-0.5,0.4) {cell-centered};
+  \draw[->] (0,0.4)--(9.2,0.4);
+  \foreach \x in {0.5,1.5,...,8.5}{\fill (\x,0.4) circle (1.8pt);}
+  \foreach \x in {1,3,5,7}{\draw[thick] (\x,0.17)--(\x,0.63);}
+  \foreach \x in {0,2,4,6,8}{\draw[densely dashed] (\x,-0.02)--(\x,0.82);}
+  \node[below] at (4,0.05) {粗 cell center 位于一对 fine centers 的中点};
+
+  \node[anchor=west] at (9.35,2.4) {$\bullet$: fine node, $|$: coarse node};
+  \node[anchor=west] at (9.35,0.4) {$\bullet$: fine center, $|$: coarse center};
+\end{tikzpicture}
+\caption{同样的 $2{:}1$ 几何粗化在两类自由度布局中的含义不同。nodal FD 的粗节点通常与偶数 fine nodes 对齐；cell-centered 粗 cell center 则位于两个 fine cell centers 之间。transfer 必须尊重自由度所代表的几何量。}
+\label{fig:twogrid-nodal-cell-centered-layout}
+\end{figure}
+
+这个区别决定了本章后面的一个基本原则：restriction 与 prolongation 不是由“multigrid”三个字唯一决定的公式，而是由\textbf{粗空间选择、自由度语义和内积/守恒要求}共同决定的离散算子。
 
 \begin{checkpointbox}
-如果一个误差在 64 个网格间隔上完成一次振荡，而粗化后只剩 32 个间隔，那么这个误差的物理波长没有改变，但它相对于网格尺度发生了什么变化？
+如果粗化比例同样是 $2{:}1$，为什么 nodal FD 可以自然地说“偶数 fine node 就是 coarse node”，而 cell-centered 表示一般不能这样说？如果忽略这个区别直接复制 nodal transfer，会改变什么几何含义？
 \end{checkpointbox}
 
 \section{残差方程}
 
-\chapref{ch:iterative-smoothing}已经建立了 $\bm r=A\bm e$：残差是不可见误差经过离散算子后的可计算表示。本节只把同一个关系写到细网格 $h$ 上。细网格线性系统为
+细层线性系统写成
 \begin{equation}
 A_hu_h=b_h.
 \end{equation}
@@ -33,7 +81,7 @@ e_h=u_h-\tilde u_h,
 \qquad
 r_h=b_h-A_h\tilde u_h.
 \end{equation}
-利用 $A_hu_h=b_h$，立即得到
+利用 $A_hu_h=b_h$，得到
 \begin{equation}
 r_h=A_he_h,
 \end{equation}
@@ -42,81 +90,171 @@ r_h=A_he_h,
 A_he_h=r_h.
 \label{eq:error_equation}
 \end{equation}
-这一步非常关键：我们虽然不知道 $e_h$，但知道右端 $r_h$。所以可以尝试在更粗的空间里近似求这个误差方程。
 
-\section{网格间传递与粗网格误差}
+这是 coarse-grid correction 的起点。我们不知道 $e_h$，但可以计算 $r_h$；如果平滑后的 $e_h$ 可以被粗空间近似，就可以在更小的 $V_H$ 中求一个粗误差 $e_H$，再把它映射回 $V_h$ 作为修正。
 
-\subsection{限制算子}
+注意这里已经进入\textbf{代数层}。式~\eqref{eq:error_equation}本身并不要求 $A_h$ 来自 FD 还是 FV。离散来源会重新出现于三个位置：$V_H$ 怎样定义、$R/P$ 怎样构造，以及 $A_H$ 是重新离散还是由 Galerkin 关系生成。
+
+\section{网格间传递算子}
+
+\subsection{Restriction 的角色}
 \label{sec:restriction}
 
-从细网格到粗网格的映射称为\textbf{限制（restriction）}，记作 $R$。最简单的注入（injection）只取偶数点：
+从细空间数据构造粗空间数据的映射记作
+\begin{equation}
+R:V_h\rightarrow V_H.
+\end{equation}
+在 two-grid 中，最典型的使用方式是
+\begin{equation}
+r_H=Rr_h,
+\label{eq:twogrid-restrict-residual}
+\end{equation}
+即把细层残差表示为粗误差方程的右端。这里的 restriction 不是“把一个数组尺寸缩小”，而是在回答：\textbf{细层残差中哪些信息应该驱动粗空间中的误差修正？}
+
+不同离散路线可以给出不同的 $R$。本章下面分别建立 nodal 与 cell-centered 两个最小模型。
+
+\subsection{Nodal FD 的网格间传递}
+
+设 fine nodes 为 $x_j=jh$，coarse nodes 为 $X_I=2Ih$。粗节点与 fine node $j=2I$ 对齐。最简单的 injection restriction 只取偶数点：
 \begin{equation}
 (r_H)_I=(r_h)_{2I}.
 \end{equation}
-更常用的一维 full-weighting 会把邻近三个细网格点做加权平均：
+更经典的一维 full-weighting 为
 \begin{equation}
 (r_H)_I
 =\frac14(r_h)_{2I-1}+\frac12(r_h)_{2I}+\frac14(r_h)_{2I+1}.
 \label{eq:twogrid-full-weighting-one-dimensional}
 \end{equation}
-这里 $r_H=Rr_h$ 是粗网格误差方程的右端。restriction 的作用不是“把解缩小”，而是把细网格上与低频误差相关的信息表示到粗空间。先做一个可手算的例子。设细网格残差在连续七个点上为
-\begin{equation}
-\bm r_h=(0,2,4,2,0,-2,0)^T.
-\end{equation}
-对与细网格点 $j=2$ 对齐的粗点，full-weighting 给出
-\begin{equation}
-(r_H)_1=\frac14(2)+\frac12(4)+\frac14(2)=3;
-\end{equation}
-对与 $j=4$ 对齐的下一个粗点，
-\begin{equation}
-(r_H)_2=\frac14(2)+\frac12(0)+\frac14(-2)=0.
-\end{equation}
-所以这一小段数据经 restriction 后变成粗网格右端 $(3,0)^T$。这个例子应先形成一个直觉：$R$ 不是简单“每隔一个点抄一次”，而是在选择一种粗空间表示。
 
-\subsection{粗网格误差方程}
-
-在粗网格上求
+例如
 \begin{equation}
-A_He_H=r_H.
-\label{eq:coarse_error_eq}
+\bm r_h=(0,2,4,2,0,-2,0)^T
 \end{equation}
-这里未知量 $e_H$ 不是原问题的解，而是\textbf{细网格误差在粗空间中的近似表示}。这正是 two-grid 与“在低分辨率上重新求一次原问题”的根本区别。
+在与 $j=2,4$ 对齐的两个粗点上给出
+\begin{align}
+(r_H)_1&=\frac14(2)+\frac12(4)+\frac14(2)=3,\\
+(r_H)_2&=\frac14(2)+\frac12(0)+\frac14(-2)=0.
+\end{align}
+这里 $R$ 把 fine residual 对 coarse nodal basis 的响应压缩成粗层右端，而不是简单抽样。
 
-如果粗网格足够小，式 \eqref{eq:coarse_error_eq} 可以精确求解；如果仍然很大，就会在\chapref{ch:mg-cycles}再次把同样思想递归应用到更粗层级。
-
-\subsection{延拓算子}
+\subsection{Prolongation 的角色}
 \label{sec:prolongation}
 
-从粗网格到细网格的映射称为\textbf{延拓（prolongation）}或插值，记作 $P$。一维线性插值可以写成
+从粗误差空间到细空间的映射记作
+\begin{equation}
+P:V_H\rightarrow V_h.
+\end{equation}
+对 nodal FD，最常见的一维线性 prolongation 为
 \begin{align}
 (Pe_H)_{2I}&=(e_H)_I,\\
 (Pe_H)_{2I+1}&=\frac12\left((e_H)_I+(e_H)_{I+1}\right).
+\label{eq:twogrid-nodal-linear-prolongation}
 \end{align}
-得到细网格修正 $Pe_H$ 后更新
+粗点直接继承，两个粗点之间的 fine node 线性插值。得到修正后更新
 \begin{equation}
 \tilde u_h^{\mathrm{new}}
 =\tilde u_h+Pe_H.
+\label{eq:twogrid-correction-update}
 \end{equation}
-注意这里是“加修正”，不是用粗网格插值直接覆盖细网格解。例如粗网格误差取
-\begin{equation}
-\bm e_H=(0,2,0)^T.
-\end{equation}
-线性 prolongation 后，细网格上的修正为
+
+例如 $\bm e_H=(0,2,0)^T$ 时，
 \begin{equation}
 P\bm e_H=(0,1,2,1,0)^T.
 \end{equation}
-偶数位置直接继承粗点值，奇数位置由相邻粗点线性插值得到。这样读者可以把 $P$ 理解为“把粗空间中的一个误差形状重新表达回细空间”，而不是抽象矩阵记号。\begin{warningbox}
-\textbf{不要把 MG 的 restriction/prolongation 与 AMR 的层间数据操作混为一谈。}
-\chapref{ch:amr-discretization}中的 average-down 与 coarse-to-fine interpolation 服务于\textbf{物理离散层之间的数据一致性}；本章的 $R$ 与 $P$ 服务于\textbf{求解器内部的误差尺度转换}。二者在规则网格上可能采用相似的加权平均或线性插值公式，但数学角色不同，因此实现中不能因为“公式长得像”就当成同一个算子。
+所以 $P$ 的数学角色是把粗空间中的误差形状重新表达为 fine-space correction，而不是把 coarse solution 覆盖到 fine grid。
+
+\subsection{Cell-centered FV 与守恒型 FD 的网格间传递}
+\label{sec:twogrid-cell-centered-transfer}
+
+现在考虑 fine control volumes
+\begin{equation}
+F_j=[jh,(j+1)h],
+\qquad
+x_j=\left(j+\frac12\right)h,
+\end{equation}
+以及由两个 fine cells 合成的 coarse cell
+\begin{equation}
+C_I=F_{2I}\cup F_{2I+1},
+\qquad
+H=2h.
+\end{equation}
+其中心
+\begin{equation}
+X_I=(2I+1)h
+\end{equation}
+位于两个 fine centers $x_{2I}$ 与 $x_{2I+1}$ 之间，而不是某个 fine center 上。
+
+如果 $r_j$ 表示\textbf{volume-normalized residual density}，自然的常数保持 restriction 是体积平均
+\begin{equation}
+(R_{\mathrm{vol}}r_h)_I
+=\frac{|F_{2I}|r_{2I}+|F_{2I+1}|r_{2I+1}}{|C_I|}.
+\label{eq:twogrid-cell-centered-volume-restriction}
+\end{equation}
+均匀一维网格上即
+\begin{equation}
+(R_{\mathrm{vol}}r_h)_I
+=\frac12\left(r_{2I}+r_{2I+1}\right).
+\end{equation}
+
+如果存储的是\chapref{ch:discretization}中的\textbf{cell-integrated residual}，则同一个物理合并关系写成求和而不是平均：
+\begin{equation}
+(\mathcal R_H)_I
+=(\mathcal R_h)_{2I}+(\mathcal R_h)_{2I+1}.
+\label{eq:twogrid-cell-integrated-restriction}
+\end{equation}
+所以 restriction 系数不能脱离自由度语义单独背诵；“平均还是求和”取决于向量代表密度型量还是积分型量。
+
+最简单的 cell-centered prolongation 是 piecewise constant：
+\begin{equation}
+(P_0e_H)_{2I}=(P_0e_H)_{2I+1}=(e_H)_I.
+\label{eq:twogrid-cell-centered-p0}
+\end{equation}
+它精确保常数，并满足 $R_{\mathrm{vol}}P_0=I$，但对线性变化的误差表示能力有限。若希望获得更高的粗空间逼近能力，可以先在 coarse cell center 上重构斜率 $\sigma_I$，再写
+\begin{align}
+(P_1e_H)_{2I}
+&=(e_H)_I-\frac h2\sigma_I,\\
+(P_1e_H)_{2I+1}
+&=(e_H)_I+\frac h2\sigma_I.
+\label{eq:twogrid-cell-centered-linear-prolongation}
+\end{align}
+两式平均仍为 $(e_H)_I$，因此保持 coarse-cell average。这里的 $\sigma_I$ 可以来自中心差分、受限斜率或其他与目标离散相容的重构；具体选择属于 transfer design，而不是 two-grid 定义本身。
+
+\begin{warningbox}
+\textbf{不要把 MG transfer 与 AMR 数据同步操作合并成同一个概念。}
+\chapref{ch:amr-discretization}中的 average-down 与 coarse-to-fine reconstruction 用来维持\textbf{物理离散层之间的数据语义与守恒}；本章的 $R/P$ 用来构造\textbf{求解器粗空间与误差修正}。cell-centered 情形下两者可能出现完全相同的平均或重构公式，但“公式相同”不意味着“算子角色相同”。
 \end{warningbox}
+
+\subsection{离散内积与伴随关系}
+
+前面两条路线看起来用了不同公式，但在规则网格上可以用一个更统一的关系理解。设细、粗空间的离散内积分别为
+\begin{equation}
+\langle v,w\rangle_h=v^TM_hw,
+\qquad
+\langle V,W\rangle_H=V^TM_HW,
+\end{equation}
+其中 $M_h,M_H$ 可以代表 nodal quadrature weight，也可以代表 control-volume measure。若希望 restriction 是 prolongation 关于这两个内积的离散伴随，则
+\begin{equation}
+\boxed{
+R=M_H^{-1}P^TM_h.
+}
+\label{eq:twogrid-weighted-adjoint-transfer}
+\end{equation}
+
+这个公式同时解释了两个经典结果。对一维均匀 nodal grid，若 $M_h=hI$、$M_H=2hI$，则
+\begin{equation}
+R=\frac12P^T,
+\end{equation}
+线性 nodal prolongation 的伴随恰好给出式~\eqref{eq:twogrid-full-weighting-one-dimensional}的 full-weighting。对 cell-centered piecewise-constant $P_0$，同一公式则给出两个 fine cells 的体积平均。
+
+因此，“nodal full-weighting”和“cell average restriction”并不是互不相干的技巧；它们可以被理解为\textbf{同一个伴随原则在不同自由度布局与离散测度下的具体实现}。
 
 \section{多维网格间传递}
 
-一维 restriction/prolongation 只需要决定一条线上相邻粗细点的关系。二维和三维的 transfer 则必须同时处理多个方向，而且 stencil 大小会迅速增长。对规则 Cartesian 网格，最清楚的组织方式是 tensor product。
+多维 transfer 的第一原则仍然不是记 stencil，而是先确定自由度布局与粗空间。规则 Cartesian 网格上，tensor product 提供了最简单的构造方式。
 
-\subsection{二维 full-weighting 与双线性延拓}
+\subsection{Nodal 多维网格间传递}
 
-一维 full-weighting 权重为 $(1,2,1)/4$。二维 tensor-product full-weighting 因而得到九点模板
+一维 nodal full-weighting 权重为 $(1,2,1)/4$。二维 tensor-product full-weighting 因而得到九点模板
 \begin{equation}
 (Rr)_{I,J}
 =\frac1{16}
@@ -124,82 +262,215 @@ P\bm e_H=(0,1,2,1,0)^T.
 :\,r_h,
 \label{eq:twogrid-two-dimensional-full-weighting}
 \end{equation}
-其中冒号表示以粗点对应的 fine point 为中心，对 $3\times3$ 邻域做加权和。与一维相比，restriction 已经从三个输入扩展到九个输入。
-
-二维线性 prolongation 对应双线性插值。粗点位置直接注入；只在一个方向位于粗点中间的 fine point 取两个粗值平均；同时位于 $x,y$ 两方向中点的 fine point 取四个粗角点的加权组合。其矩阵可以写成
+其中冒号表示以 coarse node 对应的 fine node 为中心，对 $3\times3$ 邻域加权求和。二维线性 prolongation 为双线性插值，并可写成
 \begin{equation}
 P_{2D}=P_y\otimes P_x.
 \label{eq:twogrid-two-dimensional-prolongation-tensor}
 \end{equation}
-因此“二维 transfer”不是把一维公式复制两遍，而是由两个方向的插值共同决定一个二维 coarse basis function 在 fine grid 上的形状。
 
-\subsection{三维 tensor-product transfer}
-
-三维 full-weighting 为三个一维 full-weighting 的 tensor product，一个粗点最多涉及 $3^3=27$ 个 fine 点；三线性 prolongation 则由八个 coarse cell 角点共同决定一般 fine point 的值。形式上
+三维同理：
 \begin{equation}
 R_{3D}=R_z\otimes R_y\otimes R_x,
 \qquad
 P_{3D}=P_z\otimes P_y\otimes P_x.
 \label{eq:twogrid-three-dimensional-transfer-tensor}
 \end{equation}
-维数提升因此同时改变 transfer 的运算量、内存访问邻域和 coarse basis 的支撑范围。后面的并行章节会把这些结构解释成 gather stencil 与数据局部性问题。
+一个 coarse node 的 full-weighting 最多访问 $3^3=27$ 个 fine nodes，三线性 prolongation 的 fine value 则由邻近 coarse nodes 的 tensor-product basis 共同决定。
+
+\subsection{Cell-centered 多维网格间传递}
+
+对 $2{:}1$ full coarsening，一个 $d$ 维 coarse control volume 包含 $2^d$ 个 fine control volumes。若向量表示 volume-normalized residual，则
+\begin{equation}
+(R_{\mathrm{vol}}r_h)_C
+=\frac1{|C|}\sum_{F\subset C}|F|r_F.
+\label{eq:twogrid-cell-centered-multidim-restriction}
+\end{equation}
+均匀二维与三维分别退化为四个和八个 fine-cell values 的算术平均；若存储 integrated residual，则把平均换成对应的积分和。
+
+prolongation 则取决于所选 coarse approximation space。piecewise constant correction 只复制 parent coarse value；线性或多线性 reconstruction 会利用相邻 coarse cells 构造 fine corrections，并可额外要求 parent average 保持。这里没有唯一“FV prolongation stencil”：transfer 的设计目标是让 $P(V_H)$ 足够好地逼近平滑误差，同时保持与自由度语义、边界处理和粗算子构造的一致性。
 
 \begin{checkpointbox}
-对二维 full-weighting，验证九个权重之和为 1；再说明三维 tensor-product full-weighting 的 27 个权重为什么也必然和为 1。这一性质与 AMR 插值中的“常数保持”有什么共同点，又为什么不能据此把 MG restriction 与 AMR average-down 视为同一个算子？
+对二维 $2{:}1$ cell-centered coarsening，若 coarse residual 表示 cell average，写出四个 fine residual 的 restriction；若改成 cell-integrated residual，公式如何改变？再解释为什么这两种写法描述的是同一个物理聚合关系，而不是两套不同算法。
 \end{checkpointbox}
 
 \section{两网格循环}
 \label{sec:two-grid-cycle}
 
-到这里，two-grid 已经可以完整写出：
+现在可以在不指定 FD/FV 的情况下写出 two-grid。restriction 后先在 coarse space 中求误差方程
+\begin{equation}
+A_He_H=r_H.
+\label{eq:coarse_error_eq}
+\end{equation}
+这里的 $e_H$ 是 fine-grid error 在 coarse space 中的近似表示，而不是把原 PDE 在低分辨率上重新求一次得到的物理解。
+
+随后整个 two-grid cycle 写成：
 \begin{algorithm}[htbp]
 \caption{Two-grid correction}
 \begin{algorithmic}[1]
-\State 在细网格上做 $\nu_1$ 次预平滑
+\State 在细层上做 $\nu_1$ 次预平滑
 \State 计算残差 $r_h\gets b_h-A_hu_h$
-\State 限制到粗网格 $r_H\gets Rr_h$
-\State 解粗网格误差方程 $A_He_H=r_H$
+\State 限制到粗空间 $r_H\gets Rr_h$
+\State 解粗误差方程 $A_He_H=r_H$
 \State 延拓并修正 $u_h\gets u_h+Pe_H$
-\State 在细网格上做 $\nu_2$ 次后平滑
+\State 在细层上做 $\nu_2$ 次后平滑
 \end{algorithmic}
 \end{algorithm}
 
-预平滑先把细网格高频误差削弱，使剩余误差更适合粗空间表示；粗网格校正主要处理这部分光滑误差；延拓回来后可能重新引入局部高频成分，所以通常再做后平滑。
+预平滑的目标不是把误差降到很小，而是把剩余误差推向 coarse space 更容易表示的方向；coarse correction 负责处理这些分量；prolongation 后可能重新产生局部高频成分，因此再用后平滑压低它们。这个“平滑能力与粗空间逼近能力互补”的结构比任何一套具体 stencil 更重要。
+
+在 nodal FD、cell-centered FV 或守恒型 FD 中，算法六步完全相同；改变的是 $A_h$、$R$、$P$、边界闭合以及粗空间表示。
 
 \section{粗网格算子}
 
-粗网格方程需要一个 $A_H$。在几何多重网格中有两种基本构造方式。
+粗误差方程需要一个 $A_H$。最常见的两种构造是\textbf{重新离散（rediscretization）}与\textbf{Galerkin 构造}。
 
-第一种是\textbf{重新离散（rediscretization）}：直接在网格步长 $H=2h$ 上重新离散同一个 PDE。
+重新离散直接在 coarse geometry 上重新应用原离散方法。对 nodal FD，可以在步长 $H$ 上重新写差分算子；对 FV/守恒型 FD，可以在 coarse control volumes 上重新构造 face flux 与体积平衡。它保留了原离散路线的物理与几何解释，但不自动保证与当前 $R/P$ 完全兼容。
 
-第二种是\textbf{Galerkin 构造}：
+Galerkin 构造定义
 \begin{equation}
+\boxed{
 A_H=RA_hP.
+}
 \label{eq:galerkin}
 \end{equation}
-它的含义可以按操作顺序读：把一个粗网格向量用 $P$ 放到细网格，在细网格施加 $A_h$，再用 $R$ 投回粗网格。这样得到的 $A_H$ 与选定的 $R$、$P$ 天然一致。
+其操作含义非常直接：把 coarse vector 经 $P$ 表示到 fine space，在 fine space 施加 $A_h$，再经 $R$ 投回 coarse space。由此得到的 coarse operator 与所选 coarse space 和 transfer 天然耦合。
 
-若使用 Galerkin 构造，粗网格校正算子为
+若使用式~\eqref{eq:galerkin}，粗网格校正算子为
 \begin{equation}
 C_h=I-PA_H^{-1}RA_h.
 \label{eq:cgc}
 \end{equation}
-对任意粗网格向量 $v_H$，有
+对于任意 $v_H$，
 \begin{align}
 C_hPv_H
 &=Pv_H-P(RA_hP)^{-1}RA_hPv_H\\
-&=0.
+&=0,
 \end{align}
-因此 Galerkin coarse-grid correction 能精确消除位于 $\operatorname{range}(P)$ 中的误差分量。这里 $\operatorname{range}(P)$ 指“能够由粗网格向量经 $P$ 表示出来的细网格向量集合”。
+因此所有位于 $\operatorname{range}(P)$ 中的误差都被精确消除。
 
-\subsection{重新离散与 Galerkin 构造}
+\subsection{重新离散与 Galerkin 的关系}
 
-对一维常系数 Poisson、标准线性 prolongation 与 full-weighting restriction，可以证明 Galerkin 构造恰好得到标准 $2h$ Poisson 离散；完整推导放在附录~\ref{app:galerkin}。对变系数、复杂边界或非结构问题，两种构造未必一致，这也是后面不同多重网格层次构造方式发生分化的重要原因。
+对一维常系数 Poisson、标准 nodal linear prolongation 与 full-weighting restriction，Galerkin 构造恰好回到标准 $2h$ Poisson 离散；完整推导见附录~\ref{app:galerkin}。这不是 Galerkin 的普遍定理，而是该规则网格、算子和 transfer 组合的特殊一致性。
 
+对 cell-centered FV/守恒型 FD，也可能在特定规则网格与系数组合下得到相同现象，但变系数、复杂边界、非均匀网格或更一般 coarse space 往往使 rediscretization 与 $RA_hP$ 分离。此时必须分别问两个问题：重新离散是否保持原 PDE/守恒解释？Galerkin 是否更好地保持 fine operator 与 coarse correction 的代数兼容性？二者没有脱离问题背景的固定优先级。
+
+\section{Galerkin 校正的投影与最佳逼近性质}
+\label{sec:twogrid-energy-projection}
+
+前面的 $C_hP=0$ 只说明 coarse space 中的误差可以被消掉，还没有说明一个一般误差会怎样被校正。对 SPD 问题，可以得到更强的几何解释。
+
+先考虑 Euclidean SPD 形式，并取
+\begin{equation}
+R=P^T,
+\qquad
+A_H=P^TA_hP.
+\label{eq:twogrid-symmetric-galerkin}
+\end{equation}
+如果实际 transfer 使用 $R=\gamma P^T$（$\gamma>0$），例如均匀一维 nodal grid 上常见的 $R=\frac12P^T$，则
+\begin{equation}
+(\gamma P^TA_hP)^{-1}\gamma P^T
+=(P^TA_hP)^{-1}P^T,
+\end{equation}
+所以 coarse correction 本身不受这个共同缩放影响；下面可以用 $R=P^T$ 的规范化写法讨论投影几何。
+对任意 fine-grid error $e_h$，粗校正量 $e_H$ 满足
+\begin{equation}
+P^TA_hP e_H=P^TA_he_h.
+\label{eq:twogrid-galerkin-normal-equation}
+\end{equation}
+校正后误差
+\begin{equation}
+e_h^+=e_h-Pe_H
+\end{equation}
+于是满足
+\begin{equation}
+\boxed{
+P^TA_he_h^+=0.
+}
+\label{eq:twogrid-a-orthogonality}
+\end{equation}
+这表示 $e_h^+$ 与 coarse-space image $\operatorname{range}(P)$ 在 $A_h$-inner product 下正交。
+
+定义能量范数
+\begin{equation}
+\|v\|_{A_h}^2=v^TA_hv.
+\end{equation}
+对任意 coarse vector $v_H$，有
+\begin{align}
+\|e_h-Pv_H\|_{A_h}^2
+={}&\|e_h-Pe_H\|_{A_h}^2
++\|P(e_H-v_H)\|_{A_h}^2,
+\end{align}
+其中交叉项因式~\eqref{eq:twogrid-a-orthogonality}为零。因此
+\begin{equation}
+\boxed{
+\|e_h-Pe_H\|_{A_h}
+=\min_{v_H\in V_H}\|e_h-Pv_H\|_{A_h}.
+}
+\label{eq:twogrid-energy-best-approximation}
+\end{equation}
+
+这给出了 Galerkin coarse correction 的核心含义：\textbf{它不是任意地减去一个 coarse-shaped correction，而是在所选 coarse space 中找出对当前误差的最佳能量范数逼近，并将其消掉。}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.0]
+  \draw[->] (-0.2,0)--(7.2,0) node[right] {$\operatorname{range}(P)$};
+  \fill (0,0) circle (1.8pt) node[below left] {$0$};
+  \coordinate (E) at (5.7,3.4);
+  \coordinate (Q) at (4.6,0);
+  \draw[->,thick] (0,0)--(E) node[above right] {$e_h$};
+  \draw[->,thick] (0,0)--(Q) node[below] {$Pe_H$};
+  \draw[->,thick] (Q)--(E) node[midway,right] {$e_h^+$};
+  \draw[dashed] (E)--(Q);
+  \node[align=center] at (2.3,2.6) {粗校正移除\\coarse-space 分量};
+  \node[align=center] at (5.7,-0.75) {$P^TA_he_h^+=0$\quad（$A_h$-正交）};
+\end{tikzpicture}
+\caption{Galerkin coarse correction 的几何意义。投影关系表示 $A_h$-inner product 下的正交；图中的纸面角度不应解释为普通 Euclidean 内积下的夹角。校正后留下的是 coarse space 无法表示的分量。}
+\label{fig:twogrid-energy-projection}
+\end{figure}
+
+对\chapref{ch:discretization}中的 volume-normalized FV 算子 $A_h=M_h^{-1}K_h$，自然的对称性存在于体积加权内积中。此时可以用式~\eqref{eq:twogrid-weighted-adjoint-transfer}定义 weighted adjoint restriction，或者等价地转到对称的 integrated operator $K_h$ 上讨论同样的投影结构。由此可见，能量投影不是 nodal FD 专属性质，而是 SPD/weighted-SPD 离散与 Galerkin coarse space 的共同代数结构。
+
+\section{粗空间逼近能力与平滑器的互补}
+\label{sec:twogrid-approximation-property}
+
+式~\eqref{eq:twogrid-energy-best-approximation}把“粗网格为什么有效”转化成一个可以检验的问题：对于平滑后剩余的误差 $e_h$，
+\begin{equation}
+\eta_H(e_h)
+:=
+\min_{v_H\in V_H}
+\frac{\|e_h-Pv_H\|_{A_h}}{\|e_h\|_{A_h}}
+\label{eq:twogrid-coarse-approximation-ratio}
+\end{equation}
+是否足够小？若 $\eta_H(e_h)\ll1$，说明该误差几乎位于 coarse-space image 中，Galerkin correction 可以一次移除大部分能量；若 $\eta_H(e_h)$ 接近 1，再精确的 coarse solve 也无济于事，因为问题出在 coarse space 根本表示不了这个误差。
+
+这就把 multigrid 的两个核心条件分开了：
+\begin{equation}
+\boxed{
+\begin{aligned}
+\text{smoothing property:}&\quad
+\text{平滑器快速压低 coarse space 难表示的振荡误差};\\
+\text{approximation property:}&\quad
+\text{coarse space 能准确表示平滑后保留下来的误差}.
+\end{aligned}}
+\label{eq:twogrid-two-properties}
+\end{equation}
+
+真正高效的 two-grid 不是“一个很强的 smoother + 一个很细的 coarse grid”，而是这两种能力的互补。若 smoother 只留下某类误差，而 $P(V_H)$ 恰好不能表示它们，two-grid 会失败；反过来，如果 coarse space 极其丰富但平滑器没有压掉昂贵的 fine-scale error，粗层也会承担不必要的工作。
+
+\begin{keybox}
+\textbf{选择 transfer 时要问的不是“哪套权重最经典”，而是三个问题：}
+
+第一，$P(V_H)$ 能否表示 smoother 留下的主要误差形态？
+
+第二，$R/P$ 是否与自由度语义和离散内积相容？
+
+第三，由此得到的 coarse operator 是否保持所需的对称性、守恒性和边界结构？
+\end{keybox}
 
 \section{两网格误差传播算子}
 
-\chapref{ch:iterative-smoothing}已经用 $S$ 表示一次平滑的误差传播。如果预平滑做 $\nu_1$ 次，后平滑做 $\nu_2$ 次，则整个 two-grid cycle 的误差传播为
+\chapref{ch:iterative-smoothing}已经用 $S$ 表示一次平滑的误差传播。若预平滑做 $\nu_1$ 次，后平滑做 $\nu_2$ 次，则完整 two-grid error propagator 为
 \begin{equation}
 E_{TG}
 =S_{\mathrm{post}}^{\nu_2}
@@ -207,67 +478,107 @@ E_{TG}
 S_{\mathrm{pre}}^{\nu_1}.
 \label{eq:two_grid_error}
 \end{equation}
-这个公式把 three pieces 连在一起：先平滑、再粗网格校正、再平滑。以后讨论“某个 smoother 是否好”时，最终关心的应是它与 coarse-grid correction 组合后的 $E_{TG}$，而不是孤立的一步迭代。
+
+这个式子现在可以按本章建立的机制逐项解释。$S_{\mathrm{pre}}^{\nu_1}$ 把误差推向 coarse space 更容易逼近的形态；中间的 $C_h$ 去掉可由 $P(V_H)$ 表示的分量；$S_{\mathrm{post}}^{\nu_2}$ 再削弱 prolongation 与局部校正留下的 fine-scale 成分。
+
+如果 $A_h$ 来自不同离散路线，式~\eqref{eq:two_grid_error}本身不改变，但 $S$、$R/P$、$A_H$ 的具体符号和谱性质会改变。\chapref{ch:lfa}将选择一套完全具体的 Poisson + weighted Jacobi + transfer 组合，把这个抽象乘积化成可计算的 two-grid Fourier symbol。
 
 \section{本章小结}
 
-本章建立的核心概念包括 two-grid、restriction、prolongation、coarse-grid correction、rediscretization 与 Galerkin coarse operator。二维/三维 transfer 进一步说明，网格间传递会从一维三点/两点关系扩展为二维九点 full-weighting、双线性延拓和三维 tensor-product stencil，因此 transfer 的支撑范围和数据访问结构都会随维数改变。这里还没有递归到很多层，也没有用 Fourier 模态定量分析 two-grid 收敛；分别留给\chapref{ch:mg-cycles}和\chapref{ch:lfa}。
+本章把 two-grid 从“粗网格上算一次”提升为 coarse-space correction。核心对象不是某个固定的 full-weighting stencil，而是
+\begin{equation}
+V_H\xrightarrow{P}V_h,
+\qquad
+r_H=Rr_h,
+\qquad
+A_H=RA_hP.
+\end{equation}
+
+nodal FD 与 cell-centered FV/守恒型 FD 给出了两种不同的自由度几何。nodal coarse nodes 可以与 fine nodes 对齐，因此经典 linear prolongation/full-weighting 很自然；cell-centered coarse centers 与 fine centers 错位，restriction 更自然地由体积语义解释，prolongation 则由 coarse-cell reconstruction 构造。通过 weighted-adjoint 关系~\eqref{eq:twogrid-weighted-adjoint-transfer}，两类 transfer 又可以在离散内积层统一起来。
+
+对于 SPD 或 weighted-SPD 问题，Galerkin coarse correction 还是一个能量投影：它从当前误差中移除 coarse space 能够最佳表示的部分。于是 multigrid 成功的真正条件可以压缩成一对互补机制：\textbf{smoother 负责把误差变得 coarse-representable，coarse space 负责准确表示并消除这些剩余误差。}
+
+这里仍只研究两个求解尺度。\chapref{ch:mg-cycles}把相同机制递归到很多层；\chapref{ch:lfa}则用 Fourier 模态定量计算 smoother 与 coarse-space correction 如何共同决定收敛因子。
 
 \section*{习题}
 
-本章习题要求真正完成一次 coarse-grid correction，而不是只复述 restriction 与 prolongation 的方向。
+本章习题不要求背诵 transfer stencil，而要求能够从自由度布局、离散测度与 coarse-space 目标推导或判断 transfer。
 
 \subsection*{计算题}
 \begin{enumerate}[label=\arabic*.]
-\item 细网格残差取
+\item 对 nodal fine residual
 \[
-\bm r_h=(0,2,4,2,0,-2,0)^T.
+\bm r_h=(0,2,4,2,0,-2,0)^T,
 \]
-粗点分别与细点 $j=2,4$ 对齐。使用式~\eqref{eq:twogrid-full-weighting-one-dimensional}计算两个粗网格残差值。随后取粗网格误差
+粗点分别与 fine nodes $j=2,4$ 对齐。使用式~\eqref{eq:twogrid-full-weighting-one-dimensional}计算两个 coarse residual。随后取
 \[
 \bm e_H=(0,2,0)^T,
 \]
-使用本章线性 prolongation 计算 $P\bm e_H$，并逐点说明偶数点与奇数点的来源。
+用式~\eqref{eq:twogrid-nodal-linear-prolongation}计算 $P\bm e_H$，并逐点说明偶数点与奇数点的来源。
+
+\item 对一维均匀 cell-centered 网格，给定四个 fine residual densities
+\[
+r_0=2,\quad r_1=4,\quad r_2=-2,\quad r_3=6.
+\]
+按两个 fine cells 合成一个 coarse cell，使用式~\eqref{eq:twogrid-cell-centered-volume-restriction}计算两个 coarse residual densities。若改存 integrated residual，写出对应求和公式并验证两种表示给出的 coarse integrated residual 相同。
+
 \item 给定
 \[
 A_h=\begin{bmatrix}2&-1&0\\-1&2&-1\\0&-1&2\end{bmatrix},\quad
 P=\begin{bmatrix}1/2\\1\\1/2\end{bmatrix},\quad R=\tfrac12P^T,
 \]
 计算 Galerkin coarse operator $A_H=RA_hP$。
-\item 在上一题中令 $\bm b=(1,0,1)^T$、$\bm u_h=(0,0,0)^T$。计算 fine residual、restricted residual、coarse error、prolongated correction 与更新后的 fine solution，完整走一遍不含平滑的 coarse-grid correction。
+
+\item 在上一题中令 $\bm b=(1,0,1)^T$、$\bm u_h=\bm0$。计算 fine residual、restricted residual、coarse error、prolongated correction 与更新后的 fine solution，完整走一遍不含平滑的 coarse-grid correction。
+
 \item 计算 coarse-correction matrix
 \[
 C_h=I-PA_H^{-1}RA_h,
 \]
 并分别作用到 $P$ 的列向量和一个与其线性无关的向量上。
-\item 对一维常系数 Poisson，分别通过直接在 $2h$ 网格重离散与 Galerkin $RA_hP$ 构造 coarse operator，核对二者在给定缩放约定下的关系。
-\item 二维 full-weighting 的九点权重为 $(1,2,1)^T(1,2,1)/16$。给定九个 fine residual 值
+
+\item 二维 nodal full-weighting 权重为 $(1,2,1)^T(1,2,1)/16$。给定九个 fine residual values
 \[
 \begin{bmatrix}1&2&1\\2&4&2\\1&2&1\end{bmatrix},
 \]
-计算对应 coarse residual。再给四个 coarse 角点值 $0,2,4,6$，计算中心 fine point 的双线性 prolongation 值。
+计算对应 coarse residual。再给四个 coarse corner values $0,2,4,6$，计算中心 fine node 的 bilinear prolongation 值。
+
+\item 一个二维 coarse control volume 含四个等体积 fine cells，其 residual densities 为 $1,3,5,7$。分别计算 volume-normalized restriction 与 integrated-residual restriction；说明为什么结果数值不同但物理总 residual 一致。
 \end{enumerate}
 
 \subsection*{推导与证明题}
 \begin{enumerate}[label=\arabic*.]
-\item 从 residual equation 推导 coarse error equation，解释为什么 restriction 的对象是 residual 而不是直接把原右端“缩小”。
-\item 对 $A_H=RA_hP$ 证明 $C_hP=0$，即 coarse space 中的误差被精确 coarse correction 消除。
-\item 在 $A_H$ 可逆时证明 $C_h^2=C_h$。说明 coarse correction 为什么可以看成一个投影。
-\item 当 $A_h$ 对称正定且 $R=P^T$ 时，证明 Galerkin $A_H=P^TA_hP$ 也对称正定。
-\item 说明 rediscretization 与 Galerkin 何时可能一致；构造一个变系数或非均匀网格情形说明二者不应被默认等同。
+\item 从 residual equation 推导 coarse error equation，解释为什么 restriction 的对象是当前 residual，而不是把原问题右端机械缩小。
+
+\item 对一维 nodal linear prolongation 写出矩阵 $P$，取 $M_h=hI$、$M_H=2hI$，由式~\eqref{eq:twogrid-weighted-adjoint-transfer}推导 $R=\frac12P^T$ 并恢复 full-weighting stencil。
+
+\item 对一维 cell-centered piecewise-constant prolongation $P_0$，使用同一个 weighted-adjoint 关系推导两个 fine cells 的算术平均 restriction。
+
+\item 对 $A_H=RA_hP$ 证明 $C_hP=0$。在 $A_H$ 可逆时进一步证明 $C_h^2=C_h$。
+
+\item 当 $A_h$ SPD 且 $R=P^T$ 时，从式~\eqref{eq:twogrid-galerkin-normal-equation}证明式~\eqref{eq:twogrid-a-orthogonality}与能量最佳逼近式~\eqref{eq:twogrid-energy-best-approximation}。
+
+\item 对一维常系数 Poisson，分别通过 $2h$ rediscretization 与 Galerkin $RA_hP$ 构造 coarse operator，核对二者在本章 nodal transfer 缩放约定下的关系。再说明为什么这个结果不能直接推广到任意变系数或任意 cell-centered transfer。
+
+\item 构造一个 fine-space error $e_h$，使其恰好属于 $\operatorname{range}(P)$；再构造一个与 coarse space 在 $A_h$-inner product 下正交的误差。分别说明 Galerkin coarse correction 对二者的作用。
 \end{enumerate}
 
 \subsection*{编程与上机题}
 \begin{enumerate}[label=\arabic*.]
-\item 实现 1D Poisson 的 restriction、prolongation 与 coarse-grid correction。对随机 smooth error 验证 coarse correction 后误差显著下降。
-\item 实现完整 two-grid：预平滑、residual、restriction、coarse solve、prolongation、correction、后平滑。报告每个阶段前后的 residual norm。
-\item 分别使用 injection/full-weighting restriction 与 piecewise-constant/linear prolongation，测量 two-grid convergence factor，解释差异。
-\item 对常系数和跳变系数问题分别比较 rediscretization 与 Galerkin coarse operator 的收敛表现。
+\item 分别实现两组 transfer：nodal full-weighting 配合 linear prolongation，以及 cell-centered volume restriction 配合 piecewise-constant prolongation。对常数向量检查 $RP=I$；对线性函数检查两类 prolongation 的逼近误差，并解释自由度位置为什么影响结果。
+
+\item 对一维 Poisson 构造 $A_h,P,R,A_H$，数值验证 $C_hP\approx0$ 与 $C_h^2\approx C_h$。若 $A_h$ SPD 且 $R=P^T$，再检查校正后误差满足 $P^TA_he_h^+\approx0$。
+
+\item 生成一组低频与高频 error vectors。分别计算它们的 coarse approximation ratio~\eqref{eq:twogrid-coarse-approximation-ratio}，再做若干次 weighted Jacobi，观察平滑前后该比值如何变化。
+
+\item 对同一个规则 cell-centered Poisson 问题，分别实现 coarse rediscretization 与 Galerkin coarse operator。比较常系数、平滑变系数和强跳变系数下二者的矩阵差异与 two-grid convergence factor。
 \end{enumerate}
 
 \subsection*{工程与综合题}
 \begin{enumerate}[label=\arabic*.]
-\item 统计一次 two-grid 中 smoother、residual、transfer、coarse solve 的工作量和数据访问量。在哪个问题规模下 coarse solve 可能开始主导？
-\item 比较 MG restriction/prolongation 与第~\ref{ch:amr-discretization}章的 AMR average-down/coarse-to-fine interpolation。指出一个“数据流方向相同但数学含义完全不同”的具体例子。
-\item 若一种 transfer operator 数值上更强但内存访问更不规则，设计一个同时比较 convergence factor 与 cycle cost 的实验，而不是只比较迭代次数。
+\item 一个代码库同时支持 nodal FD 与 cell-centered FV。设计 transfer API 时，哪些信息必须显式携带才能避免把“nodal injection”“volume average”“integrated residual sum”错误地统一成一个无语义的 \texttt{restrict()}？至少从 DOF location、quantity semantics、geometry 与 inner product 四个方面回答。
+
+\item 某 smoother 对棋盘格误差极强，但对一个沿 $x$ 方向缓慢变化、沿 $y$ 方向近似常数的误差很弱。给出 coarse space 应具备的最低表示能力，并说明为什么只报告 smoother 的 spectral radius 不足以判断 two-grid 是否高效。
+
+\item 对一个强变系数扩散问题，比较“保持 FV coarse-level flux construction 的 rediscretization”与“Galerkin $RA_hP$”两种路线。列出至少四个需要验证的性质：守恒、对称/加权对称、正定性、coarse-space compatibility、stencil growth 或 setup cost 等，并说明这些指标之间可能存在的 tradeoff。
 \end{enumerate}
