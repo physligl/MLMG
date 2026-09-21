@@ -1498,7 +1498,14 @@ y_3&=\frac{-x_2+2x_3}{h^2}.
 \label{eq:discretization-mf-three-apply}
 \end{equation}
 
-但程序也可以完全不保存这个 $3\times3$ 矩阵，而是直接根据式~\eqref{eq:discretization-mf-three-point} 的 stencil 规则逐点计算式~\eqref{eq:discretization-mf-three-apply}。输出仍然是同一个 $\bm y=A\bm x$。
+但程序也可以完全不保存这个 $3\times3$ 矩阵，而是直接根据式~\eqref{eq:discretization-mf-three-point} 的 stencil 规则逐点计算式~\eqref{eq:discretization-mf-three-apply}。输出仍然是同一个 $\bm y=A\bm x$。例如取 $h=1$、$\bm x=[1,2,1]^T$，两条路径都会得到
+\begin{equation}
+A\bm x=
+\begin{bmatrix}
+0&2&0
+\end{bmatrix}^T.
+\end{equation}
+这个小例子可以直接用来检查：表示方式变了，算子的数学作用没有变。
 
 这就是最基本的 matrix-free 思想。它没有改变离散方程，也没有删除数学上的 $A$；它只是没有把 $A$ 逐项物化为一个长期存储的矩阵数据结构。
 
@@ -1574,7 +1581,7 @@ A\bm x.
 \begin{equation}
 \mathrm{nnz}\approx7N.
 \end{equation}
-CSR 的意义不是改变数学上的矩阵，而是避免保存大量必然为零的位置。
+CSR 的意义不是改变数学上的矩阵，而是避免保存大量必然为零的位置。使用 CSR 计算 $\bm y=A\bm x$ 通常称为\textbf{稀疏矩阵向量乘（sparse matrix--vector multiplication, SpMV）}：程序按行读取非零 value 及其 column index，再从 $\bm x$ 中取出对应分量完成累加。
 
 显式矩阵也不一定非要使用 CSR。规则 stencil 可以使用固定对角线或固定邻接格式，某些块系统还会使用 block sparse 格式。这里真正决定“显式”的不是具体容器，而是：\textbf{局部代数系数已经被预先物化并长期保存，后续 $A\bm x$ 直接读取这些系数。}
 
