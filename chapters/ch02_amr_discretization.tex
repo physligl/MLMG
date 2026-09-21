@@ -1390,13 +1390,25 @@ A^{\mathrm{new}}=A(\mathcal H^{\mathrm{new}};\beta,\alpha,\mathrm{BC}).
 
 二者虽然都可能具有
 \begin{equation}
-P:\text{coarse}\longrightarrow\text{fine}
+P:\text{粗分辨率}\longrightarrow\text{细分辨率}
 \end{equation}
-的形式，但数学对象不同。AMR regridding 中的 $P_{\mathrm{AMR}}$ 用于构造新产生的 fine-level\textbf{物理状态变量}，并且可能需要满足质量、电荷或其他积分量的守恒约束；多重网格中的 prolongation 则把 coarse-grid\textbf{误差校正量}传回 fine-grid 求解空间。前者属于离散空间发生变化时的状态迁移，后者属于在既定线性系统上执行的迭代求解。仅仅因为二者的数据方向相同，不能把它们视为同一个算子。
+的数据方向，但数学对象不同。AMR 重网格化（regridding）中的 $P_{\mathrm{AMR}}$ 用于构造新产生的细层\textbf{物理状态变量}，并且可能需要满足质量、电荷或其他积分量的守恒约束；多重网格中的延拓算子则把粗空间\textbf{误差校正量}传回细层求解空间。前者属于离散空间发生变化时的状态迁移，后者属于在既定线性系统上执行的迭代求解。仅仅因为二者的数据方向相同，不能把它们视为同一个算子。
 
 \begin{engineeringbox}
-\textbf{工程检查顺序：}regridding 之后若复合算子表现异常，应先确认状态迁移和算子重建是否使用同一个 $\mathcal H^{\mathrm{new}}$。特别检查 overlap copy、AMR interpolation、average-down、valid/covered mask、physical BC 和 coarse--fine flux 是否与当前 hierarchy 一致。层级版本错配会直接破坏离散一致性，并可能表现为后续迭代求解器残差停滞或收敛异常。
+\textbf{工程检查顺序：}重网格化之后若复合算子表现异常，应先确认状态迁移和算子重建是否使用同一个 $\mathcal H^{\mathrm{new}}$。特别检查重叠区域复制、AMR 插值、平均下传、有效/覆盖掩码、物理边界条件以及粗细接口通量是否都与当前层级结构一致。层级版本错配会直接破坏离散一致性，并可能表现为后续迭代求解器残差停滞或收敛异常。
 \end{engineeringbox}
+
+
+\begin{keybox}
+\textbf{从复合离散交给线性求解器的对象。}
+本章最终产出的不是“一组彼此独立的 AMR 层级方程”，而是定义在复合空间 $V(\mathcal H)$ 上的一个整体问题
+\[
+A_{\mathrm{comp}}u_{\mathrm{comp}}=b_{\mathrm{comp}}.
+\]
+线性求解器至少需要保持四个不变量：残差只在有效复合自由度上计量；每次算子作用都包含粗细接口耦合；被细层覆盖的粗层存储不是额外物理未知量；纯 Neumann 等情形的零空间与兼容条件必须随限制、延拓和粗层求解一起保留。
+
+求解器随后可以为误差修正构造额外的粗空间，甚至临时在细化区域内重新引入粗分辨率校正自由度。这些自由度属于\textbf{求解器内部表示}，不会改变这里定义的物理复合空间。\secref{sec:amr-vs-mg-level}将用 FAC 型两层校正把这组求解器契约与\chapref{ch:two-grid}的粗空间校正连接起来。
+\end{keybox}
 
 \section{本章小结}
 

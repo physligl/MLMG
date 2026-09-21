@@ -237,58 +237,228 @@ M^{-1}=B_{MG}
 multigrid 作为 solver 时，$B_{MG}r$ 直接用于下一次固定点修正；作为 preconditioner 时，同一个近似误差修正被交给 Krylov 方法，与历史搜索方向共同决定下一步。
 \end{keybox}
 
-\section{AMR 层级与多重网格层级}
+
+\section{AMR 复合算子与多重网格求解层级}
 \label{sec:amr-vs-mg-level}
 
-到这里，AMR level 的含义已经由离散过程自然产生。\chapref{ch:amr-discretization}已经从复合离散的角度建立 AMR level；AMR hierarchy
+\chapref{ch:amr-discretization}构造出的最终对象，是定义在复合空间
 \begin{equation}
-\mathcal L_0^{AMR},\mathcal L_1^{AMR},\ldots,\mathcal L_M^{AMR}
+V(\mathcal H)
 \end{equation}
-回答的是：\textbf{物理区域在哪里需要什么空间分辨率？}更细的 AMR level 只覆盖局部区域，与较粗层共同组成 composite discretization。
-
-现在才引入第二种完全不同的层级。为了求解已经形成的线性系统，multigrid solver 还会把误差问题向更粗的尺度递归，形成 MG hierarchy：
+上的整体线性系统，而不是每一个 AMR 层级各自独立的一套 PDE。对两层 AMR 层级结构，式~\eqref{eq:amr_block_matrix}已经把按控制体积分形式组装的算子写成
 \begin{equation}
-\mathcal L_m^{AMR}
-\supset
-\mathcal L_{m,1}^{MG}
-\supset
-\mathcal L_{m,2}^{MG}
-\supset\cdots.
+K_{\mathrm{comp}}
+=
+\begin{bmatrix}
+K_{cc}&K_{cf}\\
+K_{fc}&K_{ff}
+\end{bmatrix},
+\label{eq:mg-amr-composite-block}
 \end{equation}
-MG level 回答的是：\textbf{求解器怎样构造更粗尺度来消除不同频率的误差？}
-
-因此二者的生成原因不同：
+其中两个非对角分块 $K_{cf}$ 与 $K_{fc}$ 正是粗细接口耦合。若采用按控制体体积归一化的形式，则由式~\eqref{eq:amr-composite-normalized-operator}得到
 \begin{equation}
-\boxed{
-\text{AMR level：物理离散的局部加密}
+A_{\mathrm{comp}}=M^{-1}K_{\mathrm{comp}}.
+\end{equation}
+
+因此，求解器真正面对的是
+\begin{equation}
+A_{\mathrm{comp}}u_{\mathrm{comp}}=b_{\mathrm{comp}},
 \qquad
-\text{MG level：线性求解的尺度递归}
-}
+u_{\mathrm{comp}}\in V(\mathcal H).
+\label{eq:mg-amr-composite-linear-system}
 \end{equation}
+本节的目标，是把\chapref{ch:two-grid}建立的粗空间校正作用到这个\textbf{本身已经混合多种物理分辨率}的求解空间上。这里的“粗”有两种完全不同的来源：AMR 的粗层描述物理解的空间分辨率，多重网格的粗空间描述误差校正所需的低分辨率表示。后面的推导始终把这两种含义分开。
+
+\subsection{复合残差不能按 AMR 层级独立求解}
+
+把复合向量按有效粗层自由度与细层自由度分块：
+\begin{equation}
+u_{\mathrm{comp}}
+=
+\begin{bmatrix}u_c\\u_f\end{bmatrix},
+\qquad
+r_{\mathrm{comp}}
+=
+\begin{bmatrix}r_c\\r_f\end{bmatrix}.
+\end{equation}
+由式~\eqref{eq:mg-amr-composite-block}直接得到
+\begin{align}
+r_c
+&=b_c-A_{cc}u_c-A_{cf}u_f,\\
+r_f
+&=b_f-A_{fc}u_c-A_{ff}u_f.
+\label{eq:mg-amr-block-residual}
+\end{align}
+
+这两式说明一个关键事实：即使程序把粗层数组和细层数组分开存放，残差仍然属于同一个复合方程。若在求解阶段忽略 $A_{cf}$ 或 $A_{fc}$，就等价于把原来的复合算子替换成分块对角算子。此时两个子问题即使都快速收敛，也已经不再对应原来的复合 PDE。
+
+因此，考虑 AMR 接口耦合的平滑器可以采用分块 Jacobi、分块 Gauss--Seidel、逐层松弛或 patch 内局部松弛，但每一种算法都必须明确三个问题：接口另一侧的状态在何时进入当前分块；这些接口数据以什么频率刷新；延迟更新将产生怎样的误差传播算子。\textbf{分层存储只是数据组织方式，不意味着各 AMR 层级可以彼此独立地收敛。}
+
+\subsection{FAC 型粗空间}
+\label{sec:fac-coarse-space}
+
+理解自适应复合多重网格的一个经典原型，是 FAC（Fast Adaptive Composite，快速自适应复合）方法。这里不绑定某个软件实现，只抽取其中与粗空间校正有关的数学结构。
+
+令当前最细求解空间为
+\begin{equation}
+W^{(0)}:=V(\mathcal H).
+\end{equation}
+在两层 AMR 情形中，$W^{(0)}$ 的细化区域由细层自由度表示，未细化区域由有效粗层自由度表示。为了让一个低分辨率校正能够跨越整个物理域传播，可以再构造一个只服务于求解器的粗空间 $W^{(1)}$。在细化区域中，$W^{(1)}$ 临时用粗分辨率的\textbf{校正自由度}替代细层校正自由度，从而让整个物理域都具有统一的低分辨率误差表示。
 
 \begin{figure}[htbp]
 \centering
-\begin{tikzpicture}[node distance=7mm and 13mm, every node/.style={font=\small}]
-\node[draw,rounded corners,fill=softblue,minimum width=3.4cm] (a0) {AMR Level 0};
-\node[draw,rounded corners,fill=softblue,right=of a0,minimum width=3.4cm] (a1) {AMR Level 1（局部覆盖）};
-\node[draw,below=of a0,minimum width=3.0cm] (m01) {MG 0/1};
-\node[draw,below=of m01,minimum width=2.5cm] (m02) {MG 0/2};
-\node[draw,below=of m02,minimum width=2.0cm] (m03) {MG 0/3};
-\node[draw,below=of a1,minimum width=3.0cm] (m11) {MG 1/1};
-\node[draw,below=of m11,minimum width=2.5cm] (m12) {MG 1/2};
+\begin{tikzpicture}[x=1.25cm,y=1.0cm,every node/.style={font=\small}]
+  \node[anchor=east] at (-0.4,2.1) {$W^{(0)}$};
+  \draw[thick] (0,2.1)--(6,2.1);
+  \draw[thick] (0,1.8) rectangle (1.5,2.4);
+  \draw[thick] (1.5,1.8) rectangle (3.0,2.4);
+  \draw[thick] (3.0,1.8) rectangle (4.5,2.4);
+  \draw[thick] (4.5,1.8) rectangle (6.0,2.4);
+  \node at (0.75,2.1) {$C_0$};
+  \node at (2.25,2.1) {$F_0$};
+  \node at (3.75,2.1) {$F_1$};
+  \node at (5.25,2.1) {$C_1$};
+  \node[above] at (3.0,2.55) {物理复合校正空间};
+
+  \node[anchor=east] at (-0.4,0.4) {$W^{(1)}$};
+  \draw[thick] (0,0.1) rectangle (2.0,0.7);
+  \draw[thick] (2.0,0.1) rectangle (4.0,0.7);
+  \draw[thick] (4.0,0.1) rectangle (6.0,0.7);
+  \node at (1.0,0.4) {$E_0$};
+  \node at (3.0,0.4) {$\widehat E_1$};
+  \node at (5.0,0.4) {$E_2$};
+  \node[below] at (3.0,-0.05) {求解器引入的粗分辨率校正表示};
+
+  \draw[-{Latex},bend right=18] (2.45,1.75) to node[left] {$R_{\mathrm{FAC}}$} (2.7,0.78);
+  \draw[-{Latex},bend left=18] (3.55,0.78) to node[right] {$P_{\mathrm{FAC}}$} (3.75,1.75);
+\end{tikzpicture}
+\caption{两层一维复合空间与 FAC 型求解器粗空间。$F_0,F_1$ 是细化区域中真实的细层校正自由度；$\widehat E_1$ 是求解器为粗空间校正临时引入的低分辨率表示，它不属于物理复合未知量。}
+\label{fig:fac-two-level-space}
+\end{figure}
+
+于是得到与\chapref{ch:two-grid}同构的一对传递算子：
+\begin{equation}
+R_{\mathrm{FAC}}:W^{(0)}\rightarrow W^{(1)},
+\qquad
+P_{\mathrm{FAC}}:W^{(1)}\rightarrow W^{(0)}.
+\label{eq:fac-transfer}
+\end{equation}
+$R_{\mathrm{FAC}}$ 是求解器的限制算子。在本来已经处于粗分辨率的有效区域，它可以保留对应残差；在细化区域，它把细层残差投影到粗误差空间。若使用按控制体体积归一化的残差，可以采用体积加权平均；若使用积分形式残差，则相应操作是求和。这些数值权重可能与\chapref{ch:amr-discretization}中的平均下传（average-down）相同，但这里传递的是\textbf{误差方程的残差}，属于求解迭代，而不是物理状态同步。
+
+$P_{\mathrm{FAC}}$ 是校正延拓算子。它把粗空间校正返回 $W^{(0)}$：在有效粗层区域直接施加粗层校正，在细化区域则通过与粗空间一致的插值或重构生成细层校正。若采用 Galerkin 粗算子，则定义
+\begin{equation}
+A_1
+=R_{\mathrm{FAC}}A_{\mathrm{comp}}P_{\mathrm{FAC}}.
+\label{eq:fac-galerkin-operator}
+\end{equation}
+也可以在 $W^{(1)}$ 上重新离散一个粗空间校正算子。它与\chapref{ch:two-grid}讨论的 Galerkin 构造和重新离散具有同样的取舍，只是这里的细空间算子已经是复合 AMR 算子。
+
+\subsection{一次两层复合校正}
+\label{sec:fac-cycle-skeleton}
+
+把上述对象放进一次两层循环，可以得到不依赖具体软件调度的基本流程：
+\begin{algorithm}[htbp]
+\caption{两层 FAC 型复合校正}
+\begin{algorithmic}[1]
+\State 在 $W^{(0)}$ 上对复合误差方程做 $\nu_1$ 次预平滑
+\State $r^{(0)}\gets b_{\mathrm{comp}}-A_{\mathrm{comp}}u^{(0)}$
+\State $r^{(1)}\gets R_{\mathrm{FAC}}r^{(0)}$
+\State 解或近似解 $A_1e^{(1)}=r^{(1)}$
+\State $u^{(0)}\gets u^{(0)}+P_{\mathrm{FAC}}e^{(1)}$
+\State 重建依赖于当前解的复合接口数据，并做 $\nu_2$ 次后平滑
+\end{algorithmic}
+\end{algorithm}
+
+与普通两网格方法相比，六步流程本身并没有改变；真正新增的是 $W^{(0)}$ 已经是一个混合分辨率复合空间。特别是第二步计算残差时，$A_{\mathrm{comp}}u^{(0)}$ 必须包含\chapref{ch:amr-discretization}定义的物理边界闭合、同层耦合和粗细接口耦合；第三步的求解器限制又必须与 AMR 物理状态的平均下传严格区分。
+
+对图~\ref{fig:fac-two-level-space}的一维例子，可以把复合残差写成
+\begin{equation}
+r^{(0)}
+=
+\begin{bmatrix}
+r_{C_0}&r_{F_0}&r_{F_1}&r_{C_1}
+\end{bmatrix}^T.
+\end{equation}
+若采用最简单的体积归一化粗表示，则
+\begin{equation}
+r^{(1)}
+=
+\begin{bmatrix}
+r_{C_0}&\frac12(r_{F_0}+r_{F_1})&r_{C_1}
+\end{bmatrix}^T.
+\label{eq:fac-one-dimensional-residual-restriction}
+\end{equation}
+中间分量并不是把物理解做平均下传，而是把细化区域中的\textbf{残差}投影到粗误差空间。若粗空间校正为
+\begin{equation}
+e^{(1)}
+=
+\begin{bmatrix}E_0&\widehat E_1&E_2\end{bmatrix}^T,
+\end{equation}
+则 $P_{\mathrm{FAC}}$ 再把 $\widehat E_1$ 重构成 $F_0,F_1$ 上的细层校正。这样，跨越整个物理域的低频误差能够穿过粗细接口，由同一个粗空间校正表示，而不是让粗区和细区各自独立消除自己的低频误差。
+
+\begin{checkpointbox}
+假设把式~\eqref{eq:mg-amr-block-residual}中的 $A_{cf}$ 与 $A_{fc}$ 都置零，但仍分别在粗层和细层上运行很强的多重网格求解器。为什么两个子问题都可能快速“收敛”，而复合 PDE 仍然是错的？这个反例说明，AMR 多重网格首先必须保持的对象是什么？
+\end{checkpointbox}
+
+\subsection{AMR 层级与 MG 层级的二元坐标}
+
+AMR 层级结构
+\begin{equation}
+\mathcal L_0^{AMR},\mathcal L_1^{AMR},\ldots,\mathcal L_M^{AMR}
+\end{equation}
+回答的是“物理区域在哪里需要什么空间分辨率”。更细的 AMR 层级只覆盖局部区域，并通过复合算子与相邻 AMR 层级耦合。
+
+求解器还可以在这些离散层之上继续建立额外的几何粗空间或代数粗空间。实现中可以用二元索引
+\begin{equation}
+(m,\ell)
+\end{equation}
+区分第 $m$ 个物理 AMR 层级与其上的第 $\ell$ 个多重网格粗化层级。这个二元组只是\textbf{层级索引坐标}，并不意味着整个求解空间一定是两套层级的笛卡尔积。不同软件可以采用不同的调度方式、停止粗化准则和粗层求解器组织方式。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=7mm and 15mm,every node/.style={font=\small}]
+\node[draw,rounded corners,fill=softblue,minimum width=3.2cm] (a0) {$(0,0)$ AMR 0};
+\node[draw,rounded corners,fill=softblue,right=of a0,minimum width=3.2cm] (a1) {$(1,0)$ AMR 1};
+\node[draw,below=of a0,minimum width=2.8cm] (m01) {$(0,1)$ MG};
+\node[draw,below=of m01,minimum width=2.4cm] (m02) {$(0,2)$ MG};
+\node[draw,below=of a1,minimum width=2.8cm] (m11) {$(1,1)$ MG};
+\node[draw,below=of m11,minimum width=2.4cm] (m12) {$(1,2)$ MG};
 \draw[-{Latex}] (a0)--(m01);
 \draw[-{Latex}] (m01)--(m02);
-\draw[-{Latex}] (m02)--(m03);
 \draw[-{Latex}] (a1)--(m11);
 \draw[-{Latex}] (m11)--(m12);
-\draw[<->,dashed] (a0)--node[above]{coarse--fine coupling}(a1);
+\draw[<->,dashed] (a0)--node[above]{复合耦合}(a1);
+\draw[<->,dashed] (m01)--node[above,sloped]{求解器传递}(m11);
 \end{tikzpicture}
-\caption{AMR hierarchy 与 MG hierarchy 的职责不同。水平关系表示物理离散中的 coarse--fine coupling，竖直关系表示求解器内部的多重网格粗化。}
+\caption{AMR 层级与 MG 层级的二元索引。水平虚线表示不同物理分辨率之间必须保留的复合耦合；竖直方向表示求解器为了消除误差而引入的额外粗化。实际的 MLMG/FAC 调度可以不同，但两类层级的生成原因始终不同。}
 \label{fig:amr_mg_hierarchy}
 \end{figure}
 
+因此，两种“变粗”必须分别追踪：
+\begin{equation}
+\boxed{
+\begin{aligned}
+\text{AMR 粗化/细化：}&\quad
+\text{改变物理解的空间分辨率与复合自由度集合};\\
+\text{MG/FAC 粗化：}&\quad
+\text{构造误差校正空间，不改变物理离散本身}.
+\end{aligned}}
+\label{eq:amr-mg-two-coarsenings}
+\end{equation}
+
+实际的 MLMG 实现可以把 FAC 型自适应复合校正，与各 AMR 层级内部的几何多重网格、代数多重网格或最粗层 Krylov 求解结合起来。具体调度方式并不唯一，但以下求解器不变量应当保持：
+\begin{enumerate}
+\item 残差范数与收敛判据只在有效复合自由度上计算，被细层覆盖的粗层存储不重复计数；
+\item 每一次 $A_{\mathrm{comp}}u$ 都包含当前的粗细接口耦合；
+\item 求解器的限制/延拓传递的是残差、误差和校正量，它与 AMR 物理状态同步属于不同操作；
+\item 若原复合算子具有常数零空间，粗空间与传递算子也必须保持相应的零空间表示；
+\item 完成粗空间校正后，应重新建立依赖于更新状态的接口和 ghost 数据，再评价新的复合残差。
+\end{enumerate}
+
+这五点构成\chapref{ch:amr-discretization}与本章求解器之间的最小数学契约。后续并行章节可以改变数据布局、MPI rank 的数据归属、GPU 内核组织方式和通信重叠方式，但不能改变这个复合线性系统及其校正空间的含义。
+
 \begin{checkpointbox}
-\textbf{即时检查：}假设某区域因为材料界面而被局部细化成 AMR Level 1。随后求解器又把这个离散问题 coarsen 两次。这里一共出现了哪两类“变粗/变细”操作？它们分别服务于物理分辨率还是误差消除？
+某个细化区域因为物理误差估计而新增 AMR Level 1，随后求解器又在 AMR 0 和 AMR 1 上各建立两个 MG 粗化层级。请分别指出：哪些操作改变 $V(\mathcal H)$；哪些操作只改变误差校正空间；哪些数据传递属于 AMR 状态同步；哪些属于残差或误差传递？
 \end{checkpointbox}
 
 
