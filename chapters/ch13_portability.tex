@@ -18,30 +18,59 @@
 
 这种分层只有在数据布局也可描述时才成立。单纯抽象 execution policy，却让 host/device memory、ghost ownership、temporary workspace 仍然散落在算法逻辑中，最终仍会形成“可编译但不可维护”的后端分叉。
 
-\section{Execution Space 与 Memory Space}
+\section{执行空间与内存空间}
 
 异构抽象至少需要区分两个维度：
 \begin{itemize}
-\item execution space：task 在 CPU threads、GPU threads 或其他设备上执行；
-\item memory space：数据位于 host memory、device memory、unified/shared memory 或分布式 rank-local memory。
+\item \textbf{执行空间（execution space）：}任务在 CPU 线程、GPU 线程或其他设备上执行；
+\item \textbf{内存空间（memory space）：}数据位于主机内存、设备内存、统一/共享内存，或分布式的 rank-local memory。
 \end{itemize}
-只有 execution 和 memory 匹配，kernel 才能合法且高效访问数据。一个 portable view/container 的价值，是把 shape/stride/ownership 与底层 allocation 绑定，而不是假设所有指针在所有设备上都等价。
+只有执行位置与数据驻留关系匹配，内核（kernel）才能合法且高效地访问数据。一个可移植多维视图（view/container）的价值，是把形状、步长（stride）和所有权与底层 allocation 绑定，而不是假设所有指针在所有设备上都等价。
 
-\section{并行 Pattern 的可移植表达}
+\section{并行模式的可移植表达}
 
-最值得抽象的是稳定 pattern：
+最值得抽象的是稳定的并行模式：
 \begin{itemize}
 \item parallel-for：Jacobi/residual/correction；
 \item parallel-reduce：norm/dot；
 \item team/tile policy：GPU block 或 CPU tile；
 \item memory view：多维索引与 stride；
-\item async task/dependency：halo readiness、kernel DAG。
+\item 异步任务与依赖：halo readiness、kernel DAG。
 \end{itemize}
 Restriction/prolongation 可以继续表达为 gather parallel-for；这样同一算法结构可以映射到 OpenMP loop、CUDA kernel、HIP/SYCL kernel 或 Kokkos execution policy。
 
+
+\section{同一个残差计算怎样跨后端保持语义}
+\label{sec:portability-residual-trace}
+
+抽象是否有效，最好不要从 API 名字判断，而要跟踪同一个数值操作。设某一层已经完成 halo exchange，需要计算
+\begin{equation}
+r_i=b_i-(Au)_i
+\end{equation}
+并保证只写 owned cells。这个操作至少包含四个稳定语义：读取 $u$ 与 $b$，读取相邻 stencil 数据，写入 $r$，以及在 ghost ready 之后才能启动。不同后端改变的是执行粒度和内存位置，而不是这四个语义。
+
+\begin{center}
+\begin{tabularx}{0.96\textwidth}{>{\bfseries}p{2.9cm}XXX}
+\toprule
+对象 & CPU/OpenMP & GPU 原生后端 & 可移植执行层\\
+\midrule
+迭代域 & owned cells 的并行循环 & grid/block/thread 映射 & parallel-for 的索引空间\\
+数据表示 & host-resident view & device-resident view & 带 memory space 的 view\\
+前置依赖 & halo 完成后进入并行区 & event/stream 等待 ghost ready & 依赖对象或后端同步语义\\
+局部粒度 & chunk/tile/vector width & block size、每线程 cell 数 & team/tile policy 后端特化\\
+数值定义 & $r=b-Au$ & $r=b-Au$ & $r=b-Au$\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+这张表揭示了性能可移植的边界。\textbf{数值层必须稳定的是迭代域、读写集合、依赖关系和离散算子；不应该稳定的是 block size、tile shape 或具体同步原语。}如果为了“统一代码”连这些后端参数也强制相同，抽象就把性能调节能力一并抹掉；反过来，如果数值层直接判断 warp size 或设备型号，抽象又失去了隔离硬件细节的意义。
+
+\paragraph{一个可验证的迁移过程。}
+假设先有一个已经验证的 CPU residual 实现。迁移到 GPU 或可移植框架时，不应先比较速度，而应按以下顺序检查：第一，用同一组 $u,b$ 验证输出 $r$ 在允许的舍入误差范围内一致；第二，验证边界/ghost 依赖没有因异步执行发生竞态；第三，再把时间拆成 interior、boundary、同步与数据移动；第四，才比较不同 tile/team 参数。这个顺序把“数值等价”和“执行效率”分开，使性能问题不会被错误地解释成算法差异。
+
 \section{原生后端与可移植框架}
 
-原生 CUDA/HIP 通常提供最直接的 device control；OpenMP target、SYCL、Kokkos 等则试图提供更统一的执行与内存抽象。选择时应比较的不只是单 kernel 峰值，还包括：
+原生 CUDA/HIP 通常提供最直接的设备控制能力；OpenMP target、SYCL、Kokkos 等则提供更统一的执行与内存抽象。选择时应比较的不只是单 kernel 峰值，还包括：
 \begin{itemize}
 \item 多维 view/layout 是否能表达结构网格和 patch；
 \item reduction、team/tile、async dependency 是否自然；
@@ -50,17 +79,37 @@ Restriction/prolongation 可以继续表达为 gather parallel-for；这样同�
 \item coarse-grid 特殊路径是否允许下沉到原生实现。
 \end{itemize}
 
-性能可移植框架不应该迫使所有后端采用同一个 tile size 或完全相同的 kernel fusion。\textbf{语义可移植，调度参数可后端特化}通常更现实。
+性能可移植框架不应该迫使所有后端采用同一个 tile size 或完全相同的 kernel fusion。\textbf{语义可移植，调度参数允许后端特化}通常更现实。
 
 \section{避免泄漏硬件细节}
 
-如果数值层开始出现“warp size”“MPI rank”“NUMA node”等判断，说明抽象边界可能已经泄漏。更稳定的做法是数值层表达：
+如果数值层开始直接出现“warp size”“MPI rank”“NUMA node”等硬件判断，说明抽象边界可能已经泄漏。更稳定的做法是数值层表达：
 \begin{equation}
 \text{parallel-for / reduction / halo dependency / memory view},
 \end{equation}
 后端层再决定这些语义如何实现。
 
-但抽象也不能抹掉必要信息。例如 line smoother 的 task 不是 pointwise；distributed halo 具有 owner/ghost 语义；这些属于算法本身，应保留在接口中，而不是为了“统一 API”伪装成普通 map。
+但抽象也不能抹掉必要信息。例如 line smoother 的任务不是 pointwise；distributed halo 具有 owner/ghost 语义；这些属于算法本身，应保留在接口中，而不是为了“统一 API”伪装成普通 map。
+
+
+\section{从单个内核到完整 V-Cycle 的评价}
+
+下面给一个\emph{示意性}例子，说明为什么单个 stencil 的性能比例不足以代表求解器。设某 GPU 上原生后端与可移植后端的一次 V-cycle 时间分解如下：
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+阶段 & 原生后端 / ms & 可移植后端 / ms\\
+\midrule
+smooth + residual & 3.0 & 3.3\\
+restriction/prolongation & 0.8 & 0.9\\
+粗层与 bottom solve & 1.5 & 2.4\\
+同步与其他开销 & 0.7 & 1.0\\
+\midrule
+总计 & 6.0 & 7.6\\
+\bottomrule
+\end{tabular}
+\end{center}
+细层主 kernel 只慢约 $10\%$，但完整 cycle 慢约 $27\%$。差异主要来自粗层与同步，而不是细层 stencil。因此性能可移植性至少要同时回答两个问题：\textbf{热点 kernel 是否接近平台最佳，以及完整求解流程是否仍能控制粗层、同步和数据驻留。}
 
 \section{性能可移植性的评价}
 
@@ -72,11 +121,11 @@ Restriction/prolongation 可以继续表达为 gather parallel-for；这样同�
 \begin{equation}
 T_{solve}=\sum_{\ell}\sum_{op}T_{\ell,op},
 \end{equation}
-包括粗层、transfer、reduction、communication 和 setup。一个框架若细层 stencil 很快但无法控制 coarse-grid redistribution，整体性能仍可能很差。
+包括粗层、transfer、reduction、communication 和 setup。一个框架若细层 stencil 很快但无法控制粗层重分布，整体性能仍可能很差。
 
 \section{本章小结}
 
-异构可移植性的核心是稳定算法语义与可替换执行后端：task、ownership、memory view、reduction、halo dependency 必须被清楚表达；tile、thread/block、stream 和 backend-specific tuning 则允许特化。真正的评价对象是完整 V-cycle/solve，而不是某个孤立 kernel 能否跨平台运行。
+异构可移植性的核心是稳定算法语义与可替换执行后端：任务、ownership、memory view、reduction 与 halo dependency 必须被清楚表达；tile、thread/block、stream 和后端调优参数则允许特化。真正的评价对象是完整 V-cycle/solve，而不是某个孤立 kernel 能否跨平台运行。
 
 \section*{习题}
 \subsection*{计算题}
