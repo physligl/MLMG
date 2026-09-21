@@ -1,26 +1,257 @@
-\chapter{两网格方法与粗网格校正}
+\chapter{平滑与两网格方法}
 \label{ch:two-grid}
 
 \begin{keybox}
-\textbf{本章只解决一个问题：}平滑器已经快速削弱网格尺度附近的振荡误差，却留下缓慢变化的误差；怎样引入一个更小的粗空间，使这些剩余误差能够被低成本表示并校正？
+\textbf{本章回答 multigrid 的核心起点：}为什么 Jacobi、Gauss--Seidel 这类方法作为独立求解器并不理想，却可以成为有效的平滑器？又怎样把平滑器难以消除的低频误差交给更小的粗空间处理？
 
-本章先在抽象空间 $V_h$ 与 $V_H$ 上建立 two-grid，再分别落到两条贯穿全书的离散路线：\textbf{nodal FD} 与 \textbf{cell-centered FV/守恒型 FD}。两条路线的自由度几何不同，transfer 公式也可以不同；但进入线性代数层以后，它们共享同一个结构
+本章先用一维 Poisson 把“网格依赖收敛”和“平滑性质”算清楚，再建立两网格方法。后半章沿两条贯穿全书的离散路线展开：\textbf{节点型有限差分（nodal FD）}与\textbf{单元中心有限体积/守恒型有限差分（cell-centered FV / conservative FD）}。两条路线的自由度几何和网格间传递公式可以不同，但在线性代数层共享同一个 coarse-space correction 结构。
+\end{keybox}
+
+\section{局部平稳迭代为什么随网格加密变慢}
+\label{sec:smoother-grid-dependence}
+
+\chapref{ch:linear-solvers}已经给出一般平稳迭代
+\begin{equation}
+\bm e^{(k+1)}=S\bm e^{(k)}
+\end{equation}
+以及 $\rho(S)<1$ 的收敛条件。现在不再抽象讨论任意 $A$，而是把 $A$ 固定为一维 Dirichlet Poisson，直接计算 Jacobi 的最慢误差模态。
+
+设有 $N$ 个内部点，
+\begin{equation}
+A
+=
+\frac1{h^2}
+\begin{bmatrix}
+2&-1&&\\
+-1&2&-1&\\
+&\ddots&\ddots&\ddots\\
+&&-1&2
+\end{bmatrix}.
+\end{equation}
+Jacobi 的误差传播矩阵为
+\begin{equation}
+S_J
+=
+\frac12
+\begin{bmatrix}
+0&1&&\\
+1&0&1&\\
+&\ddots&\ddots&\ddots\\
+&&1&0
+\end{bmatrix}.
+\label{eq:smoothing-jacobi-error-matrix}
+\end{equation}
+
+取离散正弦模态
+\begin{equation}
+v_i^{(j)}
+=
+\sin(i\theta_j),
+\qquad
+\theta_j
+=
+\frac{j\pi}{N+1}.
+\end{equation}
+利用
+\begin{equation}
+\frac12
+\left[
+\sin((i-1)\theta)
++
+\sin((i+1)\theta)
+\right]
+=
+\cos\theta\,\sin(i\theta),
+\end{equation}
+得到
+\begin{equation}
+S_J\bm v^{(j)}
+=
+\lambda_j\bm v^{(j)},
+\qquad
+\lambda_j
+=
+\cos
+\left(
+\frac{j\pi}{N+1}
+\right).
+\label{eq:smoothing-jacobi-spectrum}
+\end{equation}
+因此
+\begin{equation}
+\rho(S_J)
+=
+\cos
+\left(
+\frac{\pi}{N+1}
+\right).
+\end{equation}
+当 $N$ 很大，
+\begin{equation}
+\rho(S_J)
+=
+1-
+\frac{\pi^2}{2(N+1)^2}
++
+\Oh(N^{-4}).
+\end{equation}
+在单位区间 $h=1/(N+1)$ 上，
+\begin{equation}
+\boxed{
+1-\rho(S_J)=\Theta(h^2).
+}
+\label{eq:smoothing-jacobi-gap}
+\end{equation}
+对固定误差降低目标，
+\begin{equation}
+\boxed{
+k=\Theta(h^{-2}).
+}
+\label{eq:smoothing-jacobi-iterations}
+\end{equation}
+
+这意味着网格每细化一倍，Jacobi 作为独立求解器所需迭代数大约会增加四倍量级。问题不在代码实现，而在最慢模态的放大因子随着 $h\to0$ 系统性逼近 1。
+
+对这个标准一维模型，lexicographic Gauss--Seidel 满足
+\begin{equation}
+\rho(S_{GS})
+=
+\cos^2
+\left(
+\frac{\pi}{N+1}
+\right)
+=
+1-
+\frac{\pi^2}{(N+1)^2}
++
+\Oh(N^{-4}),
+\end{equation}
+因此它改善了常数，却没有消除
+\begin{equation}
+k=\Theta(h^{-2})
+\end{equation}
+的网格依赖。
+
+\begin{keybox}
 \[
 \boxed{
-V_H\xrightarrow{\;P\;}V_h,
-\qquad
-r_h\xrightarrow{\;R\;}r_H,
-\qquad
-A_H=RA_hP,
-\qquad
-C_h=I-PA_H^{-1}RA_h.}
+\text{局部平稳迭代可以收敛，}
+\quad
+\text{但作为独立求解器会随网格加密变慢。}
+}
 \]
-因此本章把 FD 与 FV 作为两条并行的离散路线：它们用不同的自由度布局与离散构造实例化同一个 coarse-space correction 机制，并在线性代数层汇合。
+Multigrid 的问题因此不是“怎样让 Jacobi 多迭代几轮”，而是“怎样利用它对不同误差模态不均匀的处理能力”。
 \end{keybox}
+
+\section{从收敛因子到平滑因子}
+\label{sec:smoothing-property}
+
+\subsection{普通 Jacobi 对高频误差并不理想}
+
+对齐次误差方程，普通 Jacobi 满足
+\begin{equation}
+e_i^{(k+1)}
+=
+\frac12
+\left(
+e_{i-1}^{(k)}
++
+e_{i+1}^{(k)}
+\right).
+\end{equation}
+考虑交替误差
+\begin{equation}
+e_i^{(k)}=(-1)^i.
+\end{equation}
+两个邻居都等于 $-e_i^{(k)}$，因此
+\begin{equation}
+e_i^{(k+1)}
+=
+-e_i^{(k)}.
+\end{equation}
+误差只翻转符号，幅值没有降低。
+
+这说明“$\rho(S_J)<1$”并不自动意味着 Jacobi 是好的 multigrid 平滑器；真正需要控制的是相对于粗网格而言的高频区。
+
+\subsection{加权 Jacobi}
+
+加权 Jacobi 写成
+\begin{equation}
+\bm u^{(k+1)}
+=
+\bm u^{(k)}
++
+\omega D^{-1}
+\left(
+\bm b-A\bm u^{(k)}
+\right),
+\qquad
+0<\omega\le1.
+\label{eq:smoothing-weighted-jacobi}
+\end{equation}
+误差传播矩阵为
+\begin{equation}
+S_\omega
+=
+I-\omega D^{-1}A.
+\end{equation}
+
+对正弦模态，放大因子为
+\begin{equation}
+\mu_\omega(\theta)
+=
+1-\omega(1-\cos\theta).
+\label{eq:smoothing-weighted-factor}
+\end{equation}
+若相对于 $2h$ 粗网格把
+\begin{equation}
+\frac{\pi}{2}\le|\theta|\le\pi
+\end{equation}
+视为高频区，则选择
+\begin{equation}
+\omega=\frac23
+\end{equation}
+可得到
+\begin{equation}
+\boxed{
+\max_{\pi/2\le|\theta|\le\pi}
+|\mu_\omega(\theta)|
+=
+\frac13.
+}
+\label{eq:smoothing-weighted-high-frequency}
+\end{equation}
+
+这里的目标不是让所有频率都快速衰减，而是专门压低 coarse grid 难以独立表示的高频误差。
+
+\subsection{全局收敛因子与平滑因子}
+
+独立求解器关心整个误差空间中的最慢方向，因此看全局收敛因子。Multigrid 平滑器的任务更窄：只要求快速削弱细网格高频误差。
+
+因此必须区分
+\begin{equation}
+\boxed{
+\text{全局收敛因子}
+\neq
+\text{平滑因子}.
+}
+\end{equation}
+
+这给出 multigrid 最经典的反差：
+\begin{equation}
+\boxed{
+\text{一个不理想的独立求解器}
+\quad
+\text{可以是一个优秀的平滑器。}
+}
+\end{equation}
+经过少量平滑以后，剩余误差通常在空间上更加光滑；这正是粗空间能够用更少自由度表示的误差。
+
+\chapref{ch:lfa}会把这里的模态分析推广到 Fourier symbol，并正式计算 two-grid convergence factor。
 
 \section{从光滑误差到粗空间}
 
-\chapref{ch:iterative-smoothing}已经给出两条必须同时面对的事实：一方面，一维 Poisson 上的 Jacobi/GS 作为独立 solver 具有明显的 mesh dependence，固定误差降低目标所需迭代数随网格加密按 $\Theta(h^{-2})$ 增长；另一方面，合适的 weighted Jacobi 等 smoother 又能在少量 sweeps 中快速压低相对于网格尺度振荡较快的误差。于是平滑后真正拖慢全局收敛的主要是空间上缓慢变化的剩余误差。粗网格之所以有用，不是因为“粗网格计算便宜”这一事实本身，而是因为这类误差可以用更少的自由度表示。
+前两节已经建立了本章最重要的反差：Jacobi/Gauss--Seidel 作为独立求解器会随网格加密显著变慢，但合适的平滑器却能在少量 sweeps 中快速削弱细网格上的振荡误差。于是平滑后真正拖慢全局收敛的主要是空间上缓慢变化的剩余误差。粗网格之所以有用，不是因为“粗网格计算便宜”这一事实本身，而是因为这类误差可以用更少的自由度表示。
 
 令细层离散空间为 $V_h$，粗层空间为 $V_H$，其中 $H\approx2h$。在最抽象的层面，多重网格只要求有一个线性映射
 \begin{equation}

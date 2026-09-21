@@ -3,7 +3,7 @@
 
 \begin{keybox}
 \textbf{本章把前几章的全局谱认识推进到局部频率与 two-grid 收敛分析。}
-\chapref{ch:iterative-smoothing}已经对有限区间一维 Poisson 算出 Jacobi 的全局谱、网格依赖收敛因子，并用高频放大因子解释 weighted Jacobi 的平滑动机；\chapref{ch:two-grid}又把 coarse-grid correction 解释成 coarse-space projection。本章不重复“是否收敛”的基础结论，而是转向平移不变局部模型，用 Fourier symbol 同时表示 smoother 与 coarse-grid correction，并完整算完一套一维 two-grid convergence factor。
+\chapref{ch:linear-solvers}已经建立一般线性求解与收敛语言，\chapref{ch:two-grid}则对一维 Poisson 算出 Jacobi 的网格依赖谱，并用高频放大因子建立平滑性质和粗空间校正。本章不重复“是否收敛”的基础结论，而是转向平移不变局部模型，用 Fourier symbol 同时表示 smoother 与 coarse-grid correction，并完整算完一套一维 two-grid convergence factor。
 
 核心路线是
 \[
@@ -24,7 +24,7 @@
 \section{Fourier 模态与离散符号}
 \label{sec:lfa-fourier}
 
-先把\chapref{ch:iterative-smoothing}里已经出现的误差形状统一写成频率表示。交替误差
+先把\chapref{ch:linear-solvers}里已经出现的误差形状统一写成频率表示。交替误差
 \begin{equation}
 e_j=(-1)^j=e^{\mathrm i\pi j}
 \end{equation}

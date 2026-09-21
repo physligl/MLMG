@@ -1,281 +1,266 @@
-\chapter{线性系统求解、基本迭代与平滑性质}
-\label{ch:iterative-smoothing}
+\chapter{线性系统求解与迭代方法}
+\label{ch:linear-solvers}
 
 \chapref{ch:discretization}和\chapref{ch:amr-discretization}已经把连续 PDE 变成离散线性系统
 \begin{equation}
 A\bm u=\bm b.
 \end{equation}
-从这里开始，问题发生了性质上的变化：离散方程已经给定，接下来要回答的是\textbf{怎样求这个线性系统，以及怎样判断一个求解过程是否真的有效}。在进入 Jacobi、Gauss--Seidel 或 multigrid 之前，本章先建立线性求解方法的基本地图，再深入最简单的平稳迭代，并用误差传播、谱半径、收敛因子和网格依赖性解释它们为什么既“能收敛”，又可能随着网格加密迅速变慢。
+从这里开始，本书第一次把问题完整放在线性代数层处理：给定 $A$ 与 $\bm b$，怎样选择求解方法，怎样衡量误差与残差，怎样判断收敛速度，以及怎样利用矩阵结构减少计算代价。
 
-本章仍然以一维 Poisson 为最小可检查模型，但分析对象已经提升到代数层。除非特别指出结论依赖局部守恒、对称性、stencil 几何或系数位置，否则误差、残差、stationary iteration 和谱收敛并不要求 $A$ 必须来自 FD 或 FV 中某一种特定构造。
+本章首先建立求解器的总体地图，然后分别讲直接法、平稳迭代、Krylov 子空间方法、共轭梯度法（Conjugate Gradient, CG）、广义最小残差法（Generalized Minimal Residual, GMRES）以及预条件。柔性广义最小残差法（Flexible GMRES, FGMRES）只建立足够支撑后续多重网格预条件的最低模型。与 multigrid 特有的“平滑”相关的 Jacobi 网格依赖、高频衰减和加权 Jacobi 分析移到\chapref{ch:two-grid}开头，以保持本章的任务集中在\textbf{一般线性系统求解}。
 
 \begin{keybox}
-\textbf{本章要建立的主线：}
+\textbf{本章主线：}
 \[
 \boxed{
 A\bm u=\bm b
 \rightarrow
-\text{求解器类型}
+\text{直接法 / 迭代法}
 \rightarrow
-\text{误差/残差}
+\text{误差与残差}
 \rightarrow
-\text{局部迭代}
+\text{平稳迭代}
 \rightarrow
-\text{误差传播}
+\text{Krylov 子空间}
 \rightarrow
-\text{收敛速度}
+\text{CG / GMRES}
 \rightarrow
-\text{网格依赖退化}
-\rightarrow
-\text{平滑性质}
+\text{预条件}
 }
 \]
-第四章的 coarse-grid correction 将由本章最后暴露出的“低频误差难以被局部迭代消除”自然触发。
+读完本章以后，读者应能根据矩阵结构选择基本求解路线，并能解释为什么“求解器”和“预条件器”是两个不同角色。
 \end{keybox}
 
-\section{离散线性系统的求解方法地图}
+\section{线性系统的求解路线}
 \label{sec:linear-solver-map}
 
 面对
 \begin{equation}
 A\bm u=\bm b,
 \end{equation}
-“求解矩阵”并不只有 Jacobi 或 Gauss--Seidel 一条路线。对 PDE 离散产生的大型稀疏系统，至少应先区分四类基本策略；预条件则是横跨多类迭代方法的加速机制。
+首先需要区分两类基本策略。
 
-\subsection{直接法}
+\textbf{直接法}通过矩阵分解和有限次代数运算得到解。典型代表是 LU 分解与 Cholesky 分解。
 
-直接法通过有限次代数变换把系统化为更容易求解的形式。对一般非奇异矩阵，实际高斯消元通常需要行置换，可写成
+\textbf{迭代法}从初始猜测 $\bm u^{(0)}$ 出发，构造一系列近似
 \begin{equation}
-PA=LU,
+\bm u^{(0)},\bm u^{(1)},\bm u^{(2)},\ldots,
 \end{equation}
-其中 $P$ 是置换矩阵；随后依次求解下三角和上三角系统。若 $A$ 对称正定，则不需要这种行主元选取，可使用 Cholesky 分解
-\begin{equation}
-A=LL^T.
-\end{equation}
+使其逐步逼近真解。平稳迭代、Krylov 子空间方法和 multigrid 都属于这一大类，但它们利用的信息不同。
 
-“直接”并不意味着浮点计算中绝对没有误差，而是指算法不依赖“第 $k$ 轮近似逐渐趋近真解”这一收敛过程。在精确算术下，分解与回代经过有限步骤即可得到解。
-
-对 PDE 稀疏矩阵，直接法的主要困难是\textbf{fill-in}：原矩阵中为零的位置在消元后可能产生新的非零元，使因子 $L/U$ 比原始 stencil 矩阵稠密得多。因此直接法非常适合中小规模问题、粗层问题或需要重复求解且因子可以复用的场景，但在大规模三维 PDE 上，内存和分解成本可能成为限制。
-
-\subsection{平稳迭代}
-
-另一类方法不一次完成消元，而是从初始猜测 $\bm u^{(0)}$ 出发，重复固定的更新规则。很多方法都可以写成
-\begin{equation}
-\bm u^{(k+1)}
-=
-\bm u^{(k)}
-+
-M^{-1}\left(\bm b-A\bm u^{(k)}\right),
-\label{eq:iteration-stationary-preview}
-\end{equation}
-其中 $M$ 在每一轮保持不变，并且比完整的 $A$ 更容易处理。
-
-Jacobi、weighted Jacobi、Gauss--Seidel 和 SOR 都属于\textbf{平稳迭代（stationary iteration）}。本章会重点研究这一类，因为 Jacobi/GS 不仅可以独立求解小问题，更重要的是它们会成为 multigrid 中的 smoother。
-
-\subsection{Krylov 子空间方法}
-
-Krylov 方法也从初始残差
-\begin{equation}
-\bm r_0=\bm b-A\bm u^{(0)}
-\end{equation}
-出发，但它不会每轮机械重复同一个固定修正，而是逐步利用
-\begin{equation}
-\mathcal K_m(A,\bm r_0)
-=
-\operatorname{span}
-\left\{
-\bm r_0,\,
-A\bm r_0,\,
-A^2\bm r_0,\ldots,
-A^{m-1}\bm r_0
-\right\}
-\label{eq:iteration-krylov-space}
-\end{equation}
-中累积的信息构造新的近似。
-
-此处只需要建立最低可用认识：Conjugate Gradient（CG）是 SPD 系统的重要代表；GMRES 面向更一般的非对称线性系统。它们的搜索方向和历史信息组织比 stationary iteration 更丰富。后续\chapref{ch:mg-cycles}会在 multigrid 已经形成近似逆以后，正式讨论 CG/GMRES/FGMRES 与 multigrid preconditioner 的组合。
-
-\subsection{多重网格与预条件}
-
-Multigrid 与前两类迭代的核心差异，是显式利用误差的\textbf{尺度结构}：局部平滑器处理细网格上变化快的误差，coarse-grid correction 处理在细网格上变化慢的误差。本章只先建立前半部分的 smoother 机制；\chapref{ch:two-grid}和\chapref{ch:mg-cycles}分别完成 coarse-grid correction 与多层递归。
-
-预条件（preconditioning）则不应被理解成与上述方法平行的“第五种求解器”。它的目标是构造一个容易应用的近似逆
-\begin{equation}
-M^{-1}\approx A^{-1},
-\end{equation}
-把原问题变成对迭代算法更友好的形式。Jacobi 的 $D^{-1}$ 可以看成极简单的近似逆；一个完整 V-cycle 则可以成为更强的 multigrid preconditioner。
+平稳迭代重复固定的更新规则；Krylov 方法利用不断扩展的子空间和历史搜索信息；multigrid 则利用误差在不同空间尺度上的结构。预条件不应看成与这些方法平行的“第五类求解器”，它是一种把原系统变得更适合迭代的变换机制。
 
 \begin{table}[htbp]
 \centering
 \small
 \begin{tabularx}{0.96\textwidth}{>{\raggedright\arraybackslash}p{3.0cm}
-                                  >{\raggedright\arraybackslash}p{4.5cm}
-                                  >{\centering\arraybackslash}p{2.2cm}
+                                  >{\raggedright\arraybackslash}p{4.8cm}
+                                  >{\raggedright\arraybackslash}p{3.6cm}
                                   >{\raggedright\arraybackslash}X}
 \toprule
-方法类别 & 核心动作 & 主要信息结构 & 本书中的主要角色\\
+方法 & 核心机制 & 主要结构条件 & 本书中的角色\\
 \midrule
-LU / Cholesky & 分解后做三角求解 & 稀疏因子 $L/U$ & 小规模问题、bottom solve、基准对照\\
-Jacobi / GS & 重复固定局部修正规则 & 固定近似矩阵 $M$ & 基本 solver、multigrid smoother\\
-CG / GMRES & 在 Krylov 子空间中构造搜索方向 & Krylov 历史与内积 & 大规模外层迭代求解器\\
-Multigrid & 在不同尺度上处理不同误差成分 & 层级、transfer 与 coarse operator & solver 或 preconditioner\\
+LU / Cholesky & 矩阵分解与三角求解 & Cholesky 需要 SPD & 小规模求解、bottom solve、基准对照\\
+Jacobi / Gauss--Seidel & 固定局部修正 & 取决于迭代矩阵谱 & 基本平稳迭代、后续平滑器\\
+CG & $A$-共轭搜索方向 & $A$ 为 SPD & SPD 大型稀疏系统的基础 Krylov 求解器\\
+GMRES & Arnoldi 正交基与残差最小化 & 一般非奇异系统 & 非对称系统的基础 Krylov 求解器\\
+FGMRES & 允许预条件器逐步变化 & 一般非奇异系统 & 可变/非线性预条件器的外层求解器\\
+Multigrid & 不同尺度处理不同误差 & 需要层级与传递算子 & 独立求解器或预条件器\\
 \bottomrule
 \end{tabularx}
-\caption{本书涉及的主要线性求解路线。这里给出的是角色地图，不替代后续各算法的正式推导。}
-\label{tab:iteration-solver-map}
+\caption{本书涉及的主要线性系统求解路线。}
+\label{tab:linear-solver-map}
 \end{table}
 
-\begin{keybox}
-\textbf{本章的范围边界：}
-这里不展开 LU pivoting、完整 CG recurrence 或 Arnoldi/GMRES 推导。本章深入 stationary iteration，是因为它既能建立最基本的线性收敛理论，又直接解释 multigrid smoother 为什么有效、为什么又不够。
-\end{keybox}
+\section{直接法：分解、填充与适用范围}
 
-\section{误差、残差与修正方程}
+对一般非奇异矩阵，高斯消元通常伴随行置换，可写成
+\begin{equation}
+PA=LU,
+\end{equation}
+其中 $P$ 是置换矩阵，$L$ 为下三角矩阵，$U$ 为上三角矩阵。随后通过前代和回代完成求解。
 
-设真解为 $\bm u^\star$，当前近似为 $\bm u^{(k)}$。定义
+若 $A$ 对称正定（symmetric positive definite, SPD），则可以使用 Cholesky 分解
+\begin{equation}
+A=LL^T.
+\end{equation}
+它利用了对称性与正定性，通常比通用 LU 更节省存储与计算。
+
+直接法的关键工程问题不是“原矩阵是否稀疏”，而是消元以后因子是否仍然稀疏。稀疏矩阵分解时，原先为零的位置可能产生新的非零元，这称为\textbf{填充（fill-in）}。因此一个七点 stencil 产生的稀疏矩阵并不意味着它的 $L/U$ 因子也只有七点结构。
+
+这解释了直接法的典型定位：中小规模系统、最粗 multigrid 层、需要高鲁棒性的基准计算，以及矩阵固定而右端多次变化、因子可以复用的场景。对于超大规模三维 PDE，填充带来的内存和分解成本往往使迭代法更有吸引力。
+
+\section{迭代法的共同语言：误差、残差与条件数}
+
+设真解为 $\bm u^\star$，当前近似为 $\bm u^{(k)}$。定义误差
 \begin{equation}
 \bm e^{(k)}
 =
 \bm u^\star-\bm u^{(k)}
-\label{eq:iteration-error-def}
+\label{eq:linear-solvers-error}
 \end{equation}
-为\textbf{误差（error）}。它直接表示当前解离真解有多远，但实际计算中通常不知道 $\bm u^\star$，因此无法直接计算 $\bm e^{(k)}$。
-
-把当前近似代回原方程，定义
+和残差
 \begin{equation}
 \bm r^{(k)}
 =
-\bm b-A\bm u^{(k)}
-\label{eq:iteration-residual-def}
+\bm b-A\bm u^{(k)}.
+\label{eq:linear-solvers-residual}
 \end{equation}
-为\textbf{残差（residual）}。因为 $A\bm u^\star=\bm b$，
+因为 $A\bm u^\star=\bm b$，
 \begin{equation}
-\bm r^{(k)}
-=
-A\left(\bm u^\star-\bm u^{(k)}\right)
-=
-A\bm e^{(k)}.
-\label{eq:iteration-residual-error-relation}
+\boxed{
+\bm r^{(k)}=A\bm e^{(k)}.
+}
+\label{eq:linear-solvers-residual-error}
 \end{equation}
-因此残差不是误差本身，而是误差经过算子 $A$ 作用后的结果。
 
-式~\eqref{eq:iteration-residual-error-relation} 还可以反过来读成\textbf{修正方程}：
+因此“残差很小”和“误差很小”不是同一个命题。若 $A$ 可逆，
 \begin{equation}
-A\,\delta\bm u
-=
-\bm r^{(k)}.
-\label{eq:iteration-correction-equation}
+\bm e=A^{-1}\bm r.
 \end{equation}
-若能够精确求解它，就有
-\begin{equation}
-\delta\bm u
-=
-A^{-1}\bm r^{(k)}
-=
-\bm e^{(k)},
-\end{equation}
-于是
-\begin{equation}
-\bm u^{(k+1)}
-=
-\bm u^{(k)}+\delta\bm u
-=
-\bm u^\star.
-\end{equation}
-所以许多迭代方法都可以理解成：\textbf{用一个比精确求解 $A\delta\bm u=\bm r$ 更便宜的过程，近似构造误差修正。}
-
-例如
-\begin{equation}
-A=
-\begin{bmatrix}
-2&-1&0\\
--1&2&-1\\
-0&-1&2
-\end{bmatrix},
-\qquad
-\bm b=
-\begin{bmatrix}
-1\\1\\1
-\end{bmatrix},
-\qquad
-\bm u^{(0)}=\bm0.
-\end{equation}
-即使不知道真解，也可以立即得到
-\begin{equation}
-\bm r^{(0)}=\bm b.
-\end{equation}
-这就是迭代程序实际能够直接观测的量。
-
-\subsection{小残差是否一定意味着小误差}
-
-若 $A$ 可逆，由
-\begin{equation}
-\bm e=A^{-1}\bm r
-\end{equation}
-可得
+对选定的相容向量范数及其诱导矩阵范数，
 \begin{equation}
 \|\bm e\|
 \le
 \|A^{-1}\|\,\|\bm r\|.
-\label{eq:iteration-error-residual-bound}
 \end{equation}
-因此残差怎样映射成误差，取决于 $A^{-1}$ 的放大能力。
-
-对选定的相容向量范数及其诱导矩阵范数，定义矩阵条件数
+定义条件数
 \begin{equation}
 \kappa(A)
 =
 \|A\|\,\|A^{-1}\|.
-\label{eq:iteration-condition-number}
+\label{eq:linear-solvers-condition-number}
 \end{equation}
-当 $\bm b=A\bm u^\star\neq0$ 时，可以得到相对量的基本上界
+若 $\bm b=A\bm u^\star\neq0$，则
 \begin{equation}
 \frac{\|\bm e\|}{\|\bm u^\star\|}
 \le
 \kappa(A)
 \frac{\|\bm r\|}{\|\bm b\|}.
-\label{eq:iteration-relative-residual-error}
+\label{eq:linear-solvers-relative-bound}
 \end{equation}
-这并不是说条件数完全决定每一次实际误差，而是说明一个重要事实：\textbf{同样大小的相对残差，在病态系统中可能对应更大的解误差。}
 
-纯 Neumann 问题存在常数零空间时，$A^{-1}$ 在整个空间上不存在；此时必须先进入满足兼容条件并固定 gauge 的可逆子空间，再谈类似的误差--残差关系。
+条件数大的系统会放大残差与解误差之间的不确定性。因此停止准则不能只写“残差变小了”，而要明确使用什么范数、相对哪个量归一化、是否达到离散误差允许的精度。
+
+常见相对残差准则是
+\begin{equation}
+\frac{\|\bm r^{(k)}\|_2}{\|\bm b\|_2}
+\le
+\tau.
+\label{eq:linear-solvers-relative-residual-stop}
+\end{equation}
+若 $\bm b=0$ 或需要更稳健的尺度，还可以使用初始残差
+\begin{equation}
+\frac{\|\bm r^{(k)}\|_2}{\|\bm r^{(0)}\|_2}
+\le
+\tau.
+\end{equation}
+
+纯 Neumann 问题存在零空间时，整个空间上的 $A^{-1}$ 不存在；此时必须先处理兼容条件和 gauge，再在可逆子空间上讨论误差、残差和条件数。
 
 \begin{keybox}
-\textbf{三个对象要始终分开：}
 \[
 \boxed{
-\text{error：离真解多远}
+\text{误差：离真解多远}
 \qquad
-\text{residual：方程满足得多好}
+\text{残差：方程满足得多好}
 \qquad
-\text{conditioning：二者之间可能放大多少}
+\text{条件数：二者之间可能放大多少}
 }
 \]
 \end{keybox}
 
-\section{Jacobi 迭代}
+\section{平稳迭代}
 
-\subsection{Jacobi 点迭代公式}
+\subsection{统一形式与误差传播}
 
-回到一维 Poisson 离散，把共同的 $1/h^2$ 因子乘到右端，一个内部点满足
+大量经典迭代可以写成
 \begin{equation}
-2u_i-u_{i-1}-u_{i+1}
+\bm u^{(k+1)}
 =
-h^2f_i.
-\label{eq:iteration-point-equation}
-\end{equation}
-把中心未知量单独写出：
-\begin{equation}
-u_i
-=
-\frac12
+\bm u^{(k)}
++
+M^{-1}
 \left(
-h^2f_i+u_{i-1}+u_{i+1}
-\right).
-\label{eq:jacobi_point}
+\bm b-A\bm u^{(k)}
+\right),
+\label{eq:linear-solvers-stationary}
+\end{equation}
+其中 $M$ 在各轮迭代中保持不变，并且比完整 $A$ 更容易求逆或求解。
+
+用真解减去两边，
+\begin{equation}
+\bm e^{(k+1)}
+=
+\left(
+I-M^{-1}A
+\right)\bm e^{(k)}.
+\end{equation}
+定义误差传播矩阵
+\begin{equation}
+S
+=
+I-M^{-1}A,
+\label{eq:linear-solvers-error-propagation}
+\end{equation}
+则
+\begin{equation}
+\bm e^{(k)}=S^k\bm e^{(0)}.
 \end{equation}
 
-如果右侧邻居还不是真解，就用上一轮近似代替。Jacobi 定义为
+有限维线性平稳迭代从任意初始误差出发收敛的充要条件是
+\begin{equation}
+\boxed{
+\rho(S)<1,
+}
+\label{eq:linear-solvers-stationary-convergence}
+\end{equation}
+其中 $\rho(S)$ 为谱半径。
+
+若 $S$ 非正规（non-normal），某些范数下可能出现短暂误差增长，因此 $\rho(S)<1$ 不等于“每一轮误差范数都严格缩小”。它控制的是最终的渐近行为。
+
+\subsection{Jacobi 与 Gauss--Seidel}
+
+写
+\begin{equation}
+A=D+L+U,
+\end{equation}
+其中 $D$ 为对角部分，$L$、$U$ 分别为严格下三角和严格上三角部分。
+
+Jacobi 取
+\begin{equation}
+M=D,
+\end{equation}
+因此
+\begin{equation}
+\bm u^{(k+1)}
+=
+\bm u^{(k)}
++
+D^{-1}
+\left(
+\bm b-A\bm u^{(k)}
+\right).
+\label{eq:linear-solvers-jacobi}
+\end{equation}
+
+Gauss--Seidel 取
+\begin{equation}
+M=D+L,
+\end{equation}
+于是
+\begin{equation}
+(D+L)\bm u^{(k+1)}
+=
+\bm b-U\bm u^{(k)}.
+\label{eq:linear-solvers-gs}
+\end{equation}
+
+对一维 Poisson
+\begin{equation}
+2u_i-u_{i-1}-u_{i+1}=h^2f_i,
+\end{equation}
+Jacobi 点更新为
 \begin{equation}
 u_i^{(k+1)}
 =
@@ -286,52 +271,9 @@ h^2f_i
 u_{i-1}^{(k)}
 +
 u_{i+1}^{(k)}
-\right).
-\label{eq:iteration-jacobi-one-dimensional}
+\right),
 \end{equation}
-同一轮中所有点只读旧状态 $\bm u^{(k)}$，把结果写入新状态 $\bm u^{(k+1)}$。因此一轮内部没有逐点先后依赖。
-
-\subsection{三未知量离散系统}
-
-取三个内部未知量，两端 Dirichlet 边界为零，并令
-\begin{equation}
-h^2f_i=1,
-\qquad i=1,2,3.
-\end{equation}
-从
-\begin{equation}
-\bm u^{(0)}=(0,0,0)^T
-\end{equation}
-开始，第一轮得到
-\begin{equation}
-\bm u^{(1)}
-=
-\left(
-\frac12,\frac12,\frac12
-\right)^T,
-\end{equation}
-第二轮得到
-\begin{equation}
-\bm u^{(2)}
-=
-\left(
-\frac34,1,\frac34
-\right)^T.
-\end{equation}
-
-这展示了迭代求解最基本的机制：不是一次直接构造 $\bm u^\star$，而是重复一个便宜的局部规则，让近似逐步变化。
-
-\begin{checkpointbox}
-\textbf{即时检查 3.1}
-
-继续计算 $\bm u^{(3)}$。这一轮三个新值为什么必须全部读取 $\bm u^{(2)}$，而不能读取本轮刚算出的其他分量？
-\end{checkpointbox}
-
-\section{Gauss--Seidel 迭代}
-
-Jacobi 明确区分旧数组和新数组。另一种自然选择是：如果某个邻居在本轮已经算出新值，就立即使用它。
-
-对一维 Poisson，若按 $i=1,2,\ldots,N$ 从左到右扫描，
+同一轮只读旧状态。若从左到右做 Gauss--Seidel，
 \begin{equation}
 u_i^{(k+1)}
 =
@@ -342,188 +284,15 @@ h^2f_i
 u_{i-1}^{(k+1)}
 +
 u_{i+1}^{(k)}
-\right).
-\label{eq:iteration-gs-one-dimensional}
-\end{equation}
-左邻居已经属于本轮新状态，右邻居仍使用旧状态。
-
-对上一节三未知量例子，从零向量开始做一次 sweep：
-\begin{align}
-u_1^{(1)}&=\frac12,\\
-u_2^{(1)}&=\frac12\left(1+u_1^{(1)}+u_3^{(0)}\right)=\frac34,\\
-u_3^{(1)}&=\frac12\left(1+u_2^{(1)}\right)=\frac78.
-\end{align}
-所以
-\begin{equation}
-\bm u^{(1)}_{GS}
-=
-\left(
-\frac12,\frac34,\frac78
-\right)^T.
-\end{equation}
-
-这里最重要的不是第一轮“谁更接近真解”，而是数据依赖已经改变：Jacobi 一轮中的点更新彼此独立；lexicographic Gauss--Seidel 则具有明确扫描顺序。
-
-\subsection{红黑 Gauss--Seidel}
-
-二维五点网格可以按 $(i+j)\bmod2$ 染成红、黑两色。同一颜色的点之间没有直接 stencil 耦合，因此可以先更新全部红点，再更新全部黑点。这就是 red--black Gauss--Seidel（RBGS）。
-
-\begin{algorithm}[htbp]
-\caption{Red--Black Gauss--Seidel 单次 sweep}
-\begin{algorithmic}[1]
-\For{$c\in\{\text{red},\text{black}\}$}
-  \State 更新所有颜色为 $c$ 的网格点
-  \State 完成颜色 $c$ 后再进入下一颜色
-\EndFor
-\end{algorithmic}
-\end{algorithm}
-
-RBGS 没有消除 Gauss--Seidel 的依赖，而是把逐点依赖重组为两个颜色阶段。\chapref{ch:shared-memory}的\secref{sec:shared-rbgs}会把这种数学依赖进一步解释成线程同步成本。
-
-\section{多维网格上的迭代结构}
-
-对二维 Poisson，Jacobi 更新为
-\begin{equation}
-u_{i,j}^{(k+1)}
-=
-\frac{1}{2(h_x^{-2}+h_y^{-2})}
-\left[
-f_{i,j}
-+h_x^{-2}
-\left(
-u_{i-1,j}^{(k)}+u_{i+1,j}^{(k)}
-\right)
-+h_y^{-2}
-\left(
-u_{i,j-1}^{(k)}+u_{i,j+1}^{(k)}
-\right)
-\right].
-\label{eq:iteration-two-dimensional-jacobi}
-\end{equation}
-三维再增加 $z$ 向两个邻居。Jacobi 的关键性质仍然不变：同一 sweep 的输出全部只读旧状态，因此二维、三维仍然具有 pointwise 并行结构。
-
-Gauss--Seidel 则不同。二维字典序扫描时，$(i-1,j)$ 和通常的 $(i,j-1)$ 已经是新值，而 $(i+1,j)$、$(i,j+1)$ 仍是旧值；进入三维以后，还会出现当前切片之前/之后的依赖。因此 lexicographic GS 的方向偏置会随着维数增加而更加明显。
-
-对标准 Cartesian 五点/七点 stencil，可以按坐标奇偶性做二着色；但对更宽 stencil、非结构图或 AMR coarse--fine coupling，二着色是否仍然足够必须重新检查 matrix graph，不能从五点/七点格式机械外推。
-
-若
-\begin{equation}
--\epsilon u_{xx}-u_{yy}=f,
-\qquad
-\epsilon\ll1,
-\end{equation}
-不同方向的耦合强度又会严重不均衡，point smoother 可能无法有效处理沿强耦合方向组织的误差。line/plane smoother、semicoarsening 等方法由此产生，定量分析见\chapref{ch:lfa}。
-
-\section{迭代矩阵与误差传播}
-
-现在把具体更新抽象成统一形式。写
-\begin{equation}
-A=D+L+U,
-\end{equation}
-其中 $D$ 是对角部分，$L$、$U$ 分别为严格下三角和严格上三角部分。
-
-一般 stationary iteration 为
-\begin{equation}
-\bm u^{(k+1)}
-=
-\bm u^{(k)}
-+
-M^{-1}
-\left(
-\bm b-A\bm u^{(k)}
 \right),
-\label{eq:iteration-stationary-general}
 \end{equation}
-其中 $M$ 固定不变且容易求解。Jacobi 取
-\begin{equation}
-M=D,
-\end{equation}
-Gauss--Seidel 取
-\begin{equation}
-M=D+L.
-\end{equation}
+左邻居已经使用本轮新值。
 
-用真解减去式~\eqref{eq:iteration-stationary-general} 两边：
-\begin{align}
-\bm e^{(k+1)}
-&=
-\bm e^{(k)}
--
-M^{-1}A\bm e^{(k)}
-\\
-&=
-\left(
-I-M^{-1}A
-\right)\bm e^{(k)}.
-\end{align}
-定义
-\begin{equation}
-S
-=
-I-M^{-1}A
-\label{eq:error_prop_general}
-\end{equation}
-为\textbf{误差传播矩阵（error-propagation matrix）}，则
-\begin{equation}
-\bm e^{(k)}
-=
-S^k\bm e^{(0)}.
-\label{eq:iteration-error-power}
-\end{equation}
+Jacobi 的一轮点更新天然独立，而 Gauss--Seidel 引入扫描顺序依赖。这一差异后续会同时影响多重网格平滑器和并行实现。
 
-这一步非常关键：我们不再只问“更新公式长什么样”，而是开始问
-\begin{equation}
-\boxed{
-S^k\bm e^{(0)}
-\quad
-\text{是否趋于零，以及趋于零有多快？}
-}
-\end{equation}
+\subsection{收敛阶与收敛因子}
 
-\section{收敛性、收敛阶与收敛因子}
-\label{sec:iteration-convergence}
-
-\subsection{谱半径决定是否最终收敛}
-
-若
-\begin{equation}
-S\bm v=\lambda\bm v,
-\end{equation}
-则这个特征方向经过 $k$ 轮以后变成
-\begin{equation}
-S^k\bm v
-=
-\lambda^k\bm v.
-\end{equation}
-所以 $|\lambda|<1$ 时该分量衰减，$|\lambda|>1$ 时增长，$|\lambda|=1$ 时幅值不会消失。
-
-定义谱半径
-\begin{equation}
-\rho(S)
-=
-\max_i|\lambda_i|.
-\end{equation}
-对于有限维线性 stationary iteration，从任意初始误差出发都收敛到真解的充要条件是
-\begin{equation}
-\boxed{
-\rho(S)<1.
-}
-\label{eq:iteration-spectral-convergence}
-\end{equation}
-
-这里不能把“$\rho(S)<1$”误读成“每一轮误差范数都严格缩小”。若 $S$ 非正规（non-normal），某些范数下可能出现短暂增长；但只要 $\rho(S)<1$，最终仍有 $S^k\to0$。对任意相容矩阵范数，Gelfand 公式给出
-\begin{equation}
-\lim_{k\to\infty}
-\|S^k\|^{1/k}
-=
-\rho(S),
-\label{eq:iteration-gelfand}
-\end{equation}
-因此谱半径控制的是最坏情形的渐近指数衰减尺度。
-
-\subsection{“收敛阶”与“收敛因子”不是一回事}
-
-一般非线性迭代中，经典收敛阶 $p$ 可以由
+一般迭代序列的经典收敛阶 $p$ 可以由
 \begin{equation}
 \lim_{k\to\infty}
 \frac{
@@ -533,466 +302,513 @@ S^k\bm v
 }
 =
 C
-\label{eq:iteration-convergence-order}
+\label{eq:linear-solvers-convergence-order}
 \end{equation}
-定义。$p=1$ 称为线性收敛，$p=2$ 称为二次收敛；当 $p=1$ 时通常还要求 $0<C<1$。
+定义。$p=1$ 称为线性收敛，$p=2$ 称为二次收敛。
 
-Jacobi、Gauss--Seidel 这类固定线性 stationary iteration 的典型渐近行为本来就是
+但固定线性平稳迭代通常表现为
 \begin{equation}
 \|\bm e^{(k)}\|
 \sim
-q^k\|\bm e^{(0)}\|,
+q^k
+\|\bm e^{(0)}\|,
 \qquad
-0<q<1,
-\label{eq:iteration-geometric-convergence}
+0<q<1.
+\label{eq:linear-solvers-geometric-convergence}
 \end{equation}
-所以仅仅说“它们是一阶收敛”区分度很低。更有信息量的是\textbf{收敛因子（convergence factor）} $q$ 有多大。
+此时“线性收敛”本身区分度不大，更重要的是收敛因子 $q$。
 
-若渐近阶段可以用固定 $q$ 近似，并希望把误差降到初始值的 $\varepsilon$ 倍，则
+若希望误差降到初始值的 $\varepsilon$ 倍，
 \begin{equation}
 q^k\approx\varepsilon,
 \end{equation}
-于是
+所以
 \begin{equation}
-\boxed{
 k
 \approx
 \frac{\log\varepsilon}{\log q}.
-}
-\label{eq:iteration-count-from-factor}
+\label{eq:linear-solvers-iteration-count}
 \end{equation}
-当 $q$ 接近 1 时，哪怕仍然满足“收敛”，所需迭代数也可能非常大。
 
-还必须把这里的“迭代收敛阶”与 PDE 离散中的网格收敛阶区分开。二阶空间离散
+这里的“迭代收敛阶”不要与 PDE 离散中的
 \begin{equation}
-\|u-u_h\|=\Oh(h^2)
+\|u-u_h\|=\Oh(h^p)
 \end{equation}
-描述的是 $h\to0$ 时离散解逼近连续解；式~\eqref{eq:iteration-geometric-convergence} 描述的是固定离散系统上 $k\to\infty$ 时代数误差的衰减。两者的自变量、误差来源和评价方法都不同。
+混淆：前者研究固定离散系统上 $k\to\infty$ 的代数误差，后者研究 $h\to0$ 时离散解逼近连续解。
 
-\begin{checkpointbox}
-\textbf{即时检查 3.2}
+\section{克雷洛夫子空间方法}
+\label{sec:krylov-methods}
 
-若两个迭代法的渐近收敛因子分别为 $q=0.2$ 和 $q=0.95$，把误差降低到 $10^{-6}$ 倍大约各需要多少轮？为什么“二者都满足 $q<1$”并不能说明它们同样有效？
-\end{checkpointbox}
+平稳迭代每轮使用固定 $M$。Krylov 方法则利用前几轮算子作用产生的信息，不断扩展搜索空间。
 
-\section{Jacobi 的网格依赖收敛}
-\label{sec:jacobi-grid-dependent}
-
-现在对一维 Dirichlet Poisson 做一个完整的谱计算。设有 $N$ 个内部点，
+给定初始猜测 $\bm u_0$ 与残差
 \begin{equation}
-A
+\bm r_0=\bm b-A\bm u_0,
+\end{equation}
+第 $m$ 阶克雷洛夫子空间（Krylov subspace）定义为
+\begin{equation}
+\mathcal K_m(A,\bm r_0)
 =
-\frac1{h^2}
-\begin{bmatrix}
-2&-1&&\\
--1&2&-1&\\
-&\ddots&\ddots&\ddots\\
-&&-1&2
-\end{bmatrix},
-\end{equation}
-则
-\begin{equation}
-D=\frac2{h^2}I,
-\end{equation}
-Jacobi 误差传播矩阵为
-\begin{equation}
-S_J
-=
-I-D^{-1}A
-=
-\frac12
-\begin{bmatrix}
-0&1&&\\
-1&0&1&\\
-&\ddots&\ddots&\ddots\\
-&&1&0
-\end{bmatrix}.
-\label{eq:iteration-jacobi-error-matrix}
+\operatorname{span}
+\left\{
+\bm r_0,
+A\bm r_0,
+A^2\bm r_0,\ldots,
+A^{m-1}\bm r_0
+\right\}.
+\label{eq:krylov-space}
 \end{equation}
 
-取离散正弦模态
+Krylov 方法的共同思想是：不直接构造 $A^{-1}$，而是在
 \begin{equation}
-v_i^{(j)}
+\bm u_0+\mathcal K_m(A,\bm r_0)
+\end{equation}
+中选择一个越来越好的近似。不同算法的差别主要在于：如何选取基、如何定义“最好”、利用哪些矩阵结构。
+
+\section{共轭梯度法}
+\label{sec:cg}
+
+\subsection{SPD 系统与能量最小化}
+
+假设
+\begin{equation}
+A=A^T>0.
+\end{equation}
+求解
+\begin{equation}
+A\bm u=\bm b
+\end{equation}
+等价于最小化二次泛函
+\begin{equation}
+\phi(\bm u)
 =
-\sin(i\theta_j),
+\frac12\bm u^TA\bm u
+-
+\bm b^T\bm u.
+\label{eq:cg-energy-functional}
+\end{equation}
+因为
+\begin{equation}
+\nabla\phi(\bm u)=A\bm u-\bm b=-\bm r.
+\end{equation}
+
+最速下降法每轮沿当前残差方向搜索，但相邻搜索方向可能重复修正已经处理过的误差。CG 的关键改进是构造彼此 $A$-共轭的方向
+\begin{equation}
+\bm p_i^T A\bm p_j=0,
 \qquad
-\theta_j
-=
-\frac{j\pi}{N+1},
-\qquad
-j=1,\ldots,N.
-\label{eq:iteration-jacobi-eigenmode}
+i\neq j.
+\label{eq:cg-conjugacy}
 \end{equation}
-由恒等式
+在这些方向上逐步最小化能量。
+
+\subsection{CG 递推}
+
+从
 \begin{equation}
-\frac12
-\left[
-\sin((i-1)\theta)
+\bm r_0=\bm b-A\bm u_0,
+\qquad
+\bm p_0=\bm r_0
+\end{equation}
+开始，第 $k$ 轮计算
+\begin{equation}
+\alpha_k
+=
+\frac{\bm r_k^T\bm r_k}
+{\bm p_k^TA\bm p_k},
+\label{eq:cg-alpha}
+\end{equation}
+更新
+\begin{align}
+\bm u_{k+1}
+&=
+\bm u_k+\alpha_k\bm p_k,
+\\
+\bm r_{k+1}
+&=
+\bm r_k-\alpha_kA\bm p_k,
+\end{align}
+再令
+\begin{equation}
+\beta_k
+=
+\frac{
+\bm r_{k+1}^T\bm r_{k+1}
+}{
+\bm r_k^T\bm r_k
+},
+\label{eq:cg-beta}
+\end{equation}
+以及
+\begin{equation}
+\bm p_{k+1}
+=
+\bm r_{k+1}
 +
-\sin((i+1)\theta)
-\right]
-=
-\cos\theta\,\sin(i\theta),
-\end{equation}
-得到
-\begin{equation}
-S_J\bm v^{(j)}
-=
-\lambda_j\bm v^{(j)},
-\qquad
-\lambda_j
-=
-\cos
-\left(
-\frac{j\pi}{N+1}
-\right).
-\label{eq:iteration-jacobi-spectrum}
-\end{equation}
-所以
-\begin{equation}
-\rho(S_J)
-=
-\cos
-\left(
-\frac{\pi}{N+1}
-\right).
-\label{eq:iteration-jacobi-rho}
+\beta_k\bm p_k.
+\label{eq:cg-direction}
 \end{equation}
 
-当 $N$ 很大，
+在精确算术中，CG 最多 $n$ 步可以得到 $n$ 维 SPD 系统的精确解；实际浮点计算中，舍入误差会破坏严格正交/共轭关系，因此工程上仍以残差准则停止。
+
+\begin{algorithm}[htbp]
+\caption{共轭梯度法（CG）}
+\begin{algorithmic}[1]
+\State 给定 $\bm u_0$
+\State $\bm r_0\gets\bm b-A\bm u_0$
+\State $\bm p_0\gets\bm r_0$
+\For{$k=0,1,\ldots$}
+  \State $\alpha_k\gets(\bm r_k^T\bm r_k)/(\bm p_k^TA\bm p_k)$
+  \State $\bm u_{k+1}\gets\bm u_k+\alpha_k\bm p_k$
+  \State $\bm r_{k+1}\gets\bm r_k-\alpha_kA\bm p_k$
+  \If{满足停止准则}
+    \State \textbf{break}
+  \EndIf
+  \State $\beta_k\gets(\bm r_{k+1}^T\bm r_{k+1})/(\bm r_k^T\bm r_k)$
+  \State $\bm p_{k+1}\gets\bm r_{k+1}+\beta_k\bm p_k$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{条件数与 CG 收敛}
+
+定义能量范数
 \begin{equation}
-\cos x
+\|\bm e\|_A
 =
-1-\frac{x^2}{2}
-+\Oh(x^4),
+\sqrt{\bm e^TA\bm e}.
 \end{equation}
-于是
-\begin{equation}
-\rho(S_J)
-=
-1-
-\frac{\pi^2}{2(N+1)^2}
-+
-\Oh(N^{-4}).
-\label{eq:iteration-jacobi-rho-asymptotic}
-\end{equation}
-在单位区间上 $h=1/(N+1)$，因此
+CG 的经典最坏情形界为
 \begin{equation}
 \boxed{
-1-\rho(S_J)
-=
-\Theta(h^2).
+\|\bm e_k\|_A
+\le
+2
+\left(
+\frac{
+\sqrt{\kappa_2(A)}-1
+}{
+\sqrt{\kappa_2(A)}+1
 }
-\label{eq:iteration-jacobi-gap-h2}
+\right)^k
+\|\bm e_0\|_A.
+}
+\label{eq:cg-condition-bound}
 \end{equation}
-
-这意味着网格越细，
+其中
 \begin{equation}
-\rho(S_J)\to1.
-\end{equation}
-对固定误差降低目标 $\varepsilon$，由式~\eqref{eq:iteration-count-from-factor} 与 $\log(1-c h^2)\sim-c h^2$，
-\begin{equation}
-k
+\kappa_2(A)
 =
-\Theta
-\left(
-h^{-2}\log\frac1\varepsilon
-\right).
-\label{eq:iteration-jacobi-iteration-complexity}
+\frac{\lambda_{\max}(A)}{\lambda_{\min}(A)}
 \end{equation}
-若 $\varepsilon$ 固定，就是
-\begin{equation}
-\boxed{k=\Theta(h^{-2}).}
-\end{equation}
+对 SPD 矩阵成立。
 
-所以 Jacobi 作为独立 solver 在细网格上变慢，不是因为某个实现“写得不好”，而是因为最慢误差模态的放大因子随着网格加密系统性逼近 1。
+这条式子第一次把“矩阵条件数”和“迭代次数”直接连接起来。条件数越接近 1，最坏情况下的收敛越快；条件数很大时，CG 可能需要更多迭代。
 
-对这个标准一维模型，lexicographic Gauss--Seidel 有
-\begin{equation}
-\rho(S_{GS})
-=
-\cos^2
-\left(
-\frac{\pi}{N+1}
-\right)
-=
-1-
-\frac{\pi^2}{(N+1)^2}
-+
-\Oh(N^{-4}),
-\label{eq:iteration-gs-rho-model}
-\end{equation}
-因此它改善了常数，却没有改变
-\begin{equation}
-k=\Theta(h^{-2})
-\end{equation}
-这一网格依赖的量级。
+但式~\eqref{eq:cg-condition-bound} 是上界，不是每个问题的精确迭代数。实际 CG 还受特征值聚集、离群特征值和初始误差方向影响。
 
 \begin{keybox}
-\textbf{这是 multigrid 的第一个关键动机：}
+\textbf{CG 的适用条件不是可选项：}
 \[
 \boxed{
-\text{局部 stationary iteration 可以收敛，}
-\quad
-\text{但其全局收敛速度会随网格加密恶化。}
+A\text{ 必须是 SPD。}
 }
 \]
-接下来要进一步问：到底是哪一类误差拖慢了它？
+若系统非对称或不定，不能仅因为“矩阵很稀疏”就继续使用标准 CG。
 \end{keybox}
 
-\section{加权 Jacobi}
+\section{广义最小残差法}
+\label{sec:gmres}
 
-\subsection{普通 Jacobi 的高频问题}
+CG 强烈依赖 SPD 结构。对一般非对称系统，需要另一种 Krylov 思路：直接在当前 Krylov 子空间中寻找使残差二范数最小的近似，这就是 GMRES。
 
-对齐次误差方程，普通 Jacobi 在一维满足
+\subsection{Arnoldi 过程}
+
+令
 \begin{equation}
-e_i^{(k+1)}
-=
-\frac12
-\left(
-e_{i-1}^{(k)}
-+
-e_{i+1}^{(k)}
-\right).
-\label{eq:iteration-jacobi-error-point}
-\end{equation}
-考虑交替误差
-\begin{equation}
-e_i^{(k)}=(-1)^i.
-\label{eq:iteration-alternating-error}
-\end{equation}
-它的两个邻居都等于 $-e_i^{(k)}$，因此
-\begin{equation}
-e_i^{(k+1)}
-=
--e_i^{(k)}.
-\end{equation}
-误差只翻转符号，幅值没有减小。
-
-这与上一节的谱完全一致：最高频离散模态对应的 Jacobi 特征值接近 $-1$。所以普通 Jacobi 虽然整体满足 $\rho(S_J)<1$，却不是理想的 multigrid smoother。
-
-\subsection{阻尼参数与加权误差传播}
-
-设普通 Jacobi 候选值为 $u_i^J$。Weighted Jacobi 定义
-\begin{equation}
-u_i^{(k+1)}
-=
-(1-\omega)u_i^{(k)}
-+
-\omega u_i^J,
+\beta=\|\bm r_0\|_2,
 \qquad
-0<\omega\le1.
-\label{eq:iteration-weighted-blend}
+\bm v_1=\frac{\bm r_0}{\beta}.
 \end{equation}
-矩阵形式为
+Arnoldi 过程逐步构造正交基
 \begin{equation}
-\bm u^{(k+1)}
-=
-\bm u^{(k)}
-+
-\omega D^{-1}
-\left(
-\bm b-A\bm u^{(k)}
-\right),
-\label{eq:iteration-weighted-jacobi}
+V_m=
+\begin{bmatrix}
+\bm v_1&\bm v_2&\cdots&\bm v_m
+\end{bmatrix}
 \end{equation}
-因此误差传播算子为
-\begin{equation}
-S_\omega
-=
-I-\omega D^{-1}A.
-\label{eq:iteration-weighted-error-matrix}
-\end{equation}
-
-对交替误差，普通 Jacobi 候选值恰好为 $-e_i^{(k)}$，所以
-\begin{equation}
-e_i^{(k+1)}
-=
-(1-2\omega)e_i^{(k)}.
-\label{eq:iteration-weighted-alt}
-\end{equation}
-若取
-\begin{equation}
-\omega=\frac23,
-\end{equation}
-则
-\begin{equation}
-e_i^{(k+1)}
-=
--\frac13e_i^{(k)}.
-\end{equation}
-
-更一般地，对上一节的正弦模态，weighted Jacobi 的放大因子为
-\begin{equation}
-\mu_\omega(\theta)
-=
-1-\omega(1-\cos\theta).
-\label{eq:iteration-weighted-mode-factor}
-\end{equation}
-若先把相对于 $2h$ 粗网格不可独立解析的高频区粗略记为
-\begin{equation}
-\frac{\pi}{2}\le|\theta|\le\pi,
-\end{equation}
-则
-\begin{equation}
-1-\cos\theta\in[1,2].
-\end{equation}
-选择 $\omega=2/3$ 时，
-\begin{equation}
-\max_{\pi/2\le|\theta|\le\pi}
-|\mu_\omega(\theta)|
-=
-\frac13.
-\label{eq:iteration-weighted-high-frequency-factor}
-\end{equation}
-也就是说，它并不是为了让所有频率都以同一个速度收敛，而是专门把高频区的最坏放大因子压下来。\chapref{ch:lfa}会在无限/周期局部模型上把这一分析正式写成 Fourier symbol，并继续构造 two-grid convergence factor。
-
-\begin{checkpointbox}
-\textbf{即时检查 3.3}
-
-对交替误差分别计算 $\omega=1$、$\omega=1/2$ 和 $\omega=2/3$ 的放大因子。哪一个能一步消掉这一单独模式？为什么“对一个模式最优”仍不等于“对整个高频区最优”？
-\end{checkpointbox}
-
-\section{平滑性质}
-\label{sec:smoothing-property}
-
-现在把“全局收敛”和“作为 smoother 是否有效”分开。
-
-一个独立 solver 关心整个误差空间中的最慢衰减方向，因此自然看
-\begin{equation}
-\rho(S)
-\end{equation}
-或相应的全局 convergence factor。Multigrid smoother 的任务却更窄：它只需要快速削弱\textbf{细网格上振荡较快的误差}。
-
-对于缓慢变化的误差，
-\begin{equation}
-e_{i-1}\approx e_i\approx e_{i+1},
-\end{equation}
-邻居平均本来就与中心值接近，因此局部更新产生的修正很小。对快速振荡误差，中心点与邻居之间差异大，合适的 weighted Jacobi、Gauss--Seidel 或更强局部方法可以在少量 sweeps 中显著削弱其幅值。经过若干轮以后，剩余误差通常在空间上看起来更加光滑，这就是\textbf{平滑性质（smoothing property）}。
-
-因此必须区分两个评价对象：
+以及上 Hessenberg 矩阵 $\bar H_m$，满足
 \begin{equation}
 \boxed{
-\text{global convergence factor}
-\neq
-\text{smoothing factor}.
+AV_m
+=
+V_{m+1}\bar H_m.
 }
+\label{eq:arnoldi-relation}
 \end{equation}
-前者问“整个系统作为独立 solver 收敛多快”；后者只问“被 coarse grid 视为高频的那部分误差压得多快”。一个方法完全可能不是好的独立 solver，却是很好的 smoother。
 
-这也解释了为什么上一节并不试图让 weighted Jacobi 把低频模态也迅速压掉。低频误差正是下一章 coarse-grid correction 要接手的对象。
+这一步把“大型稀疏矩阵上的 Krylov 子空间”压缩成一个很小的 Hessenberg 表示。
 
-\begin{keybox}
-\textbf{从本章到 two-grid 的逻辑闭环：}
+\subsection{残差最小化}
+
+GMRES 在
+\begin{equation}
+\bm u_m
+=
+\bm u_0+V_m\bm y_m
+\end{equation}
+中选择 $\bm y_m$。残差为
+\begin{align}
+\bm r_m
+&=
+\bm b-A(\bm u_0+V_m\bm y_m)
+\\
+&=
+\beta\bm v_1
+-
+V_{m+1}\bar H_m\bm y_m
+\\
+&=
+V_{m+1}
+\left(
+\beta\bm e_1-\bar H_m\bm y_m
+\right).
+\end{align}
+因为 $V_{m+1}$ 的列正交，
+\begin{equation}
+\boxed{
+\bm y_m
+=
+\arg\min_{\bm y}
+\left\|
+\beta\bm e_1-\bar H_m\bm y
+\right\|_2.
+}
+\label{eq:gmres-least-squares}
+\end{equation}
+所以 GMRES 的核心不是一个固定点更新，而是
+\[
+\boxed{
+\text{Arnoldi 构造 Krylov 正交基}
++
+\text{小型最小二乘残差最小化}.
+}
+\]
+
+\subsection{重启与非正规矩阵}
+
+不重启的 GMRES 每轮都需要保存更多 Krylov 基向量，Arnoldi 正交化成本也不断增长。实际软件中常用 GMRES$(m)$：构造至多 $m$ 个基向量后重启，以限制内存和正交化成本。
+
+重启降低了存储成本，但会丢失历史子空间信息，因此可能减慢收敛，甚至出现长期停滞。参数 $m$ 是数值效率与内存成本之间的折中。
+
+还必须注意：对非正规矩阵，GMRES 的行为不能只由特征值位置或谱半径完全解释。特征向量条件、非正规性和多项式逼近性质都会影响收敛。因此不能把平稳迭代中的“$\rho(S)<1$”直接套到 GMRES 上。
+
+\begin{checkpointbox}
+\textbf{即时检查}
+
+CG 与 GMRES 都属于 Krylov 方法，但它们利用矩阵结构的方式不同。说明：
+\begin{enumerate}
+\item 为什么 SPD 条件让 CG 可以使用短递推；
+\item 为什么一般 GMRES 需要保存 Arnoldi 基；
+\item 为什么 GMRES 的“最小残差”不是指每个分量残差分别最小。
+\end{enumerate}
+\end{checkpointbox}
+
+\section{预条件}
+\label{sec:preconditioning}
+
+\subsection{近似逆的基本思想}
+
+如果存在一个容易应用的算子 $M^{-1}$，满足
+\begin{equation}
+M^{-1}\approx A^{-1},
+\end{equation}
+那么
+\begin{equation}
+M^{-1}A
+\approx
+I.
+\end{equation}
+预条件的目标不是“额外做一个求解器”，而是把原系统变换成更适合迭代的方法。
+
+左预条件写成
+\begin{equation}
+M^{-1}A\bm u
+=
+M^{-1}\bm b.
+\label{eq:preconditioning-left}
+\end{equation}
+右预条件写成
+\begin{equation}
+AM^{-1}\bm y
+=
+\bm b,
+\qquad
+\bm u=M^{-1}\bm y.
+\label{eq:preconditioning-right}
+\end{equation}
+
+对 GMRES，左右预条件会改变被最小化的残差含义。右预条件 GMRES 的 Arnoldi 过程作用于 $AM^{-1}$，而原系统残差仍是
+\begin{equation}
+\bm r=\bm b-A\bm u,
+\end{equation}
+因此工程上更容易直接监控物理系统的真实残差；左预条件 GMRES 则直接处理预条件残差 $M^{-1}\bm r$。
+
+\subsection{预条件共轭梯度法}
+
+若 $A$ 为 SPD，且预条件矩阵 $M$ 也是 SPD，可以构造预条件共轭梯度法（Preconditioned CG, PCG）。每轮先求
+\begin{equation}
+\bm z_k=M^{-1}\bm r_k,
+\end{equation}
+再用 $\bm z_k$ 构造搜索方向。典型递推为
+\begin{equation}
+\alpha_k
+=
+\frac{
+\bm r_k^T\bm z_k
+}{
+\bm p_k^TA\bm p_k
+},
+\end{equation}
+以及
+\begin{equation}
+\beta_k
+=
+\frac{
+\bm r_{k+1}^T\bm z_{k+1}
+}{
+\bm r_k^T\bm z_k
+}.
+\end{equation}
+
+从谱角度，更自然的对象是
+\begin{equation}
+\widehat A
+=
+M^{-1/2}AM^{-1/2}.
+\end{equation}
+若 $M^{-1}$ 是好的 $A^{-1}$ 近似，则
+\begin{equation}
+\kappa_2(\widehat A)
+\end{equation}
+应显著小于原系统的 $\kappa_2(A)$。
+
+这正是后面“multigrid 作为预条件器”的理论入口：不要求一次 V-cycle 精确解出问题，而是希望它把外层 Krylov 方法看到的系统变得更容易。
+
+\subsection{预条件 GMRES}
+
+一般非对称系统没有 PCG 的 SPD 结构要求，可以使用预条件 GMRES。若 $M^{-1}$ 固定且线性，普通 GMRES 可以在 $M^{-1}A$ 或 $AM^{-1}$ 上建立 Krylov 子空间。
+
+预条件器的效果不能只看一次 $M^{-1}\bm r$ 是否降低残差，还要看整个预条件算子的谱、非正规性、apply 成本以及它与外层 Krylov 方法的相互作用。
+
+\section{柔性 GMRES 与可变预条件}
+\label{sec:fgmres}
+
+普通右预条件 GMRES 默认每一步都使用同一个线性 $M^{-1}$。但实际计算中，预条件步骤可能改变：inner solve 的容差不同、multigrid cycle 的次数改变、粗层求解器不固定，或者预条件器本身是非线性的。
+
+若第 $j$ 步使用
+\begin{equation}
+\bm z_j=M_j^{-1}\bm v_j,
+\label{eq:fgmres-variable-preconditioner}
+\end{equation}
+那么不能再把所有 $\bm z_j$ 统一解释成一个固定 $M^{-1}V_m$。
+
+FGMRES 的关键做法是显式保存
+\begin{equation}
+Z_m=
+\begin{bmatrix}
+\bm z_1&\bm z_2&\cdots&\bm z_m
+\end{bmatrix},
+\end{equation}
+Arnoldi 正交化仍围绕
+\begin{equation}
+A\bm z_j
+\end{equation}
+展开，最终更新写成
+\begin{equation}
+\boxed{
+\bm u_m
+=
+\bm u_0+Z_m\bm y_m.
+}
+\label{eq:fgmres-update}
+\end{equation}
+
+这里需要建立的边界非常明确：
 \[
 \boxed{
 \begin{aligned}
-&\text{局部迭代可收敛，但 } \rho(S)\to1 \text{ 随网格加密恶化};\\
-&\text{合适 smoother 能快速压低高频误差};\\
-&\text{剩余低频误差在细网格上仍然衰减很慢};\\
-&\Longrightarrow\text{需要一个能直接处理低频误差的粗空间。}
+\text{固定线性预条件器}
+&\Rightarrow
+\text{普通预条件 GMRES 通常足够},
+\\
+\text{逐步变化或非线性预条件器}
+&\Rightarrow
+\text{考虑 FGMRES}.
 \end{aligned}
 }
 \]
+
+后续\chapref{ch:mg-cycles}会把 $M_j^{-1}$ 具体化为 multigrid V-cycle，并讨论固定 cycle 与可变 cycle 分别适合怎样的外层方法。
+
+\section{方法选择与本章边界}
+
+现在可以形成一个基本选择流程。
+
+若系统规模较小、矩阵固定并且需要重复求解，稀疏直接法可能最简单可靠。
+
+若 $A$ 为 SPD，大规模迭代求解首先考虑 CG；若有 SPD 预条件器，则考虑 PCG。
+
+若 $A$ 一般非对称，GMRES 是基础选择；若内存压力较大，常使用重启 GMRES，但必须检查重启是否损害收敛。
+
+若预条件器会随迭代变化，FGMRES 提供了更自然的外层框架。
+
+Jacobi/Gauss--Seidel 很少因为“它们是最先进的独立求解器”而重要；它们真正进入 multigrid 主线，是因为其局部误差处理具有特殊的频率选择性。\chapref{ch:two-grid}接下来就从这个问题开始：\textbf{为什么一个作为独立求解器越来越慢的 Jacobi，反而可以成为有效的 multigrid 平滑器？}
+
+\begin{keybox}
+\textbf{本章完成了两个角色的分离：}
+\[
+\boxed{
+\text{外层求解器}
+\neq
+\text{预条件器}.
+}
+\]
+CG/GMRES/FGMRES 负责组织搜索空间和迭代历史；预条件器负责把残差变成更有用的修正方向。Multigrid 后面既可以独立迭代，也可以扮演 $M^{-1}$。
 \end{keybox}
-
-\section{本章小结}
-
-本章第一次把“离散以后怎样求解”完整放在线性代数视角下。直接法通过分解和三角求解完成有限步骤消元；stationary iteration 重复固定修正规则；Krylov 方法利用不断扩展的 $\mathcal K_m(A,r_0)$ 和历史搜索信息；multigrid 则利用误差的尺度结构。预条件是横跨迭代方法的近似逆机制，而不是与这些方法并列的独立类别。
-
-对 stationary iteration，误差与残差满足
-\begin{equation}
-\bm r=A\bm e,
-\end{equation}
-而 conditioning 决定“小残差”能够多可靠地转化成“小误差”。一般误差传播写成
-\begin{equation}
-\bm e^{(k+1)}
-=
-S\bm e^{(k)},
-\end{equation}
-有限维线性 stationary iteration 从任意初值收敛的核心条件是
-\begin{equation}
-\rho(S)<1.
-\end{equation}
-但“是否收敛”还不够：真正决定迭代次数的是渐近收敛因子。对一维 Poisson Jacobi，
-\begin{equation}
-1-\rho(S_J)
-=
-\Theta(h^2),
-\end{equation}
-所以固定误差降低目标需要的迭代数按 $\Theta(h^{-2})$ 增长。
-
-这个网格依赖退化并不意味着 Jacobi/GS 对所有误差都同样无效。Weighted Jacobi 可以把高频误差快速压低，而留下在空间上更光滑的误差。于是下一章不再要求 smoother 独立解决整个系统，而是让 coarse-grid correction 专门处理这些局部迭代最难消除的低频成分。
 
 \section*{习题}
 
-本章习题围绕四种能力展开：识别求解路线、重构迭代机制、计算收敛因子、诊断网格依赖性。
-
-\subsection*{求解器地图与迭代机制}
+\subsection*{基本求解路线}
 \begin{enumerate}[label=\arabic*.]
-\item 对以下任务分别说明更接近 direct、stationary、Krylov 还是 multigrid 思路，并解释理由：
-  (a) 小型 SPD 粗层系统反复求解；
-  (b) 大型 SPD 稀疏系统只提供 operator apply；
-  (c) 非对称大型系统配合一个固定 V-cycle；
-  (d) 只希望用两次廉价局部 sweep 压低高频误差。
-\item 对
-\[
-A=
-\begin{bmatrix}
-2&-1&0\\
--1&2&-1\\
-0&-1&2
-\end{bmatrix},
-\qquad
-\bm b=
-\begin{bmatrix}
-1\\0\\1
-\end{bmatrix},
-\qquad
-\bm u^{(0)}=\bm0,
-\]
-手算三轮 Jacobi，列出每轮 $\bm u^{(k)}$ 与 $\bm r^{(k)}$。
-\item 对上一题手算一轮从左到右 Gauss--Seidel 和一轮从右到左 Gauss--Seidel，指出顺序依赖出现在哪里。
-\item 从
-\[
-\bm u^{(k+1)}
-=
-\bm u^{(k)}+M^{-1}(\bm b-A\bm u^{(k)})
-\]
-推导 $S=I-M^{-1}A$，并分别写出 Jacobi 与 lexicographic Gauss--Seidel 的 $M$。
-\item 已知精确解 $\bm u^\star=(1,1,1)^T$、当前近似 $\bm u=(0.9,1.1,0.8)^T$，计算误差与残差并验证 $\bm r=A\bm e$。
+\item 对以下系统说明更适合优先考虑 LU/Cholesky、CG、GMRES 还是 FGMRES，并给出理由：
+  (a) 小型 SPD 系统且矩阵固定；
+  (b) 大型 SPD 稀疏系统；
+  (c) 大型非对称稀疏系统；
+  (d) 非对称系统且预条件器每轮可能变化。
+\item 解释稀疏矩阵的“填充”为什么可能让直接法的内存成本远高于原矩阵。
 \end{enumerate}
 
-\subsection*{收敛因子、条件数与网格依赖}
+\subsection*{误差、残差与平稳迭代}
 \begin{enumerate}[label=\arabic*.]
-\item 某两种 stationary iteration 的渐近收敛因子分别为 $0.2$ 与 $0.95$。用式~\eqref{eq:iteration-count-from-factor}估计把误差降低 $10^{-8}$ 所需的迭代数。
-\item 从 $\bm e=A^{-1}\bm r$ 推导式~\eqref{eq:iteration-relative-residual-error}。这个上界为什么不能反过来说明“小误差一定要求极小残差”？
-\item 对一维 $N$ 点 Dirichlet Poisson，使用正弦模态完整推导式~\eqref{eq:iteration-jacobi-spectrum} 与谱半径式~\eqref{eq:iteration-jacobi-rho}。
-\item 由
-\[
-\rho(S_J)
-=
-1-\frac{\pi^2}{2(N+1)^2}
-+\Oh(N^{-4})
-\]
-推导固定 reduction factor 下 $k=\Theta(N^2)$，并转换成 $k=\Theta(h^{-2})$。
-\item 比较 $N=31,63,127,255$ 时 Jacobi 理论谱半径和把误差降低 $10^{-6}$ 所需的渐近迭代数。观察网格翻倍时迭代数如何增长。
-\item 对标准一维模型比较 $\rho(S_J)$ 与 $\rho(S_{GS})$ 的渐近展开。为什么 Gauss--Seidel 虽然更快，却仍没有消除 mesh dependence？
-\item 证明在有限维线性空间中 $\rho(S)<1$ 当且仅当 $S^k\to0$；可以使用 Jordan 标准形或你熟悉的等价结论。
+\item 给定一个 $3\times3$ SPD 矩阵、近似解和右端，计算误差、残差，并验证 $\bm r=A\bm e$。
+\item 从式~\eqref{eq:linear-solvers-stationary}推导误差传播矩阵 $S=I-M^{-1}A$。
+\item 对一个给定 $S$ 计算谱半径，并判断平稳迭代是否从任意初值收敛。
+\item 两种方法的渐近收敛因子分别为 $0.2$ 与 $0.95$。估计把误差降到 $10^{-8}$ 所需迭代数。
 \end{enumerate}
 
-\subsection*{平滑性质与数值验证}
+\subsection*{CG 与 GMRES}
 \begin{enumerate}[label=\arabic*.]
-\item 对 weighted Jacobi 推导
-\[
-\mu_\omega(\theta)
-=
-1-\omega(1-\cos\theta).
-\]
-在 $\theta\in[\pi/2,\pi]$ 上比较 $\omega=1/2,2/3,1$ 的最坏放大因子。
-\item 实现 Jacobi、weighted Jacobi、Gauss--Seidel 与 RBGS，对同一 Poisson 系统同时记录 residual norm 与已知解析解下的 error norm。
-\item 人为构造低频误差 $\sin(\pi x)$ 与接近 Nyquist 的高频误差，分别做若干轮 weighted Jacobi，比较误差形状与范数。
-\item 对一系列逐步加密网格，测量达到固定 residual reduction 所需的 Jacobi/GS 迭代数，并验证是否接近 $\Theta(h^{-2})$ 的趋势。
-\item 扫描 $\omega\in[0.1,1.2]$，分别记录完整系统的 convergence factor 与高频 smoothing factor。说明“独立 solver 最优参数”和“multigrid smoother 最优参数”为什么可能不同。
-\item 设计一个数值实验区分“这个迭代器最终收敛”和“它是一个好的 multigrid smoother”这两个命题。
+\item 从二次泛函~\eqref{eq:cg-energy-functional}推导 $\nabla\phi=A\bm u-\bm b$，说明为什么 SPD 系统可以解释成凸二次最小化。
+\item 对一个 $2\times2$ SPD 系统手算前两轮 CG，并验证搜索方向的 $A$-共轭性。
+\item 给定两个 SPD 系统的条件数 $\kappa_2=10$ 与 $10^4$，用式~\eqref{eq:cg-condition-bound}比较理论最坏收敛因子。
+\item 从 Arnoldi 关系~\eqref{eq:arnoldi-relation}推导 GMRES 小型最小二乘问题~\eqref{eq:gmres-least-squares}。
+\item 解释为什么重启 GMRES 能控制内存，却可能损害收敛。
+\end{enumerate}
+
+\subsection*{预条件与柔性方法}
+\begin{enumerate}[label=\arabic*.]
+\item 比较左预条件与右预条件 GMRES 中“被最小化/监控的残差”有什么差异。
+\item 说明 PCG 为什么不仅要求 $A$ 为 SPD，也要求预条件器保持相容的 SPD 结构。
+\item 构造一个预条件器每轮改变的例子，解释为什么普通固定右预条件 GMRES 的模型不再准确，以及 FGMRES 为什么需要保存 $Z_m$。
+\item 设计一个数值实验，比较无预条件 CG 与 PCG 的迭代数，并同时记录预条件器 apply 的成本，说明“迭代数减少”为什么不等于“总时间一定减少”。
 \end{enumerate}

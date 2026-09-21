@@ -85,7 +85,7 @@ V=V_0+V_1+\cdots+V_m,
 
 点 Jacobi/Gauss--Seidel 可理解为极小局部子空间上的校正；line smoother 把一整条强耦合方向放进同一子空间；patch smoother 或 Schwarz 方法则在重叠局部区域上解小问题；coarse-grid correction 使用的是跨越全局低频误差的粗空间。这个视角解释了为什么“更强的局部求解”通常能处理更复杂的耦合，却也可能增加同步、局部因子分解和数据搬运成本。
 
-若所有子空间校正并行计算后相加，得到的是 additive 结构；若前一个子空间的更新立即影响后一个子空间，则是 multiplicative 结构。现代并行实现经常在这两者之间做折中：数学上希望较强耦合，硬件上又希望减少顺序依赖。这与\chapref{ch:iterative-smoothing}中 Jacobi/Gauss--Seidel 的并行差异以及\chapref{ch:gpu}中的 patch/line kernel 设计是同一个矛盾在更一般空间中的表现。
+若所有子空间校正并行计算后相加，得到的是 additive 结构；若前一个子空间的更新立即影响后一个子空间，则是 multiplicative 结构。现代并行实现经常在这两者之间做折中：数学上希望较强耦合，硬件上又希望减少顺序依赖。这与\chapref{ch:linear-solvers}中 Jacobi/Gauss--Seidel 的并行差异以及\chapref{ch:gpu}中的 patch/line kernel 设计是同一个矛盾在更一般空间中的表现。
 
 \section{代数粗空间的现代扩展}
 \label{sec:modern-amg-coarse-space}
@@ -117,7 +117,7 @@ compatible relaxation、energy-minimizing interpolation、aggressive coarsening 
 \begin{equation}
 \widehat E=E+\Delta E,
 \end{equation}
-只要舍入扰动没有把有效收敛因子推到 $\rho(\widehat E)\ge1$，外层高精度 residual correction 或 Krylov 方法仍可能恢复目标精度。Krylov 子空间的最低定义见\chapref{ch:iterative-smoothing}的\secref{sec:linear-solver-map}，它与 multigrid preconditioner 的组合见\chapref{ch:mg-cycles}的\secref{sec:mg-preconditioner}；这里关注的不是 Krylov 推导，而是低精度 multigrid 如何作为内层求解/预条件组件。
+只要舍入扰动没有把有效收敛因子推到 $\rho(\widehat E)\ge1$，外层高精度 residual correction 或 Krylov 方法仍可能恢复目标精度。Krylov 子空间、CG/GMRES/FGMRES 与预条件的基础见\chapref{ch:linear-solvers}，它们与 multigrid 预条件器的组合见\chapref{ch:mg-cycles}的\secref{sec:mg-preconditioner}；这里关注的不是 Krylov 推导，而是低精度 multigrid 如何作为内层求解/预条件组件。
 
 \subsection{FP16 结构化多重网格}
 

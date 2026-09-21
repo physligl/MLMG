@@ -818,7 +818,7 @@ A_{\mathrm{comp}}=M^{-1}K
 \begin{equation}
 MA_{\mathrm{comp}}=K=K^T=A_{\mathrm{comp}}^TM,
 \end{equation}
-所以 $A_{\mathrm{comp}}$ 在 $M$-加权内积下仍然自伴。这里暂时只需知道：Krylov 方法会利用算子的对称性或自伴结构来构造迭代空间；\chapref{ch:iterative-smoothing}的\secref{sec:linear-solver-map}先给出最低可用的 Krylov 子空间定义，\chapref{ch:mg-cycles}的\secref{sec:mg-preconditioner}再讨论 CG/GMRES 与 multigrid preconditioner 的组合。这个区分也会直接影响后续 Krylov 方法和多重网格平滑器对算子结构的判断。
+所以 $A_{\mathrm{comp}}$ 在 $M$-加权内积下仍然自伴。这里暂时只需知道：Krylov 方法会利用算子的对称性或自伴结构来构造迭代空间；\chapref{ch:linear-solvers}从\secref{sec:krylov-methods}开始正式介绍 Krylov 子空间、CG、GMRES 与预条件，\chapref{ch:mg-cycles}的\secref{sec:mg-preconditioner}再讨论这些外层方法与 multigrid 预条件器的组合。这个区分也会直接影响后续 Krylov 方法和多重网格平滑器对算子结构的判断。
 
 对一个采用成对 transmissibility 的纯扩散离散，若忽略边界项，可以把离散能量写成示意形式
 \begin{equation}
@@ -845,7 +845,7 @@ A_{\mathrm{comp}}\bm1_{\mathrm{comp}}=0.
 }
 \label{eq:amr_constant_nullspace}
 \end{equation}
-这是离散常数保持的结构结果。若实现对常数场产生非零离散不平衡量，至少说明 physical boundary closure、coarse--fine extension、interface numerical flux 或 mask/DOF selection 中存在不一致。后续\chapref{ch:iterative-smoothing}会把这个可计算的不平衡量正式纳入 residual framework。
+这是离散常数保持的结构结果。若实现对常数场产生非零离散不平衡量，至少说明 physical boundary closure、coarse--fine extension、interface numerical flux 或 mask/DOF selection 中存在不一致。后续\chapref{ch:linear-solvers}会把这个可计算的不平衡量正式纳入 residual framework。
 
 \section{守恒性、一致性与误差验证}
 \label{sec:amr-verification}
@@ -1426,7 +1426,7 @@ Ghost fill 在数学上是把复合离散函数延拓到 stencil 所需辅助位
 
 average-down 与 AMR interpolation 则描述同一物理状态在不同分辨率 representations 之间的转移。对 finite-volume cell averages，average-down 是保持积分量的 conservative projection；一个守恒的 coarse-to-fine initialization 应至少满足 $R_{f\rightarrow c}P_{c\rightarrow f}=I$，而一般 $P_{c\rightarrow f}R_{f\rightarrow c}\neq I$，因为降到 coarse representation 会丢失 subcell information。对 nodal、face-centered 或 cell-integrated variables，应依据自由度的几何位置和变量语义重新定义同步关系。regridding 最终把这一章的全部结构连接起来：hierarchy 从 $\mathcal H^{\mathrm{old}}$ 变为 $\mathcal H^{\mathrm{new}}$ 后，既要通过 $\mathcal T_{\mathrm{regrid}}$ 转移离散状态，也要在新的 $V(\mathcal H^{\mathrm{new}})$ 上重新构造 composite operator。
 
-直到本章结束，\textbf{multigrid solver 仍然没有参与 AMR 离散空间的定义}。\chapref{ch:iterative-smoothing}开始研究如何迭代求解已经构造好的线性系统；在\secref{sec:amr-vs-mg-level}中，再把服务于误差消除的 MG hierarchy 叠加到这里已经建立的 physical AMR hierarchy 上。
+直到本章结束，\textbf{multigrid solver 仍然没有参与 AMR 离散空间的定义}。\chapref{ch:linear-solvers}开始研究如何迭代求解已经构造好的线性系统；在\secref{sec:amr-vs-mg-level}中，再把服务于误差消除的 MG hierarchy 叠加到这里已经建立的 physical AMR hierarchy 上。
 
 \section*{习题}
 

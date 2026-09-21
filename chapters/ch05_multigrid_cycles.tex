@@ -46,7 +46,7 @@ N_\ell:=\dim W^{(\ell)},
 \end{algorithmic}
 \end{algorithm}
 
-这里 \texttt{BottomSolve} 指递归到达最粗 MG level 后用于终止递归的求解过程。因为最粗问题已经很小，它可以是若干次平滑、小规模直接法，或 Krylov 迭代。\chapref{ch:iterative-smoothing}的\secref{sec:linear-solver-map}已经把直接法、stationary iteration、Krylov 与 multigrid 放在同一求解器地图中；本章后面的\secref{sec:mg-preconditioner}进一步解释 multigrid 怎样作为 CG/GMRES 的预条件器。不同硬件上 bottom solver 为什么会改变，则分别在\chapref{ch:shared-memory}、\chapref{ch:gpu}、\chapref{ch:mpi}和\chapref{ch:distributed-gpu}讨论。
+这里 \texttt{BottomSolve} 指递归到达最粗 MG level 后用于终止递归的求解过程。因为最粗问题已经很小，它可以是若干次平滑、小规模直接法，或 Krylov 迭代。\chapref{ch:linear-solvers}已经系统介绍直接法、平稳迭代、CG/GMRES/FGMRES 与预条件；本章后面的\secref{sec:mg-preconditioner}只进一步解释 multigrid 怎样扮演其中的预条件器角色。不同硬件上 bottom solver 为什么会改变，则分别在\chapref{ch:shared-memory}、\chapref{ch:gpu}、\chapref{ch:mpi}和\chapref{ch:distributed-gpu}讨论。
 
 “V”来自访问层级的路径：从细层逐层向粗层下降，再逐层返回。它不是矩阵形状，而是递归调用轨迹的形象表示。为了让递归不只停留在伪代码里，考虑三层 $\ell=0,1,2$。一次 V-cycle 的实际访问顺序是
 \begin{align}
@@ -158,156 +158,112 @@ N_0+\frac{N_0}{2^d}+\frac{N_0}{2^{2d}}+\cdots
 \section{多重网格求解器与预条件器}
 \label{sec:mg-preconditioner}
 
-\chapref{ch:iterative-smoothing}已经先建立了线性求解器地图，并把 stationary iteration 写成修正问题
-\begin{equation}
-A\,\delta u=r.
-\end{equation}
-其中同章的\secref{sec:linear-solver-map}只给出 CG/GMRES 的最低可用定位；这里开始补上它们与 multigrid 近似逆之间真正需要的连接。
-如果能够精确求解，就有
-\begin{equation}
-\delta u=A^{-1}r.
-\end{equation}
-因此所有“利用残差构造修正”的方法都可以从\textbf{近似逆}的角度理解。Jacobi 用对角矩阵给出
-\begin{equation}
-\delta u\approx D^{-1}r,
-\end{equation}
-而经过前几章建立的 V-cycle 则给出了远强得多的算子
+\chapref{ch:linear-solvers}已经分别建立了 CG、GMRES、FGMRES 与预条件的基本理论。这里不再重复一般 Krylov 推导，而只回答 multigrid 的专属问题：一个 V-cycle 怎样既可以独立迭代，又可以作为外层 Krylov 方法的预条件器？
+
+前几章构造出的 V-cycle 可以看成一个近似逆算子
 \begin{equation}
 \boxed{
-B_{MG}r\approx A^{-1}r.
+B_{MG}\bm r
+\approx
+A^{-1}\bm r.
 }
 \label{eq:preconditioner-mg-approximate-inverse}
 \end{equation}
-这里 $B_{MG}$ 表示“给定右端 $r$，执行一次固定 V-cycle 后返回的近似误差修正”。
+这里 $B_{MG}$ 表示“给定残差 $\bm r$，执行一次预先定义好的 multigrid cycle 后返回近似误差修正”。
 
 \subsection{作为独立迭代求解器}
 
 若直接反复执行
 \begin{equation}
-u^{(k+1)}
-=u^{(k)}+B_{MG}\left(b-Au^{(k)}\right),
+\bm u^{(k+1)}
+=
+\bm u^{(k)}
++
+B_{MG}
+\left(
+\bm b-A\bm u^{(k)}
+\right),
 \label{eq:preconditioner-mg-stationary-iteration}
 \end{equation}
-那么 multigrid 本身就是一个迭代求解器。其误差传播算子为
+那么 multigrid 本身就是一个平稳型迭代求解器，其误差传播算子为
 \begin{equation}
-E_{MG}=I-B_{MG}A.
+E_{MG}
+=
+I-B_{MG}A.
 \end{equation}
-理想情况下，$B_{MG}$ 同时通过 smoother 处理高频误差、通过 coarse correction 处理低频误差，因此 $E_{MG}$ 对整个误差空间都具有较小的收缩因子。
+理想情况下，平滑器处理高频误差，粗网格校正处理低频误差，因此 $E_{MG}$ 在整个误差空间上都保持较小的收缩因子。
 
-这和“把 multigrid 当预条件器”在数值动作上非常接近：二者都需要计算 $z=B_{MG}r$。区别主要在于\textbf{谁负责决定下一步搜索方向和组合历史信息}。
+\subsection{作为外层 Krylov 方法的预条件器}
 
-\subsection{一般预条件器的近似逆视角}
-
-一般记一个容易应用的矩阵或算子 $M^{-1}$ 近似 $A^{-1}$：
+若把
 \begin{equation}
-M^{-1}\approx A^{-1}.
+M^{-1}=B_{MG},
 \end{equation}
-给定残差 $r$，预条件步骤计算
+代入\chapref{ch:linear-solvers}的预条件框架，则一次 V-cycle 不再自己决定下一次全局搜索方向，而只是把残差变成一个更接近真实误差
 \begin{equation}
-z=M^{-1}r.
-\label{eq:preconditioner-apply}
+A^{-1}\bm r
 \end{equation}
-从修正方程角度，$z$ 就是比原始残差更接近真实误差 $e=A^{-1}r$ 的方向。
+的修正向量。搜索方向如何与历史信息组合，由外层 CG、GMRES 或 FGMRES 决定。
 
-预条件不是单纯把矩阵“缩放一下”。它希望让变换后的算子更容易迭代。例如左预条件系统为
+这就是“multigrid solver”和“multigrid preconditioner”的核心区别：两者都执行近似相同的 $B_{MG}\bm r$，但控制迭代历史的算法层不同。
+
+\subsection{与 PCG 的对称性兼容}
+
+若外层使用预条件共轭梯度法（PCG），则不能只检查原矩阵 $A$ 是否 SPD；整个 multigrid 预条件器也必须保持与所用内积相容的对称正定结构。
+
+对于 nodal 离散，常见条件包括 restriction/prolongation 的适当伴随关系、对称的预平滑/后平滑配对以及 SPD coarse solve。对于 cell-centered FV 或守恒型 FD，相应伴随关系可能定义在体积加权内积下，而不是简单要求数组满足 $R=P^T$。
+
+例如只做单向 Gauss--Seidel 预平滑而没有匹配的反向后平滑，可能破坏整体预条件器需要的对称性。真正需要检查的是完整的 $B_{MG}$，而不是某一个局部 smoother 是否“看起来有效”。
+
+\subsection{可变 multigrid 与 FGMRES}
+
+如果每次预条件应用都使用完全相同的线性 V-cycle，那么普通预条件 GMRES 的固定 $M^{-1}$ 模型是成立的。
+
+但如果第 $k$ 次实际执行的是
 \begin{equation}
-M^{-1}Au=M^{-1}b,
-\label{eq:preconditioner-left-system}
+\bm z_k
+=
+B_k\bm r_k,
 \end{equation}
-右预条件则写成
-\begin{equation}
-AM^{-1}y=b,
-\qquad
-u=M^{-1}y.
-\label{eq:preconditioner-right-system}
-\end{equation}
-若 $M^{-1}=A^{-1}$，两种形式都一步变成恒等算子；实际预条件器是在“近似质量”和“apply 成本”之间折中。
+并且 $B_k$ 会因为 inner tolerance、cycle 次数、粗层 solver、混合精度策略或非线性 smoother 而变化，那么外层已经面对一个可变预条件器。
 
-\subsection{谱与条件数的作用}
-
-对 SPD 问题，理想预条件目标是让预条件算子的特征值更加聚集，并减小有效条件数。若 $M$ 也是 SPD，可以通过对称变换
-\begin{equation}
-\widehat A=M^{-1/2}AM^{-1/2}
-\end{equation}
-得到仍为 SPD 的系统。CG 的经典收敛界与
-\begin{equation}
-\kappa(\widehat A)
-=\frac{\lambda_{\max}(\widehat A)}{\lambda_{\min}(\widehat A)}
-\end{equation}
-相关：条件数越接近 1，最坏情况下需要的 Krylov 迭代越少。
-
-这给 multigrid 作为预条件器一个更精确的解释：smoother 与 coarse space 共同构造 $B_{MG}$，目标不是让“一次 V-cycle 自己做到很高精度”，而是让 $B_{MG}A$ 在整个误差空间中都接近恒等映射。
-
-\subsection{PCG 与 SPD 预条件器}
-
-对于 $A$ 对称正定的系统，最典型组合是 Preconditioned Conjugate Gradient（PCG）。一次迭代中首先计算残差 $r_k$，再施加
-\begin{equation}
-z_k=M^{-1}r_k,
-\end{equation}
-然后使用 $z_k$ 构造共轭搜索方向。
-
-这里有一个不能省略的条件：\textbf{普通 PCG 要求预条件器与 SPD 结构兼容。}若把 V-cycle 当 $M^{-1}$，通常需要保持固定、线性的 cycle，并使用与对称性匹配的 transfer、pre/post smoother 与 coarse solve。任意一个“看起来能降低残差”的 MG cycle 都不自动是合法 PCG 预条件器。
-
-例如非对称的单向 Gauss--Seidel 预平滑若没有匹配的反向后平滑，可能破坏所需对称结构。实际设计时应检查的是整个 $B_{MG}$，而不是只检查 $A$ 是否 SPD。
-
-这里还要把\chapref{ch:two-grid}中的 FD/FV 双路线带进来。若离散空间采用普通 Euclidean 内积，经典 nodal 离散中常见的对称关系可以写成 $R\propto P^T$；若 cell-centered FV 或守恒型 FD 使用体积加权内积，则限制与延拓的伴随关系应相对于相应质量矩阵定义，而不能机械要求数值数组满足同一个转置公式。也就是说，PCG 所需的“对称多重网格预条件器”是\textbf{相对于当前离散空间内积的算子性质}，不是某个固定 stencil 公式。
-
-当粗算子采用 Galerkin 构造、粗层求解保持对称正定，并且预平滑与后平滑构成适当的伴随配对时，每一层 coarse correction 都可以保持与离散内积一致的对称能量结构，从而为构造整体对称正定的 V-cycle 预条件器提供条件。这里并不意味着整个 V-cycle 本身是一个投影；它说明的是\chapref{ch:two-grid}中的粗空间正交结构在递归后仍需要被正确维护。这个条件也解释了为什么 solver hierarchy 的数学设计与具体 smoother 的选择不能完全分离。
-
-\subsection{GMRES、左右预条件与可变预条件器}
-
-对一般非对称系统，GMRES 是常用 Krylov 方法。左预条件 GMRES 在
-\begin{equation}
-M^{-1}Au=M^{-1}b
-\end{equation}
-上构造 Krylov 空间，直接最小化的是预条件残差；右预条件 GMRES 在
-\begin{equation}
-AM^{-1}y=b
-\end{equation}
-上迭代，物理未知量由 $u=M^{-1}y$ 恢复，此时 Krylov residual 与原系统 residual 的关系更直接。
-
-若第 $k$ 次迭代实际使用的预条件器会变化，写成
-\begin{equation}
-z_k=B_k r_k,
-\end{equation}
-例如每次 V-cycle 的 inner tolerance、循环次数、粗层 solver 或非线性 smoother 都可能改变，则外层方法不能再假设一个固定线性 $M^{-1}$。Flexible GMRES（FGMRES）正是为这种\textbf{可变预条件器}设计的常见方法。这里不展开完整 Arnoldi 推导，但必须建立边界：
-\begin{equation}
-\boxed{
-\begin{aligned}
-\text{固定线性 MG apply}&\Rightarrow\text{普通 Krylov 假设更容易满足},\\
-\text{可变/非线性 MG apply}&\Rightarrow\text{考虑 flexible Krylov}.
-\end{aligned}}
-\end{equation}
-
-\subsection{一次 Krylov+MG 迭代的执行结构}
-
-从并行执行角度，一次预条件 Krylov iteration 不再只有 V-cycle。典型结构包含
-\begin{equation}
-\boxed{
-\begin{aligned}
-\text{operator apply}&\rightarrow\text{residual / dot products}\\
-&\rightarrow\text{MG 预条件器应用}\\
-&\rightarrow\text{vector updates}\rightarrow\text{global reductions}.
-\end{aligned}}
-\label{eq:preconditioner-krylov-execution-flow}
-\end{equation}
-MG 部分主要包含 stencil、transfer 和邻域通信；Krylov 部分还会引入 dot/norm 的 reduction。于是“MG 本身扩展得很好”并不自动意味着“MG-preconditioned Krylov 整体扩展得很好”。\chapref{ch:mg-parallel-operations}给出各 operation 的并行模式，\chapref{ch:mpi}和\chapref{ch:distributed-gpu}进一步讨论 neighbor halo 与 global reduction 的不同关键路径。
+这正是\chapref{ch:linear-solvers}中 FGMRES 的适用场景。FGMRES 不假设所有修正都来自同一个固定 $M^{-1}$，而是显式保存每一步产生的预条件向量。
 
 \begin{keybox}
-\textbf{预条件的核心心智模型：}
 \[
 \boxed{
-A\delta u=r
-\rightarrow
-\delta u=A^{-1}r
-\rightarrow
-z=M^{-1}r\approx A^{-1}r
-\rightarrow
-M^{-1}=B_{MG}
+\begin{aligned}
+\text{固定、线性的 MG cycle}
+&\Rightarrow
+\text{普通 PCG/GMRES 的假设较容易满足},\\
+\text{可变或非线性的 MG cycle}
+&\Rightarrow
+\text{优先考虑 flexible Krylov 方法}.
+\end{aligned}
 }
 \]
-multigrid 作为 solver 时，$B_{MG}r$ 直接用于下一次固定点修正；作为 preconditioner 时，同一个近似误差修正被交给 Krylov 方法，与历史搜索方向共同决定下一步。
 \end{keybox}
+
+\subsection{一次 Krylov 与 multigrid 组合迭代的执行结构}
+
+一次预条件 Krylov iteration 不只包含 V-cycle。典型关键路径包括
+\begin{equation}
+\boxed{
+\text{算子应用}
+\rightarrow
+\text{残差与内积}
+\rightarrow
+\text{MG 预条件器}
+\rightarrow
+\text{向量更新}
+\rightarrow
+\text{全局归约}.
+}
+\label{eq:preconditioner-krylov-execution-flow}
+\end{equation}
+
+Multigrid 内部主要是 stencil、网格间传递和邻域通信；Krylov 外层还会增加 dot/norm 的 global reduction。因此“MG 本身扩展得很好”并不自动意味着“MG-preconditioned Krylov 整体扩展得很好”。\chapref{ch:mg-parallel-operations}、\chapref{ch:mpi}和\chapref{ch:distributed-gpu}会继续分析这些不同通信模式。
+
 
 
 \section{AMR 复合算子与多重网格求解层级}
