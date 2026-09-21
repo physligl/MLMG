@@ -2,7 +2,7 @@
 \label{ch:two-grid}
 
 \begin{keybox}
-\textbf{本章回答 multigrid 的核心起点：}为什么 Jacobi、Gauss--Seidel 这类方法作为独立求解器并不理想，却可以成为有效的平滑器？又怎样把平滑器难以消除的低频误差交给更小的粗空间处理？
+\textbf{本章回答多重网格的核心起点：}为什么 Jacobi、Gauss--Seidel 这类方法作为独立求解器并不理想，却可以成为有效的平滑器？又怎样把平滑器难以消除的低频误差交给更小的粗空间处理？
 
 本章先用一维 Poisson 把“网格依赖收敛”和“平滑性质”算清楚，再建立两网格方法。后半章沿两条贯穿全书的离散路线展开：\textbf{节点型有限差分（nodal FD）}与\textbf{单元中心有限体积/守恒型有限差分（cell-centered FV / conservative FD）}。两条路线的自由度几何和网格间传递公式可以不同，但在线性代数层共享同一个 coarse-space correction 结构。
 \end{keybox}
@@ -140,7 +140,7 @@ k=\Theta(h^{-2})
 \text{但作为独立求解器会随网格加密变慢。}
 }
 \]
-Multigrid 的问题因此不是“怎样让 Jacobi 多迭代几轮”，而是“怎样利用它对不同误差模态不均匀的处理能力”。
+多重网格的问题因此不是“怎样让 Jacobi 多迭代几轮”，而是“怎样利用它对不同误差模态不均匀的处理能力”。
 \end{keybox}
 
 \section{从收敛因子到平滑因子}
@@ -171,7 +171,7 @@ e_i^{(k+1)}
 \end{equation}
 误差只翻转符号，幅值没有降低。
 
-这说明“$\rho(S_J)<1$”并不自动意味着 Jacobi 是好的 multigrid 平滑器；真正需要控制的是相对于粗网格而言的高频区。
+这说明“$\rho(S_J)<1$”并不自动意味着 Jacobi 是好的多重网格平滑器；真正需要控制的是相对于粗网格而言的高频区。
 
 \subsection{加权 Jacobi}
 
@@ -226,7 +226,7 @@ I-\omega D^{-1}A.
 
 \subsection{全局收敛因子与平滑因子}
 
-独立求解器关心整个误差空间中的最慢方向，因此看全局收敛因子。Multigrid 平滑器的任务更窄：只要求快速削弱细网格高频误差。
+独立求解器关心整个误差空间中的最慢方向，因此看全局收敛因子。多重网格平滑器的任务更窄：只要求快速削弱细网格高频误差。
 
 因此必须区分
 \begin{equation}
@@ -237,7 +237,7 @@ I-\omega D^{-1}A.
 }
 \end{equation}
 
-这给出 multigrid 最经典的反差：
+这给出 多重网格最经典的反差：
 \begin{equation}
 \boxed{
 \text{一个不理想的独立求解器}
@@ -247,7 +247,7 @@ I-\omega D^{-1}A.
 \end{equation}
 经过少量平滑以后，剩余误差通常在空间上更加光滑；这正是粗空间能够用更少自由度表示的误差。
 
-\chapref{ch:lfa}会把这里的模态分析推广到 Fourier symbol，并正式计算 two-grid convergence factor。
+\chapref{ch:lfa}会把这里的模态分析推广到 Fourier symbol，并正式计算两网格收敛因子。
 
 \section{从光滑误差到粗空间}
 
@@ -294,7 +294,7 @@ e(x)=\sin(\pi x).
 \label{fig:twogrid-nodal-cell-centered-layout}
 \end{figure}
 
-这个区别决定了本章后面的一个基本原则：restriction 与 prolongation 不是由“multigrid”三个字唯一决定的公式，而是由\textbf{粗空间选择、自由度语义和内积/守恒要求}共同决定的离散算子。
+这个区别决定了本章后面的一个基本原则：限制与延拓 不是由“multigrid”三个字唯一决定的公式，而是由\textbf{粗空间选择、自由度语义和内积/守恒要求}共同决定的离散算子。
 
 \begin{checkpointbox}
 如果粗化比例同样是 $2{:}1$，为什么 nodal FD 可以自然地说“偶数 fine node 就是 coarse node”，而 cell-centered 表示一般不能这样说？如果忽略这个区别直接复制 nodal transfer，会改变什么几何含义？
@@ -322,7 +322,7 @@ A_he_h=r_h.
 \label{eq:error_equation}
 \end{equation}
 
-这是 coarse-grid correction 的起点。我们不知道 $e_h$，但可以计算 $r_h$；如果平滑后的 $e_h$ 可以被粗空间近似，就可以在更小的 $V_H$ 中求一个粗误差 $e_H$，再把它映射回 $V_h$ 作为修正。
+这是粗网格校正的起点。我们不知道 $e_h$，但可以计算 $r_h$；如果平滑后的 $e_h$ 可以被粗空间近似，就可以在更小的 $V_H$ 中求一个粗误差 $e_H$，再把它映射回 $V_h$ 作为修正。
 
 注意这里已经进入\textbf{代数层}。式~\eqref{eq:error_equation}本身并不要求 $A_h$ 来自 FD 还是 FV。离散来源会重新出现于三个位置：$V_H$ 怎样定义、$R/P$ 怎样构造，以及 $A_H$ 是重新离散还是由 Galerkin 关系生成。
 
@@ -335,7 +335,7 @@ A_he_h=r_h.
 \begin{equation}
 R:V_h\rightarrow V_H.
 \end{equation}
-在 two-grid 中，最典型的使用方式是
+在两网格方法中，最典型的使用方式是
 \begin{equation}
 r_H=Rr_h,
 \label{eq:twogrid-restrict-residual}
@@ -527,14 +527,14 @@ prolongation 则取决于所选 coarse approximation space。piecewise constant 
 \section{两网格循环}
 \label{sec:two-grid-cycle}
 
-现在可以在不指定 FD/FV 的情况下写出 two-grid。restriction 后先在 coarse space 中求误差方程
+现在可以在不指定 FD/FV 的情况下写出两网格方法。restriction 后先在 coarse space 中求误差方程
 \begin{equation}
 A_He_H=r_H.
 \label{eq:coarse_error_eq}
 \end{equation}
 这里的 $e_H$ 是 fine-grid error 在 coarse space 中的近似表示，而不是把原 PDE 在低分辨率上重新求一次得到的物理解。
 
-随后整个 two-grid cycle 写成：
+随后整个两网格循环写成：
 \begin{algorithm}[htbp]
 \caption{Two-grid correction}
 \begin{algorithmic}[1]
@@ -675,7 +675,7 @@ P^TA_he_h^+=0.
 \end{equation}
 是否足够小？若 $\eta_H(e_h)\ll1$，说明该误差几乎位于 coarse-space image 中，Galerkin correction 可以一次移除大部分能量；若 $\eta_H(e_h)$ 接近 1，再精确的 coarse solve 也无济于事，因为问题出在 coarse space 根本表示不了这个误差。
 
-这就把 multigrid 的两个核心条件分开了：
+这就把多重网格的两个核心条件分开了：
 \begin{equation}
 \boxed{
 \begin{aligned}
@@ -687,7 +687,7 @@ P^TA_he_h^+=0.
 \label{eq:twogrid-two-properties}
 \end{equation}
 
-真正高效的 two-grid 不是“一个很强的 smoother + 一个很细的 coarse grid”，而是这两种能力的互补。若 smoother 只留下某类误差，而 $P(V_H)$ 恰好不能表示它们，two-grid 会失败；反过来，如果 coarse space 极其丰富但平滑器没有压掉昂贵的 fine-scale error，粗层也会承担不必要的工作。
+真正高效的两网格方法 不是“一个很强的 smoother + 一个很细的 coarse grid”，而是这两种能力的互补。若 smoother 只留下某类误差，而 $P(V_H)$ 恰好不能表示它们，两网格方法会失败；反过来，如果 coarse space 极其丰富但平滑器没有压掉昂贵的 fine-scale error，粗层也会承担不必要的工作。
 
 \begin{keybox}
 \textbf{选择 transfer 时要问的不是“哪套权重最经典”，而是三个问题：}
@@ -701,7 +701,7 @@ P^TA_he_h^+=0.
 
 \section{两网格误差传播算子}
 
-\chapref{ch:iterative-smoothing}已经用 $S$ 表示一次平滑的误差传播。若预平滑做 $\nu_1$ 次，后平滑做 $\nu_2$ 次，则完整 two-grid error propagator 为
+\chapref{ch:linear-solvers}已经用 $S$ 表示一次平滑的误差传播。若预平滑做 $\nu_1$ 次，后平滑做 $\nu_2$ 次，则完整两网格误差传播算子 为
 \begin{equation}
 E_{TG}
 =S_{\mathrm{post}}^{\nu_2}
@@ -712,11 +712,11 @@ S_{\mathrm{pre}}^{\nu_1}.
 
 这个式子现在可以按本章建立的机制逐项解释。$S_{\mathrm{pre}}^{\nu_1}$ 把误差推向 coarse space 更容易逼近的形态；中间的 $C_h$ 去掉可由 $P(V_H)$ 表示的分量；$S_{\mathrm{post}}^{\nu_2}$ 再削弱 prolongation 与局部校正留下的 fine-scale 成分。
 
-如果 $A_h$ 来自不同离散路线，式~\eqref{eq:two_grid_error}本身不改变，但 $S$、$R/P$、$A_H$ 的具体符号和谱性质会改变。\chapref{ch:lfa}将选择一套完全具体的 Poisson + weighted Jacobi + transfer 组合，把这个抽象乘积化成可计算的 two-grid Fourier symbol。
+如果 $A_h$ 来自不同离散路线，式~\eqref{eq:two_grid_error}本身不改变，但 $S$、$R/P$、$A_H$ 的具体符号和谱性质会改变。\chapref{ch:lfa}将选择一套完全具体的 Poisson + 加权 Jacobi + transfer 组合，把这个抽象乘积化成可计算的 两网格 Fourier symbol。
 
 \section{本章小结}
 
-本章把 two-grid 从“粗网格上算一次”提升为 coarse-space correction。核心对象不是某个固定的 full-weighting stencil，而是
+本章把两网格方法从“粗网格上算一次”提升为粗空间校正。核心对象不是某个固定的 full-weighting stencil，而是
 \begin{equation}
 V_H\xrightarrow{P}V_h,
 \qquad
@@ -727,9 +727,9 @@ A_H=RA_hP.
 
 nodal FD 与 cell-centered FV/守恒型 FD 给出了两种不同的自由度几何。nodal coarse nodes 可以与 fine nodes 对齐，因此经典 linear prolongation/full-weighting 很自然；cell-centered coarse centers 与 fine centers 错位，restriction 更自然地由体积语义解释，prolongation 则由 coarse-cell reconstruction 构造。通过 weighted-adjoint 关系~\eqref{eq:twogrid-weighted-adjoint-transfer}，两类 transfer 又可以在离散内积层统一起来。
 
-对于 SPD 或 weighted-SPD 问题，Galerkin coarse correction 还是一个能量投影：它从当前误差中移除 coarse space 能够最佳表示的部分。于是 multigrid 成功的真正条件可以压缩成一对互补机制：\textbf{smoother 负责把误差变得 coarse-representable，coarse space 负责准确表示并消除这些剩余误差。}
+对于 SPD 或 weighted-SPD 问题，Galerkin coarse correction 还是一个能量投影：它从当前误差中移除 coarse space 能够最佳表示的部分。于是 多重网格成功的真正条件可以压缩成一对互补机制：\textbf{平滑器负责把误差变得可由粗空间表示，coarse space 负责准确表示并消除这些剩余误差。}
 
-这里仍只研究两个求解尺度。\chapref{ch:mg-cycles}把相同机制递归到很多层；\chapref{ch:lfa}则用 Fourier 模态定量计算 smoother 与 coarse-space correction 如何共同决定收敛因子。
+这里仍只研究两个求解尺度。\chapref{ch:mg-cycles}把相同机制递归到很多层；\chapref{ch:lfa}则用 Fourier 模态定量计算平滑器与粗空间校正 如何共同决定收敛因子。
 
 \section*{习题}
 
@@ -760,7 +760,7 @@ P=\begin{bmatrix}1/2\\1\\1/2\end{bmatrix},\quad R=\tfrac12P^T,
 \]
 计算 Galerkin coarse operator $A_H=RA_hP$。
 
-\item 在上一题中令 $\bm b=(1,0,1)^T$、$\bm u_h=\bm0$。计算 fine residual、restricted residual、coarse error、prolongated correction 与更新后的 fine solution，完整走一遍不含平滑的 coarse-grid correction。
+\item 在上一题中令 $\bm b=(1,0,1)^T$、$\bm u_h=\bm0$。计算 fine residual、restricted residual、coarse error、prolongated correction 与更新后的 fine solution，完整走一遍不含平滑的 粗网格校正。
 
 \item 计算 coarse-correction matrix
 \[
@@ -797,7 +797,7 @@ C_h=I-PA_H^{-1}RA_h,
 
 \item 对一维 Poisson 构造 $A_h,P,R,A_H$，数值验证 $C_hP\approx0$ 与 $C_h^2\approx C_h$。若 $A_h$ SPD 且 $R=P^T$，再检查校正后误差满足 $P^TA_he_h^+\approx0$。
 
-\item 生成一组低频与高频 error vectors。分别计算它们的 coarse approximation ratio~\eqref{eq:twogrid-coarse-approximation-ratio}，再做若干次 weighted Jacobi，观察平滑前后该比值如何变化。
+\item 生成一组低频与高频 error vectors。分别计算它们的 coarse approximation ratio~\eqref{eq:twogrid-coarse-approximation-ratio}，再做若干次 加权 Jacobi，观察平滑前后该比值如何变化。
 
 \item 对同一个规则 cell-centered Poisson 问题，分别实现 coarse rediscretization 与 Galerkin coarse operator。比较常系数、平滑变系数和强跳变系数下二者的矩阵差异与 two-grid convergence factor。
 \end{enumerate}
@@ -806,7 +806,7 @@ C_h=I-PA_H^{-1}RA_h,
 \begin{enumerate}[label=\arabic*.]
 \item 一个代码库同时支持 nodal FD 与 cell-centered FV。设计 transfer API 时，哪些信息必须显式携带才能避免把“nodal injection”“volume average”“integrated residual sum”错误地统一成一个无语义的 \texttt{restrict()}？至少从 DOF location、quantity semantics、geometry 与 inner product 四个方面回答。
 
-\item 某 smoother 对棋盘格误差极强，但对一个沿 $x$ 方向缓慢变化、沿 $y$ 方向近似常数的误差很弱。给出 coarse space 应具备的最低表示能力，并说明为什么只报告 smoother 的 spectral radius 不足以判断 two-grid 是否高效。
+\item 某 smoother 对棋盘格误差极强，但对一个沿 $x$ 方向缓慢变化、沿 $y$ 方向近似常数的误差很弱。给出 coarse space 应具备的最低表示能力，并说明为什么只报告 平滑器的谱半径 不足以判断 two-grid 是否高效。
 
 \item 对一个强变系数扩散问题，比较“保持 FV coarse-level flux construction 的 rediscretization”与“Galerkin $RA_hP$”两种路线。列出至少四个需要验证的性质：守恒、对称/加权对称、正定性、coarse-space compatibility、stencil growth 或 setup cost 等，并说明这些指标之间可能存在的 tradeoff。
 \end{enumerate}
