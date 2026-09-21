@@ -5,9 +5,9 @@
 \begin{equation}
 A\bm u=\bm b.
 \end{equation}
-从这里开始，本书第一次把问题完整放在线性代数层处理：给定 $A$ 与 $\bm b$，怎样选择求解方法，怎样衡量误差与残差，怎样判断收敛速度，以及怎样利用矩阵结构减少计算代价。
+从这里开始，本书第一次把问题完整放在线性代数层处理：给定 $A$ 与 $\bm b$，怎样选择求解方法，怎样衡量误差与残差，怎样判断收敛速度，以及怎样利用矩阵结构降低求解成本。
 
-本章首先建立求解器的总体地图，然后分别讲直接法、平稳迭代、Krylov 子空间方法、共轭梯度法（Conjugate Gradient, CG）、广义最小残差法（Generalized Minimal Residual, GMRES）以及预条件。柔性广义最小残差法（Flexible GMRES, FGMRES）只建立足够支撑后续多重网格预条件的最低模型。与多重网格特有的“平滑”相关的 Jacobi 网格依赖、高频衰减和加权 Jacobi 分析移到\chapref{ch:two-grid}开头，以保持本章的任务集中在\textbf{一般线性系统求解}。
+本章建立一条完整的线性求解主线：先区分直接法与迭代法，再建立误差、残差与条件数，随后研究平稳迭代；在此基础上正式引入 Krylov 子空间方法，并分别推导共轭梯度法（Conjugate Gradient, CG）与广义最小残差法（Generalized Minimal Residual, GMRES）的核心机制。最后讨论预条件以及柔性 GMRES（Flexible GMRES, FGMRES）。与多重网格特有的平滑性质相关的网格依赖收敛、高频衰减和加权 Jacobi 分析放到\chapref{ch:two-grid}开头。
 
 \begin{keybox}
 \textbf{本章主线：}
@@ -32,7 +32,7 @@ A\bm u=\bm b
 \end{aligned}
 }
 \]
-读完本章以后，读者应能根据矩阵结构选择基本求解路线，并能解释为什么“求解器”和“预条件器”是两个不同角色。
+读完本章以后，读者应能回答三个问题：当前矩阵结构允许使用哪类求解器？迭代过程实际上在改进什么对象？预条件器为什么能改变外层求解器的难度，却又不是外层求解器本身？
 \end{keybox}
 
 \section{线性系统的求解路线}
@@ -42,39 +42,49 @@ A\bm u=\bm b
 \begin{equation}
 A\bm u=\bm b,
 \end{equation}
-首先需要区分两类基本策略。
+第一步不是立刻选择某个算法，而是先识别问题结构：矩阵规模多大？是否稀疏？是否对称？是否正定？能否稳定地进行矩阵向量乘 $A\bm v$？是否已经有可用的预条件器？
+
+最基本的求解路线可以分成两类。
 
 \textbf{直接法}通过矩阵分解和有限次代数运算得到解。典型代表是 LU 分解与 Cholesky 分解。
 
-\textbf{迭代法}从初始猜测 $\bm u^{(0)}$ 出发，构造一系列近似
+\textbf{迭代法}从初始猜测 $\bm u^{(0)}$ 出发，构造
 \begin{equation}
 \bm u^{(0)},\bm u^{(1)},\bm u^{(2)},\ldots,
 \end{equation}
-使其逐步逼近真解。平稳迭代、Krylov 子空间方法和多重网格都属于这一大类，但它们利用的信息不同。
+使其逐步逼近真解。平稳迭代、Krylov 子空间方法和多重网格都属于这一大类，但它们利用的信息完全不同。
 
-平稳迭代重复固定的更新规则；Krylov 方法利用不断扩展的子空间和历史搜索信息；多重网格则利用误差在不同空间尺度上的结构。预条件不应看成与这些方法平行的“第五类求解器”，它是一种把原系统变得更适合迭代的变换机制。
+平稳迭代重复固定的修正规则；Krylov 方法把前几次算子作用产生的信息组织成搜索子空间；多重网格则利用误差的空间尺度结构。预条件不是与这些方法平行的“第五类求解器”，而是一种重塑问题、降低迭代难度的机制。
 
 \begin{table}[htbp]
 \centering
-\small
-\begin{tabularx}{0.96\textwidth}{>{\raggedright\arraybackslash}p{3.0cm}
-                                  >{\raggedright\arraybackslash}p{4.8cm}
-                                  >{\raggedright\arraybackslash}p{3.6cm}
+\footnotesize
+\begin{tabularx}{0.96\textwidth}{>{\raggedright\arraybackslash}p{2.3cm}
+                                  >{\raggedright\arraybackslash}p{3.8cm}
+                                  >{\raggedright\arraybackslash}p{2.9cm}
                                   >{\raggedright\arraybackslash}X}
 \toprule
 方法 & 核心机制 & 主要结构条件 & 本书中的角色\\
 \midrule
-LU / Cholesky & 矩阵分解与三角求解 & Cholesky 需要 SPD & 小规模求解、最粗层求解、基准对照\\
-Jacobi / Gauss--Seidel & 固定局部修正 & 取决于迭代矩阵谱 & 基本平稳迭代、后续平滑器\\
-CG & $A$-共轭搜索方向 & $A$ 为 SPD & SPD 大型稀疏系统的基础 Krylov 求解器\\
-GMRES & Arnoldi 正交基与残差最小化 & 一般非奇异系统 & 非对称系统的基础 Krylov 求解器\\
-FGMRES & 允许预条件器逐步变化 & 一般非奇异系统 & 可变/非线性预条件器的外层求解器\\
-多重网格 & 不同尺度处理不同误差 & 需要层级与传递算子 & 独立求解器或预条件器\\
+LU / Cholesky & 分解后做三角求解 & Cholesky 需要 SPD & 小规模求解、最粗层求解、基准对照\\
+Jacobi / Gauss--Seidel & 重复固定局部修正 & 收敛取决于误差传播矩阵 & 基本平稳迭代、后续平滑器\\
+CG & 在 Krylov 子空间中做能量最优修正 & $A$ 为 SPD & SPD 大型稀疏系统的基础求解器\\
+GMRES & 在 Krylov 子空间中最小化残差二范数 & 一般非对称系统 & 通用 Krylov 求解器\\
+FGMRES & 保存每一步不同的预条件修正空间 & 预条件器可逐步变化 & 可变/非线性预条件器的外层求解器\\
+多重网格 & 不同尺度处理不同误差 & 需要层级、传递与粗空间 & 独立求解器或预条件器\\
 \bottomrule
 \end{tabularx}
-\caption{本书涉及的主要线性系统求解路线。}
+\caption{本书涉及的主要线性系统求解路线。表中给出的是选择算法时首先要看的结构，而不是完整适用条件。}
 \label{tab:linear-solver-map}
 \end{table}
+
+这里先建立一个贯穿后文的选择原则：
+\begin{equation}
+\boxed{
+\text{先看矩阵结构，再看规模与存储，最后看预条件器。}
+}
+\end{equation}
+如果 $A$ 为 SPD，CG/PCG 是首要候选；若 $A$ 一般非对称，GMRES 是基础选择；若预条件器本身会逐步变化，则需要考虑 FGMRES。对对称不定系统还有 MINRES 等专门方法，本章不展开，但这也提醒我们：不能把“非 SPD”简单等同于“只能用 GMRES”。
 
 \section{直接法：分解、填充与适用范围}
 
@@ -90,7 +100,7 @@ A=LL^T.
 \end{equation}
 它利用了对称性与正定性，通常比通用 LU 更节省存储与计算。
 
-直接法的关键工程问题不是“原矩阵是否稀疏”，而是消元以后因子是否仍然稀疏。稀疏矩阵分解时，原先为零的位置可能产生新的非零元，这称为\textbf{填充（fill-in）}。因此一个七点 stencil 产生的稀疏矩阵并不意味着它的 $L/U$ 因子也只有七点结构。
+直接法的关键工程问题不是“原矩阵是否稀疏”，而是消元以后因子是否仍然稀疏。稀疏矩阵分解时，原先为零的位置可能产生新的非零元，这称为\textbf{填充（fill-in）}。因此七点 stencil 产生的稀疏矩阵并不意味着它的 $L/U$ 因子仍只有七点结构。
 
 这解释了直接法的典型定位：中小规模系统、最粗多重网格层、需要高鲁棒性的基准计算，以及矩阵固定而右端多次变化、因子可以复用的场景。对于超大规模三维 PDE，填充带来的内存和分解成本往往使迭代法更有吸引力。
 
@@ -118,7 +128,9 @@ A=LL^T.
 \label{eq:linear-solvers-residual-error}
 \end{equation}
 
-因此“残差很小”和“误差很小”不是同一个命题。若 $A$ 可逆，
+这三个量在迭代算法中扮演不同角色。误差 $\bm e^{(k)}$ 是真正关心的对象，但通常不可直接计算，因为真解未知；残差 $\bm r^{(k)}$ 可以直接从当前近似计算，因此是算法可观测的反馈信号；矩阵 $A$ 决定残差如何对应到误差。
+
+若 $A$ 可逆，
 \begin{equation}
 \bm e=A^{-1}\bm r.
 \end{equation}
@@ -144,7 +156,7 @@ A=LL^T.
 \label{eq:linear-solvers-relative-bound}
 \end{equation}
 
-条件数大的系统会放大残差与解误差之间的不确定性。因此停止准则不能只写“残差变小了”，而要明确使用什么范数、相对哪个量归一化、是否达到离散误差允许的精度。
+条件数大的系统会放大“残差已经很小”与“解误差已经很小”之间的不确定性。因此停止准则不能只写“残差下降了”，还要明确范数、归一化尺度和所需精度。
 
 常见相对残差准则是
 \begin{equation}
@@ -153,23 +165,23 @@ A=LL^T.
 \tau.
 \label{eq:linear-solvers-relative-residual-stop}
 \end{equation}
-若 $\bm b=0$ 或需要更稳健的尺度，还可以使用初始残差
+若 $\bm b=0$ 或希望以初始状态为尺度，则可使用
 \begin{equation}
 \frac{\|\bm r^{(k)}\|_2}{\|\bm r^{(0)}\|_2}
 \le
 \tau.
 \end{equation}
 
-纯 Neumann 问题存在零空间时，整个空间上的 $A^{-1}$ 不存在；此时必须先处理兼容条件和 gauge，再在可逆子空间上讨论误差、残差和条件数。
+纯 Neumann 问题存在零空间时，整个空间上的 $A^{-1}$ 不存在；此时必须先处理兼容条件和规范条件（gauge），再在可逆子空间上讨论误差、残差和条件数。
 
 \begin{keybox}
 \[
 \boxed{
-\text{误差：离真解多远}
-\qquad
-\text{残差：方程满足得多好}
-\qquad
-\text{条件数：二者之间可能放大多少}
+\begin{aligned}
+\text{误差}&:\quad\text{真正想减小的量},\\
+\text{残差}&:\quad\text{实际能直接计算的量},\\
+\text{条件数}&:\quad\text{二者之间的放大尺度}.
+\end{aligned}
 }
 \]
 \end{keybox}
@@ -187,27 +199,33 @@ A=LL^T.
 M^{-1}
 \left(
 \bm b-A\bm u^{(k)}
-\right),
+\right).
 \label{eq:linear-solvers-stationary}
 \end{equation}
-其中 $M$ 在各轮迭代中保持不变，并且比完整 $A$ 更容易求逆或求解。
 
-用真解减去两边，
+这里的 $M^{-1}$ 首先是\textbf{算子记号}。程序通常不会显式形成一个稠密的 $M^{-1}$；所谓“应用 $M^{-1}$”通常意味着给定残差 $\bm r$，求解一个更容易的系统
+\begin{equation}
+M\bm z=\bm r,
+\qquad
+\bm z=M^{-1}\bm r.
+\label{eq:linear-solvers-preconditioner-apply-mental}
+\end{equation}
+这个区别在后面的预条件和多重网格中非常重要。
+
+“平稳”指的是 $M$ 在各轮中保持不变，因此同一个线性误差传播算子反复作用。用真解减去式~\eqref{eq:linear-solvers-stationary}两边，得到
 \begin{equation}
 \bm e^{(k+1)}
 =
-\left(
-I-M^{-1}A
-\right)\bm e^{(k)}.
+\left(I-M^{-1}A\right)\bm e^{(k)}.
 \end{equation}
-定义误差传播矩阵
+定义
 \begin{equation}
 S
 =
-I-M^{-1}A,
+I-M^{-1}A
 \label{eq:linear-solvers-error-propagation}
 \end{equation}
-则
+为误差传播矩阵，则
 \begin{equation}
 \bm e^{(k)}=S^k\bm e^{(0)}.
 \end{equation}
@@ -215,13 +233,11 @@ I-M^{-1}A,
 有限维线性平稳迭代从任意初始误差出发收敛的充要条件是
 \begin{equation}
 \boxed{
-\rho(S)<1,
+\rho(S)<1.
 }
 \label{eq:linear-solvers-stationary-convergence}
 \end{equation}
-其中 $\rho(S)$ 为谱半径。
-
-若 $S$ 非正规（non-normal），某些范数下可能出现短暂误差增长，因此 $\rho(S)<1$ 不等于“每一轮误差范数都严格缩小”。它控制的是最终的渐近行为。
+若 $S$ 非正规（non-normal），某些范数下可能出现短暂增长，因此 $\rho(S)<1$ 不表示“每一轮误差范数都严格缩小”；它控制的是最终的渐近行为。
 
 \subsection{Jacobi 与 Gauss--Seidel}
 
@@ -242,9 +258,7 @@ M=D,
 \bm u^{(k)}
 +
 D^{-1}
-\left(
-\bm b-A\bm u^{(k)}
-\right).
+\left(\bm b-A\bm u^{(k)}\right).
 \label{eq:linear-solvers-jacobi}
 \end{equation}
 
@@ -270,11 +284,7 @@ u_i^{(k+1)}
 =
 \frac12
 \left(
-h^2f_i
-+
-u_{i-1}^{(k)}
-+
-u_{i+1}^{(k)}
+h^2f_i+u_{i-1}^{(k)}+u_{i+1}^{(k)}
 \right),
 \end{equation}
 同一轮只读旧状态。若从左到右做 Gauss--Seidel，
@@ -283,39 +293,29 @@ u_i^{(k+1)}
 =
 \frac12
 \left(
-h^2f_i
-+
-u_{i-1}^{(k+1)}
-+
-u_{i+1}^{(k)}
+h^2f_i+u_{i-1}^{(k+1)}+u_{i+1}^{(k)}
 \right),
 \end{equation}
 左邻居已经使用本轮新值。
 
-Jacobi 的一轮点更新天然独立，而 Gauss--Seidel 引入扫描顺序依赖。这一差异后续会同时影响多重网格平滑器和并行实现。
+Jacobi 与 Gauss--Seidel 最值得保留的心智模型不是两套公式，而是两种不同的 $M$：Jacobi 用对角近似 $D$ 修正残差；Gauss--Seidel 用三角矩阵 $D+L$ 做更强、但具有顺序依赖的修正。后面的平滑器、块平滑器和预条件器都可以继续沿着“选择什么 $M$”这一视角理解。
 
 \subsection{收敛阶与收敛因子}
 
 一般迭代序列的经典收敛阶 $p$ 可以由
 \begin{equation}
 \lim_{k\to\infty}
-\frac{
-\|\bm e^{(k+1)}\|
-}{
-\|\bm e^{(k)}\|^p
-}
-=
-C
+\frac{\|\bm e^{(k+1)}\|}{\|\bm e^{(k)}\|^p}
+=C
 \label{eq:linear-solvers-convergence-order}
 \end{equation}
 定义。$p=1$ 称为线性收敛，$p=2$ 称为二次收敛。
 
-但固定线性平稳迭代通常表现为
+固定线性平稳迭代通常表现为
 \begin{equation}
 \|\bm e^{(k)}\|
 \sim
-q^k
-\|\bm e^{(0)}\|,
+q^k\|\bm e^{(0)}\|,
 \qquad
 0<q<1.
 \label{eq:linear-solvers-geometric-convergence}
@@ -340,16 +340,20 @@ k
 \end{equation}
 混淆：前者研究固定离散系统上 $k\to\infty$ 的代数误差，后者研究 $h\to0$ 时离散解逼近连续解。
 
-\section{克雷洛夫子空间方法}
+\section{Krylov 子空间方法}
 \label{sec:krylov-methods}
 
-平稳迭代每轮使用固定 $M$。Krylov 方法则利用前几轮算子作用产生的信息，不断扩展搜索空间。
+\subsection{从残差修正到搜索子空间}
+
+Krylov 方法最容易被误解成“不断计算 $A\bm r_0,A^2\bm r_0,\ldots$”。这些向量只是定义搜索空间的数学方式，算法真正要做的是：\textbf{在一个逐步扩大的低维子空间中寻找误差修正。}
 
 给定初始猜测 $\bm u_0$ 与残差
 \begin{equation}
-\bm r_0=\bm b-A\bm u_0,
+\bm r_0
+=
+\bm b-A\bm u_0,
 \end{equation}
-第 $m$ 阶克雷洛夫子空间（Krylov subspace）定义为
+第 $m$ 阶 Krylov 子空间定义为
 \begin{equation}
 \mathcal K_m(A,\bm r_0)
 =
@@ -357,22 +361,93 @@ k
 \left\{
 \bm r_0,
 A\bm r_0,
-A^2\bm r_0,\ldots,
+A^2\bm r_0,
+\ldots,
 A^{m-1}\bm r_0
 \right\}.
 \label{eq:krylov-space}
 \end{equation}
-
-Krylov 方法的共同思想是：不直接构造 $A^{-1}$，而是在
+Krylov 方法寻找的近似具有
 \begin{equation}
-\bm u_0+\mathcal K_m(A,\bm r_0)
+\boxed{
+\bm u_m
+\in
+\bm u_0+\mathcal K_m(A,\bm r_0).
+}
+\label{eq:krylov-affine-space}
 \end{equation}
-中选择一个越来越好的近似。不同算法的差别主要在于：如何选取基、如何定义“最好”、利用哪些矩阵结构。
+也就是说，新的近似不是在整个 $n$ 维空间里任意搜索，而是在由当前残差和反复算子作用生成的 $m$ 维方向集合中选择修正。
+
+一个二维例子可以把这个过程完全看清。取
+\begin{equation}
+A=
+\begin{bmatrix}
+1&0\\
+0&4
+\end{bmatrix},
+\qquad
+\bm r_0=
+\begin{bmatrix}
+1\\1
+\end{bmatrix}.
+\end{equation}
+第一步只有
+\begin{equation}
+\mathcal K_1=\operatorname{span}
+\left\{
+\begin{bmatrix}1\\1\end{bmatrix}
+\right\},
+\end{equation}
+只能沿一个方向修正；再做一次算子应用，
+\begin{equation}
+A\bm r_0=
+\begin{bmatrix}
+1\\4
+\end{bmatrix},
+\end{equation}
+于是 $\mathcal K_2$ 已经张成整个二维空间。这个例子说明 Krylov 方法的“历史信息”并不是保存旧迭代值本身，而是通过新的算子作用不断增加可用的独立修正方向。
+
+任意 $\bm z\in\mathcal K_m(A,\bm r_0)$ 都可以写成
+\begin{equation}
+\bm z
+=
+p_{m-1}(A)\bm r_0,
+\end{equation}
+其中 $p_{m-1}$ 是次数不超过 $m-1$ 的多项式。因此 Krylov 方法也可以理解成：\textbf{用一个逐步变复杂的矩阵多项式去近似 $A^{-1}$ 对残差的作用。}
+
+这给出一个很重要的统一视角：平稳迭代预先固定了同一个误差传播算子；Krylov 方法则根据已经获得的信息，自适应地选择更好的多项式修正。CG 与 GMRES 都工作在同一个 Krylov 空间里，但“怎样选出这个空间里的最好向量”完全不同。
+
+\subsection{Krylov 方法为什么天然适合 matrix-free}
+
+\chapref{ch:discretization}已经区分显式矩阵和 matrix-free 算子。Krylov 方法通常不需要任意访问 $A_{ij}$，其核心接口是
+\begin{equation}
+\bm v
+\longmapsto
+A\bm v,
+\end{equation}
+再配合向量加法、数乘、点积和范数。
+
+因此只要程序能稳定、正确地实现算子应用（operator apply），就可以在没有已装配稀疏矩阵的情况下运行许多 Krylov 方法。这也是 matrix-free PDE 求解器与 Krylov 方法经常组合出现的根本原因。
+
+需要注意，式~\eqref{eq:krylov-space}中的幂向量并不会在实际代码里按定义式原样保存。若直接把
+\begin{equation}
+\bm r_0,\qquad A\bm r_0,\qquad A^2\bm r_0,\qquad\ldots
+\end{equation}
+作为基，这些向量会很快变得数值病态。CG 依靠 SPD 结构得到短递推，GMRES 则使用 Arnoldi 正交化构造稳定的 Krylov 基。
+
+\begin{keybox}
+\textbf{Krylov 的核心心智模型：}
+\[
+\boxed{
+\text{不是“迭代地乘 }A\text{”，而是“在 }\mathcal K_m\text{ 中选择越来越好的误差修正”。}
+}
+\]
+\end{keybox}
 
 \section{共轭梯度法}
 \label{sec:cg}
 
-\subsection{SPD 系统与能量最小化}
+\subsection{SPD 系统、能量与最优性}
 
 假设
 \begin{equation}
@@ -382,7 +457,7 @@ A=A^T>0.
 \begin{equation}
 A\bm u=\bm b
 \end{equation}
-等价于最小化二次泛函
+等价于最小化严格凸二次泛函
 \begin{equation}
 \phi(\bm u)
 =
@@ -393,23 +468,48 @@ A\bm u=\bm b
 \end{equation}
 因为
 \begin{equation}
-\nabla\phi(\bm u)=A\bm u-\bm b=-\bm r.
+\nabla\phi(\bm u)
+=A\bm u-\bm b
+=-\bm r.
 \end{equation}
 
-最速下降法每轮沿当前残差方向搜索，但相邻搜索方向可能重复修正已经处理过的误差。CG 的关键改进是构造彼此 $A$-共轭的方向
+最速下降法每轮沿当前负梯度，也就是残差方向做一维最小化。若能量等值线非常狭长，它可能在不同方向之间反复“之”字形前进。CG 的关键不是简单换一个步长公式，而是让搜索方向彼此 $A$-共轭：
 \begin{equation}
-\bm p_i^T A\bm p_j=0,
+\bm p_i^TA\bm p_j=0,
 \qquad
 i\neq j.
 \label{eq:cg-conjugacy}
 \end{equation}
-在这些方向上逐步最小化能量。
+
+$A$-共轭意味着：沿新的搜索方向完成精确线搜索后，不会破坏此前在旧搜索方向上已经达到的能量最优性。因此每增加一个共轭方向，就真正解决了一个新的独立自由度，而不是反复修正同一个方向。
+
+CG 的近似还满足更强的最优性：在精确算术中，
+\begin{equation}
+\boxed{
+\bm u_k
+=
+\arg\min_{\bm u\in\bm u_0+\mathcal K_k(A,\bm r_0)}
+\|\bm u^\star-\bm u\|_A,
+}
+\label{eq:cg-krylov-optimality}
+\end{equation}
+其中
+\begin{equation}
+\|\bm e\|_A
+=
+\sqrt{\bm e^TA\bm e}
+\end{equation}
+称为能量范数。
+
+这就是 CG 的核心心智模型：\textbf{在 Krylov 子空间里选择能量误差最小的近似，并利用 SPD 结构把这个最优性压缩成短递推。}
 
 \subsection{CG 递推}
 
 从
 \begin{equation}
-\bm r_0=\bm b-A\bm u_0,
+\bm r_0
+=
+\bm b-A\bm u_0,
 \qquad
 \bm p_0=\bm r_0
 \end{equation}
@@ -417,8 +517,7 @@ i\neq j.
 \begin{equation}
 \alpha_k
 =
-\frac{\bm r_k^T\bm r_k}
-{\bm p_k^TA\bm p_k},
+\frac{\bm r_k^T\bm r_k}{\bm p_k^TA\bm p_k},
 \label{eq:cg-alpha}
 \end{equation}
 更新
@@ -435,24 +534,18 @@ i\neq j.
 \begin{equation}
 \beta_k
 =
-\frac{
-\bm r_{k+1}^T\bm r_{k+1}
-}{
-\bm r_k^T\bm r_k
-},
+\frac{\bm r_{k+1}^T\bm r_{k+1}}{\bm r_k^T\bm r_k},
 \label{eq:cg-beta}
 \end{equation}
 以及
 \begin{equation}
 \bm p_{k+1}
 =
-\bm r_{k+1}
-+
-\beta_k\bm p_k.
+\bm r_{k+1}+\beta_k\bm p_k.
 \label{eq:cg-direction}
 \end{equation}
 
-在精确算术中，CG 最多 $n$ 步可以得到 $n$ 维 SPD 系统的精确解；实际浮点计算中，舍入误差会破坏严格正交/共轭关系，因此工程上仍以残差准则停止。
+在精确算术中，残差彼此正交，搜索方向彼此 $A$-共轭，因此 CG 最多 $n$ 步可以得到 $n$ 维 SPD 系统的精确解。浮点计算会逐渐破坏这些精确关系，所以工程实现仍然依赖残差停止准则，而不是等待“第 $n$ 步必然精确”。
 
 \begin{algorithm}[htbp]
 \caption{共轭梯度法（CG）}
@@ -461,9 +554,10 @@ i\neq j.
 \State $\bm r_0\gets\bm b-A\bm u_0$
 \State $\bm p_0\gets\bm r_0$
 \For{$k=0,1,\ldots$}
-  \State $\alpha_k\gets(\bm r_k^T\bm r_k)/(\bm p_k^TA\bm p_k)$
+  \State $\bm q_k\gets A\bm p_k$
+  \State $\alpha_k\gets(\bm r_k^T\bm r_k)/(\bm p_k^T\bm q_k)$
   \State $\bm u_{k+1}\gets\bm u_k+\alpha_k\bm p_k$
-  \State $\bm r_{k+1}\gets\bm r_k-\alpha_kA\bm p_k$
+  \State $\bm r_{k+1}\gets\bm r_k-\alpha_k\bm q_k$
   \If{满足停止准则}
     \State \textbf{break}
   \EndIf
@@ -473,14 +567,10 @@ i\neq j.
 \end{algorithmic}
 \end{algorithm}
 
+算法中专门写出 $\bm q_k=A\bm p_k$，是为了强调一次 CG 迭代真正需要的昂贵算子操作只有一次算子应用；其余主要是向量更新和点积。这一结构以后会直接映射到并行计算和全局归约成本。
+
 \subsection{条件数与 CG 收敛}
 
-定义能量范数
-\begin{equation}
-\|\bm e\|_A
-=
-\sqrt{\bm e^TA\bm e}.
-\end{equation}
 CG 的经典最坏情形界为
 \begin{equation}
 \boxed{
@@ -488,88 +578,120 @@ CG 的经典最坏情形界为
 \le
 2
 \left(
-\frac{
-\sqrt{\kappa_2(A)}-1
-}{
-\sqrt{\kappa_2(A)}+1
-}
+\frac{\sqrt{\kappa_2(A)}-1}{\sqrt{\kappa_2(A)}+1}
 \right)^k
 \|\bm e_0\|_A.
 }
 \label{eq:cg-condition-bound}
 \end{equation}
-其中
+其中对 SPD 矩阵
 \begin{equation}
 \kappa_2(A)
 =
-\frac{\lambda_{\max}(A)}{\lambda_{\min}(A)}
+\frac{\lambda_{\max}(A)}{\lambda_{\min}(A)}.
 \end{equation}
-对 SPD 矩阵成立。
 
-这条式子第一次把“矩阵条件数”和“迭代次数”直接连接起来。条件数越接近 1，最坏情况下的收敛越快；条件数很大时，CG 可能需要更多迭代。
+这条式子第一次把矩阵条件数和 Krylov 迭代速度直接连接起来。条件数越接近 $1$，最坏情况下的收敛越快；条件数很大时，CG 可能需要更多迭代。
 
-但式~\eqref{eq:cg-condition-bound} 是上界，不是每个问题的精确迭代数。实际 CG 还受特征值聚集、离群特征值和初始误差方向影响。
+但式~\eqref{eq:cg-condition-bound}只是上界，不是每个问题的精确迭代数。实际 CG 还受特征值聚集、离群特征值和初始误差方向影响。
 
 \begin{keybox}
-\textbf{CG 的适用条件不是可选项：}
+\textbf{CG 的两个不可分割条件：}
 \[
 \boxed{
-A\text{ 必须是 SPD。}
+\text{Krylov 搜索空间}
++
+\text{SPD 结构}
+\Longrightarrow
+\text{能量最优性 + 短递推}.
 }
 \]
-若系统非对称或不定，不能仅因为“矩阵很稀疏”就继续使用标准 CG。
+若系统非对称或不定，不能仅因为“矩阵稀疏”就继续使用标准 CG。
 \end{keybox}
 
 \section{广义最小残差法}
 \label{sec:gmres}
 
-CG 强烈依赖 SPD 结构。对一般非对称系统，需要另一种 Krylov 思路：直接在当前 Krylov 子空间中寻找使残差二范数最小的近似，这就是 GMRES。
+CG 的能量最优性依赖 SPD。对一般非对称系统，GMRES 保留 Krylov 搜索空间，但更换“最好”的定义：\textbf{直接最小化当前残差的二范数。}
 
-\subsection{Arnoldi 过程}
+\subsection{先定义目标：Krylov 子空间中的最小残差}
 
-令
+GMRES 在仿射空间
+\begin{equation}
+\bm u_0+\mathcal K_m(A,\bm r_0)
+\end{equation}
+中选择
+\begin{equation}
+\boxed{
+\bm u_m
+=
+\arg\min_{\bm u\in\bm u_0+\mathcal K_m(A,\bm r_0)}
+\|\bm b-A\bm u\|_2.
+}
+\label{eq:gmres-optimality}
+\end{equation}
+
+这一式已经给出了 GMRES 的数学定义。剩下的问题只是：怎样稳定地表示 $\mathcal K_m$，并把这个高维最小化问题变成一个小问题？这正是 Arnoldi 的作用。
+
+\subsection{Arnoldi：把 Krylov 空间变成稳定正交基}
+
+直接使用
+\begin{equation}
+\bm r_0,
+A\bm r_0,
+A^2\bm r_0,
+\ldots
+\end{equation}
+作为基在数值上很差，因为这些向量会逐渐接近线性相关。Arnoldi 过程改为构造正交基
+\begin{equation}
+V_m
+=
+\begin{bmatrix}
+\bm v_1&\bm v_2&\cdots&\bm v_m
+\end{bmatrix},
+\qquad
+V_m^TV_m=I.
+\end{equation}
+
+从
 \begin{equation}
 \beta=\|\bm r_0\|_2,
 \qquad
-\bm v_1=\frac{\bm r_0}{\beta}.
+\bm v_1=\frac{\bm r_0}{\beta}
 \end{equation}
-Arnoldi 过程逐步构造正交基
+开始，第 $j$ 步先计算
 \begin{equation}
-V_m=
-\begin{bmatrix}
-\bm v_1&\bm v_2&\cdots&\bm v_m
-\end{bmatrix}
+\bm w=A\bm v_j,
 \end{equation}
-以及上 Hessenberg 矩阵 $\bar H_m$，满足
+再把 $\bm w$ 在已有 $\bm v_1,\ldots,\bm v_j$ 上的投影逐一减去并归一化。最终得到
 \begin{equation}
 \boxed{
 AV_m
 =
-V_{m+1}\bar H_m.
+V_{m+1}\bar H_m,
 }
 \label{eq:arnoldi-relation}
 \end{equation}
+其中 $\bar H_m$ 是上 Hessenberg 矩阵，即主对角线以下只有第一条次对角线可以非零。
 
-这一步把“大型稀疏矩阵上的 Krylov 子空间”压缩成一个很小的 Hessenberg 表示。
+这个关系的意义不是“把大矩阵压缩成一个小矩阵然后就结束”，而是：它把 $A$ 在当前 Krylov 子空间上的作用完整表示在一个 $(m+1)\times m$ 的小矩阵中。
 
-\subsection{残差最小化}
+\subsection{GMRES 的小型最小二乘问题}
 
-GMRES 在
+任意 Krylov 近似都可以写成
 \begin{equation}
 \bm u_m
 =
-\bm u_0+V_m\bm y_m
+\bm u_0+V_m\bm y_m.
 \end{equation}
-中选择 $\bm y_m$。残差为
+残差为
 \begin{align}
 \bm r_m
 &=
 \bm b-A(\bm u_0+V_m\bm y_m)
 \\
 &=
-\beta\bm v_1
--
-V_{m+1}\bar H_m\bm y_m
+\beta\bm v_1-V_{m+1}\bar H_m\bm y_m
 \\
 &=
 V_{m+1}
@@ -589,31 +711,39 @@ V_{m+1}
 }
 \label{eq:gmres-least-squares}
 \end{equation}
-所以 GMRES 的核心不是一个固定点更新，而是
-\[
+
+所以 GMRES 的完整心智模型是
+\begin{equation}
 \boxed{
-\text{Arnoldi 构造 Krylov 正交基}
-+
-\text{小型最小二乘残差最小化}.
+\text{Krylov 搜索空间}
+\rightarrow
+\text{Arnoldi 正交基}
+\rightarrow
+\text{小型最小二乘}
+\rightarrow
+\text{残差最小的近似}.
 }
-\]
+\end{equation}
+
+到这里可以直接对比 CG 与 GMRES：二者使用同类 Krylov 搜索空间，但最优性不同。CG 在 SPD 条件下最小化能量误差 $\|\bm e\|_A$；GMRES 面向一般算子，直接最小化残差 $\|\bm r\|_2$。
 
 \subsection{重启与非正规矩阵}
 
-不重启的 GMRES 每轮都需要保存更多 Krylov 基向量，Arnoldi 正交化成本也不断增长。实际软件中常用 GMRES$(m)$：构造至多 $m$ 个基向量后重启，以限制内存和正交化成本。
+不重启的 GMRES 在第 $m$ 步需要保存约 $m$ 个长度为 $N$ 的 Krylov 基向量，而且 Arnoldi 正交化每一步都要与越来越多的历史基向量做内积。因此随着 $m$ 增大，存储与正交化成本都会增长。
 
-重启降低了存储成本，但会丢失历史子空间信息，因此可能减慢收敛，甚至出现长期停滞。参数 $m$ 是数值效率与内存成本之间的折中。
+实际软件中常用 GMRES$(m)$：最多保留 $m$ 个 Krylov 方向，然后以当前解作为新的初始猜测重新开始。重启控制了内存和正交化成本，但会丢失历史子空间信息，因此可能显著减慢收敛，甚至造成长期停滞。
 
-还必须注意：对非正规矩阵，GMRES 的行为不能只由特征值位置或谱半径完全解释。特征向量条件、非正规性和多项式逼近性质都会影响收敛。因此不能把平稳迭代中的“$\rho(S)<1$”直接套到 GMRES 上。
+还必须注意：对非正规矩阵，GMRES 的行为不能只由特征值位置或谱半径完整解释。非正规性、特征向量条件以及残差多项式的逼近性质都会影响收敛。因此不能把平稳迭代中的“$\rho(S)<1$”机械套到 GMRES 上。
 
 \begin{checkpointbox}
 \textbf{即时检查}
 
-CG 与 GMRES 都属于 Krylov 方法，但它们利用矩阵结构的方式不同。说明：
+CG 与 GMRES 都在 Krylov 子空间里寻找近似，但最优性不同。说明：
 \begin{enumerate}
-\item 为什么 SPD 条件让 CG 可以使用短递推；
-\item 为什么一般 GMRES 需要保存 Arnoldi 基；
-\item 为什么 GMRES 的“最小残差”不是指每个分量残差分别最小。
+\item CG 为什么依赖 SPD，且为什么能用短递推；
+\item GMRES 为什么需要 Arnoldi 正交基；
+\item “GMRES 最小残差”为什么指整个 $\|\bm r\|_2$ 最小，而不是每个残差分量分别最小；
+\item 对一个 matrix-free 算子，实现 CG/GMRES 至少需要提供哪些基本操作。
 \end{enumerate}
 \end{checkpointbox}
 
@@ -628,17 +758,24 @@ M^{-1}\approx A^{-1},
 \end{equation}
 那么
 \begin{equation}
-M^{-1}A
-\approx
-I.
+M^{-1}A\approx I.
 \end{equation}
-预条件的目标不是“额外做一个求解器”，而是把原系统变换成更适合迭代的方法。
+预条件的目标不是“额外做一个求解器”，而是让外层迭代看到一个更容易处理的问题。
+
+这里再次强调，程序通常不会显式构造 $M^{-1}$。一次预条件器应用通常写成
+\begin{equation}
+M\bm z=\bm r,
+\qquad
+\bm z=M^{-1}\bm r,
+\label{eq:preconditioning-apply}
+\end{equation}
+其中求解 $M\bm z=\bm r$ 应当比求解原系统便宜得多。
 
 左预条件写成
 \begin{equation}
 M^{-1}A\bm u
 =
-M^{-1}\bm b.
+M^{-1}\bm b,
 \label{eq:preconditioning-left}
 \end{equation}
 右预条件写成
@@ -651,11 +788,7 @@ AM^{-1}\bm y
 \label{eq:preconditioning-right}
 \end{equation}
 
-对 GMRES，左右预条件会改变被最小化的残差含义。右预条件 GMRES 的 Arnoldi 过程作用于 $AM^{-1}$，而原系统残差仍是
-\begin{equation}
-\bm r=\bm b-A\bm u,
-\end{equation}
-因此工程上更容易直接监控物理系统的真实残差；左预条件 GMRES 则直接处理预条件残差 $M^{-1}\bm r$。
+预条件真正改变的是外层迭代所面对的算子几何。理想情况下，特征值更加聚集、条件数更小，或者原来难处理的误差方向被 $M^{-1}$ 重新缩放到更容易搜索的尺度。
 
 \subsection{预条件共轭梯度法}
 
@@ -667,24 +800,16 @@ AM^{-1}\bm y
 \begin{equation}
 \alpha_k
 =
-\frac{
-\bm r_k^T\bm z_k
-}{
-\bm p_k^TA\bm p_k
-},
+\frac{\bm r_k^T\bm z_k}{\bm p_k^TA\bm p_k},
 \end{equation}
 以及
 \begin{equation}
 \beta_k
 =
-\frac{
-\bm r_{k+1}^T\bm z_{k+1}
-}{
-\bm r_k^T\bm z_k
-}.
+\frac{\bm r_{k+1}^T\bm z_{k+1}}{\bm r_k^T\bm z_k}.
 \end{equation}
 
-从谱角度，更自然的对象是
+从谱角度，更自然的 SPD 对象是
 \begin{equation}
 \widehat A
 =
@@ -696,38 +821,56 @@ M^{-1/2}AM^{-1/2}.
 \end{equation}
 应显著小于原系统的 $\kappa_2(A)$。
 
-这正是后面“多重网格作为预条件器”的理论入口：不要求一次 V-cycle 精确解出问题，而是希望它把外层 Krylov 方法看到的系统变得更容易。
+这正是后面“多重网格作为预条件器”的理论入口：不要求一次 V-cycle 精确解出问题，而是希望它让外层 Krylov 方法看到的算子更接近单位算子。
 
-\subsection{预条件 GMRES}
+\subsection{预条件 GMRES：左还是右}
 
-一般非对称系统没有 PCG 的 SPD 结构要求，可以使用预条件 GMRES。若 $M^{-1}$ 固定且线性，普通 GMRES 可以在 $M^{-1}A$ 或 $AM^{-1}$ 上建立 Krylov 子空间。
+一般非对称系统可以使用预条件 GMRES。
 
-预条件器的效果不能只看一次 $M^{-1}\bm r$ 是否降低残差，还要看整个预条件算子的谱、非正规性、apply 成本以及它与外层 Krylov 方法的相互作用。
+左预条件时，Krylov 空间建立在 $M^{-1}A$ 上，算法自然最小化的是预条件残差 $M^{-1}\bm r$。
 
-\section{柔性 GMRES 与可变预条件}
+右预条件时，Krylov 空间建立在
+\begin{equation}
+\mathcal K_m(AM^{-1},\bm r_0)
+\end{equation}
+上，先求辅助变量 $\bm y$，再由 $\bm u=M^{-1}\bm y$ 恢复物理解。此时原系统残差仍然是
+\begin{equation}
+\bm r=\bm b-A\bm u,
+\end{equation}
+因此工程上更容易直接用真实残差作为停止和诊断量。
+
+左右预条件并不是简单的符号交换；它们改变 Krylov 空间、残差含义和数值实现。后文讨论软件接口时，应明确库采用的是哪一种预条件约定。
+
+\section{FGMRES 与可变预条件}
 \label{sec:fgmres}
 
-普通右预条件 GMRES 默认每一步都使用同一个线性 $M^{-1}$。但实际计算中，预条件步骤可能改变：内层求解的容差不同、多重网格循环 的次数改变、粗层求解器不固定，或者预条件器本身是非线性的。
+普通右预条件 GMRES 默认每一步使用同一个固定线性算子 $M^{-1}$。但实际计算中，预条件步骤可能改变：内层求解容差不同、多重网格循环次数改变、粗层求解器不固定，或者预条件器本身是非线性的。
 
 若第 $j$ 步使用
 \begin{equation}
 \bm z_j=M_j^{-1}\bm v_j,
 \label{eq:fgmres-variable-preconditioner}
 \end{equation}
-那么不能再把所有 $\bm z_j$ 统一解释成一个固定 $M^{-1}V_m$。
+则不存在一个固定 $M^{-1}$ 可以把所有 $\bm z_j$ 统一写成 $M^{-1}\bm v_j$。
 
-FGMRES 的关键做法是显式保存
+FGMRES 的关键是显式保存
 \begin{equation}
-Z_m=
+Z_m
+=
 \begin{bmatrix}
 \bm z_1&\bm z_2&\cdots&\bm z_m
 \end{bmatrix},
 \end{equation}
-Arnoldi 正交化仍围绕
+并对 $A\bm z_j$ 做 Arnoldi 正交化，从而得到
 \begin{equation}
-A\bm z_j
+\boxed{
+AZ_m
+=
+V_{m+1}\bar H_m.
+}
+\label{eq:fgmres-arnoldi}
 \end{equation}
-展开，最终更新写成
+最终更新不是 $\bm u_0+M^{-1}V_m\bm y_m$，而是
 \begin{equation}
 \boxed{
 \bm u_m
@@ -737,7 +880,9 @@ A\bm z_j
 \label{eq:fgmres-update}
 \end{equation}
 
-这里需要建立的边界非常明确：
+这正是“flexible”的数学含义：每一步允许不同的预条件修正空间，而不是假装所有修正都来自同一个固定 $M^{-1}$。
+
+\begin{keybox}
 \[
 \boxed{
 \begin{aligned}
@@ -751,44 +896,57 @@ A\bm z_j
 \end{aligned}
 }
 \]
+\end{keybox}
 
-后续\chapref{ch:mg-cycles}会把 $M_j^{-1}$ 具体化为 多重网格 V-cycle，并讨论固定循环与可变循环 分别适合怎样的外层方法。
+后续\chapref{ch:mg-cycles}会把 $M_j^{-1}$ 具体化为多重网格 V-cycle，并讨论固定循环与可变循环分别适合怎样的外层方法。
 
 \section{方法选择与本章边界}
 
-现在可以形成一个基本选择流程。
+现在可以把本章压缩成一个结构化选择流程。
 
-若系统规模较小、矩阵固定并且需要重复求解，稀疏直接法可能最简单可靠。
+第一步看矩阵结构。若 $A$ 为 SPD，大规模迭代求解优先考虑 CG；若有 SPD 预条件器，则考虑 PCG。若矩阵对称但不定，可考虑 MINRES 等专门方法。若矩阵一般非对称，GMRES 是基础选择。
 
-若 $A$ 为 SPD，大规模迭代求解首先考虑 CG；若有 SPD 预条件器，则考虑 PCG。
+第二步看预条件器是否固定。固定线性预条件器可以直接与 PCG/GMRES 组合；若预条件器会逐步变化或具有非线性，则 FGMRES 更自然。
 
-若 $A$ 一般非对称，GMRES 是基础选择；若内存压力较大，常使用重启 GMRES，但必须检查重启是否损害收敛。
+第三步看规模和代价。小型系统或最粗层问题可能直接使用稀疏直接法；大型 PDE 系统则必须同时比较 operator apply、预条件器 apply、点积/全局归约、存储以及总迭代数，而不能只比较某个单独 kernel。
 
-若预条件器会随迭代变化，FGMRES 提供了更自然的外层框架。
-
-Jacobi/Gauss--Seidel 很少因为“它们是最先进的独立求解器”而重要；它们真正进入多重网格主线，是因为其局部误差处理具有特殊的频率选择性。\chapref{ch:two-grid}接下来就从这个问题开始：\textbf{为什么一个作为独立求解器越来越慢的 Jacobi，反而可以成为有效的 多重网格平滑器？}
+Jacobi/Gauss--Seidel 进入多重网格主线，不是因为它们是最强的独立求解器，而是因为它们对误差频率具有特殊的选择性。\chapref{ch:two-grid}接下来就从这个问题开始：为什么一个作为独立求解器越来越慢的 Jacobi，反而可以成为有效的多重网格平滑器？
 
 \begin{keybox}
-\textbf{本章完成了两个角色的分离：}
+\textbf{第三章最终要留下的心智模型：}
 \[
 \boxed{
-\text{外层求解器}
-\neq
-\text{预条件器}.
+\begin{aligned}
+\text{CG}
+&:\quad
+\text{SPD + Krylov + 能量最优},
+\\
+\text{GMRES}
+&:\quad
+\text{一般算子 + Krylov + 最小残差},
+\\
+\text{FGMRES}
+&:\quad
+\text{GMRES + 可变预条件空间},
+\\
+\text{预条件器}
+&:\quad
+\text{廉价近似逆，改变外层求解难度}.
+\end{aligned}
 }
 \]
-CG/GMRES/FGMRES 负责组织搜索空间和迭代历史；预条件器负责把残差变成更有用的修正方向。多重网格后面既可以独立迭代，也可以扮演 $M^{-1}$。
 \end{keybox}
 
 \section*{习题}
 
 \subsection*{基本求解路线}
 \begin{enumerate}[label=\arabic*.]
-\item 对以下系统说明更适合优先考虑 LU/Cholesky、CG、GMRES 还是 FGMRES，并给出理由：
+\item 对以下系统说明更适合优先考虑 LU/Cholesky、CG、GMRES、MINRES 或 FGMRES，并给出理由：
   (a) 小型 SPD 系统且矩阵固定；
   (b) 大型 SPD 稀疏系统；
   (c) 大型非对称稀疏系统；
-  (d) 非对称系统且预条件器每轮可能变化。
+  (d) 对称不定系统；
+  (e) 非对称系统且预条件器每轮可能变化。
 \item 解释稀疏矩阵的“填充”为什么可能让直接法的内存成本远高于原矩阵。
 \end{enumerate}
 
@@ -796,23 +954,28 @@ CG/GMRES/FGMRES 负责组织搜索空间和迭代历史；预条件器负责把�
 \begin{enumerate}[label=\arabic*.]
 \item 给定一个 $3\times3$ SPD 矩阵、近似解和右端，计算误差、残差，并验证 $\bm r=A\bm e$。
 \item 从式~\eqref{eq:linear-solvers-stationary}推导误差传播矩阵 $S=I-M^{-1}A$。
+\item 解释为什么写 $M^{-1}\bm r$ 并不意味着程序必须显式形成 $M^{-1}$。
 \item 对一个给定 $S$ 计算谱半径，并判断平稳迭代是否从任意初值收敛。
 \item 两种方法的渐近收敛因子分别为 $0.2$ 与 $0.95$。估计把误差降到 $10^{-8}$ 所需迭代数。
 \end{enumerate}
 
-\subsection*{CG 与 GMRES}
+\subsection*{Krylov、CG 与 GMRES}
 \begin{enumerate}[label=\arabic*.]
+\item 证明 $\mathcal K_m(A,\bm r_0)$ 中任意向量都可写成 $p_{m-1}(A)\bm r_0$，并解释这一结果为什么可以理解成“用矩阵多项式近似 $A^{-1}$ 的作用”。
 \item 从二次泛函~\eqref{eq:cg-energy-functional}推导 $\nabla\phi=A\bm u-\bm b$，说明为什么 SPD 系统可以解释成凸二次最小化。
 \item 对一个 $2\times2$ SPD 系统手算前两轮 CG，并验证搜索方向的 $A$-共轭性。
 \item 给定两个 SPD 系统的条件数 $\kappa_2=10$ 与 $10^4$，用式~\eqref{eq:cg-condition-bound}比较理论最坏收敛因子。
 \item 从 Arnoldi 关系~\eqref{eq:arnoldi-relation}推导 GMRES 小型最小二乘问题~\eqref{eq:gmres-least-squares}。
+\item 解释为什么直接保存 $\bm r_0,A\bm r_0,A^2\bm r_0,\ldots$ 作为基在数值上不如 Arnoldi 正交基稳定。
 \item 解释为什么重启 GMRES 能控制内存，却可能损害收敛。
+\item 对一个只提供 matrix-free operator apply 的线性算子，列出实现 CG 或 GMRES 所需的最小向量操作集合。
 \end{enumerate}
 
 \subsection*{预条件与柔性方法}
 \begin{enumerate}[label=\arabic*.]
-\item 比较左预条件与右预条件 GMRES 中“被最小化/监控的残差”有什么差异。
+\item 比较左预条件与右预条件 GMRES 中 Krylov 空间和残差含义的差异。
 \item 说明 PCG 为什么不仅要求 $A$ 为 SPD，也要求预条件器保持相容的 SPD 结构。
-\item 构造一个预条件器每轮改变的例子，解释为什么普通固定右预条件 GMRES 的模型不再准确，以及 FGMRES 为什么需要保存 $Z_m$。
-\item 设计一个数值实验，比较无预条件 CG 与 PCG 的迭代数，并同时记录预条件器 apply 的成本，说明“迭代数减少”为什么不等于“总时间一定减少”。
+\item 构造一个预条件器每轮改变的例子，解释为什么普通固定右预条件 GMRES 的模型不再准确，以及 FGMRES 为什么必须保存 $Z_m$。
+\item 从 $AZ_m=V_{m+1}\bar H_m$ 推导 FGMRES 的小型最小二乘问题，并比较它与普通右预条件 GMRES 的区别。
+\item 设计一个数值实验，比较无预条件 CG 与 PCG 的迭代数，并同时记录预条件器 apply 成本，说明“迭代数减少”为什么不等于“总时间一定减少”。
 \end{enumerate}
