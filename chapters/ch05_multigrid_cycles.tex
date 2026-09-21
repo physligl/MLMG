@@ -46,7 +46,7 @@ N_\ell:=\dim W^{(\ell)},
 \end{algorithmic}
 \end{algorithm}
 
-这里 \texttt{BottomSolve} 指递归到达最粗 MG level 后用于终止递归的求解过程。因为最粗问题已经很小，它可以是若干次平滑、小规模直接法，或 Krylov 迭代。\chapref{ch:linear-solvers}已经系统介绍直接法、平稳迭代、CG/GMRES/FGMRES 与预条件；本章后面的\secref{sec:mg-preconditioner}只进一步解释 多重网格怎样扮演其中的预条件器角色。不同硬件上 bottom solver 为什么会改变，则分别在\chapref{ch:shared-memory}、\chapref{ch:gpu}、\chapref{ch:mpi}和\chapref{ch:distributed-gpu}讨论。
+这里 \texttt{BottomSolve} 表示递归到达最粗 MG 层后用于终止递归的求解过程。因为最粗问题已经很小，它可以是若干次平滑、小规模直接法，或 Krylov 迭代。\chapref{ch:linear-solvers}已经系统介绍直接法、平稳迭代、CG/GMRES/FGMRES 与预条件；本章后面的\secref{sec:mg-preconditioner}只进一步解释多重网格怎样扮演其中的预条件器角色。不同硬件上最粗层求解器为什么会改变，则分别在\chapref{ch:shared-memory}、\chapref{ch:gpu}、\chapref{ch:mpi}和\chapref{ch:distributed-gpu}讨论。
 
 “V”来自访问层级的路径：从细层逐层向粗层下降，再逐层返回。它不是矩阵形状，而是递归调用轨迹的形象表示。为了让递归不只停留在伪代码里，考虑三层 $\ell=0,1,2$。一次 V-cycle 的实际访问顺序是
 \begin{align}
@@ -57,7 +57,7 @@ N_\ell:=\dim W^{(\ell)},
 \xrightarrow{\text{延拓、校正、后平滑}}1
 \xrightarrow{\text{延拓、校正、后平滑}}0.
 \end{align}
-所以“递归”并不是同时存在多个不同原理的求解器，而是同一套两网格操作在不同求解空间上重复调用；只有到达最粗层时，递归才由 bottom solve 终止。
+所以“递归”并不是同时存在多个不同原理的求解器，而是同一套两网格操作在不同求解空间上重复调用；只有到达最粗层时，递归才由最粗层求解终止。
 
 从\chapref{ch:two-grid}的误差传播观点看，这一点还可以写得更精确。若第 $\ell+1$ 层的精确逆 $A_{\ell+1}^{-1}$ 被递归得到的近似逆 $B_{\ell+1}$ 替代，则第 $\ell$ 层的粗空间校正从
 \begin{equation}
@@ -70,7 +70,7 @@ I-P_{\ell+1}^{\ell}A_{\ell+1}^{-1}R_{\ell}^{\ell+1}A_\ell
 I-P_{\ell+1}^{\ell}B_{\ell+1}R_{\ell}^{\ell+1}A_\ell.
 \label{eq:mg-recursive-coarse-correction}
 \end{equation}
-因此 V-cycle 的递归本质是：\textbf{用下一层的多重网格近似逆，替代 two-grid 公式中假定的精确粗层逆。}这条关系把 两网格理论与多层算法直接接起来。
+因此 V-cycle 的递归本质是：\textbf{用下一层的多重网格近似逆，替代两网格公式中假定的精确粗层逆。}这条关系把两网格理论与多层算法直接接起来。
 
 \subsection{W-Cycle 与其他循环}
 
@@ -211,7 +211,7 @@ A^{-1}\bm r
 
 若外层使用预条件共轭梯度法（PCG），则不能只检查原矩阵 $A$ 是否 SPD；整个多重网格预条件器也必须保持与所用内积相容的对称正定结构。
 
-对于 nodal 离散，常见条件包括 restriction/prolongation 的适当伴随关系、对称的预平滑/后平滑配对以及 SPD coarse solve。对于 cell-centered FV 或守恒型 FD，相应伴随关系可能定义在体积加权内积下，而不是简单要求数组满足 $R=P^T$。
+对于 nodal 离散，常见条件包括 限制/延拓的适当伴随关系、对称的预平滑/后平滑配对以及 SPD 粗层求解。对于 cell-centered FV 或守恒型 FD，相应伴随关系可能定义在体积加权内积下，而不是简单要求数组满足 $R=P^T$。
 
 例如只做单向 Gauss--Seidel 预平滑而没有匹配的反向后平滑，可能破坏整体预条件器需要的对称性。真正需要检查的是完整的 $B_{MG}$，而不是某一个局部平滑器 是否“看起来有效”。
 
@@ -262,7 +262,7 @@ B_k\bm r_k,
 \label{eq:preconditioner-krylov-execution-flow}
 \end{equation}
 
-多重网格内部主要是 stencil、网格间传递和邻域通信；Krylov 外层还会增加 dot/norm 的 global reduction。因此“MG 本身扩展得很好”并不自动意味着“MG 预条件 Krylov 整体扩展得很好”。\chapref{ch:mg-parallel-operations}、\chapref{ch:mpi}和\chapref{ch:distributed-gpu}会继续分析这些不同通信模式。
+多重网格内部主要是 stencil、网格间传递和邻域通信；Krylov 外层还会增加 点积/范数产生的全局归约。因此“MG 本身扩展得很好”并不自动意味着“MG 预条件 Krylov 整体扩展得很好”。\chapref{ch:mg-parallel-operations}、\chapref{ch:mpi}和\chapref{ch:distributed-gpu}会继续分析这些不同通信模式。
 
 
 
@@ -515,7 +515,7 @@ M=\begin{bmatrix}4&0\\0&3\end{bmatrix},
 \item 对 $d$ 维 full coarsening，证明 V-cycle 若每层工作量与 $N_\ell$ 成正比，则总复杂度为 $\Oh(N)$。
 \item 对 W-cycle 建立递推 $T(N)=cN+2T(N/2^d)$，分别分析 $d=1,2,3$ 的渐近复杂度。
 \item 设一个非几何粗空间序列满足 $N_{\ell+1}\le qN_\ell$，但每层单位自由度成本满足 $c_\ell\le c_0(1+\gamma\ell)$。推导一次 V-cycle 总工作量的上界，并判断它是否仍为 $\Oh(N_0)$。
-\item 说明 recursive coarse solve 为什么仍然是在近似求解同一个 coarse error equation，而不是定义一个新的 PDE。
+\item 说明 递归粗层求解 为什么仍然是在近似求解同一个 粗网格误差方程，而不是定义一个新的 PDE。
 \item 推导多重网格作为线性预条件器时，一次 V-cycle 对外层 Krylov 方法提供的算子形式，并说明固定 cycle 参数为什么有利于保持线性。
 \item 假设 $A$ 与 $M$ 都 SPD，证明 $M^{-1/2}AM^{-1/2}$ 仍 SPD，并解释为什么这允许把预条件后的问题放进 CG 的 SPD 理论框架。
 \item 说明一个 V-cycle 若每次根据当前 residual 自适应改变 内层容差，为什么一般不能再视为固定线性算子 $B_{MG}$；据此解释 FGMRES 的动机。
@@ -523,9 +523,9 @@ M=\begin{bmatrix}4&0\\0&3\end{bmatrix},
 
 \subsection*{求解实验}
 \begin{enumerate}[label=\arabic*.]
-\item 将第~\ref{ch:two-grid}章 two-grid 程序改写为递归 V-cycle。用 operation counter 验证总工作量与最细层自由度数 $N$ 近似线性。
+\item 将第~\ref{ch:two-grid}章 两网格程序改写为递归 V-cycle。用 操作计数器 验证总工作量与最细层自由度数 $N$ 近似线性。
 \item 实现 V-cycle、W-cycle 和 FMG，比较达到同一误差阈值所需的总 work units 与实际时间。
-\item 改变 bottom-grid 阈值，记录 coarse solve 次数、最粗网格规模与总时间，寻找本机上的最佳阈值。
+\item 改变 最粗层阈值，记录 粗层求解次数、最粗网格规模与总时间，寻找本机上的最佳阈值。
 \item 在同一 AMR 层级内构造 MG hierarchy，打印 AMR level 与 MG level 的二元索引，验证两种 level 的含义不会混淆。
 \item 对一个两层局部细化问题，分别统计物理复合空间 $V(\mathcal H)$、FAC 粗空间 $W^{(1)}$ 以及更粗求解空间的有效自由度数；用式~\eqref{eq:mg-vcycle-general-linear-work}检查这些空间是否满足近似几何衰减，并单独统计粗细接口附近 cells 的工作占比。
 \item 在已有 V-cycle 上实现接口 $z=B_{MG}r$，分别把它接入 Richardson iteration 与 PCG/GMRES。记录相同问题下外层迭代数、每次预条件 apply 成本和总时间。
@@ -535,5 +535,5 @@ M=\begin{bmatrix}4&0\\0&3\end{bmatrix},
 \begin{enumerate}[label=\arabic*.]
 \item 给定“细层很快、粗层很慢”的性能剖析结果，解释为什么继续优化 平滑器 kernel 可能几乎不改变 V-cycle 总时间。
 \item 设计一个动态 active-thread/active-rank 策略：随着 $N_\ell$ 下降，何时减少并行参与者？给出需要测量的阈值量而不是固定经验常数。
-\item 比较“多重网格作为独立求解器”和“多重网格作为 Krylov 预条件器”时的停止准则、循环次数和鲁棒性要求。
+\item 比较“多重网格作为独立求解器”和“多重网格作为 Krylov 方法的预条件器”时的停止准则、循环次数和鲁棒性要求。
 \end{enumerate}
