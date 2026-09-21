@@ -1,6 +1,6 @@
 MLMG v0.10.2
 Release date: 2026-09-21
 Public source release based on the current canonical manuscript state.
-Rebuilds the explicit-matrix and matrix-free introduction around operator representation, assembly, and apply semantics before engineering memory budgets.
+Rebuilds the explicit-matrix and matrix-free introduction around operator representation, assembly, and operator application before engineering memory budgets.
 Streamlines coarse--fine interface closure exposition in Chapter 2 and redraws the hierarchy/composite-grid figure to expose storage overlap versus nonoverlapping valid control volumes.
 Includes the v0.10.1 distributed-GPU, portability, and timing-semantics corrections.
