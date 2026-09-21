@@ -1619,7 +1619,7 @@ matrix-free 实现仍可能需要保存
 Matrix-free 不存完整 assembled sparse matrix，但仍然必须拥有足够的信息，使程序能够对任意输入 $\bm x$ 正确返回 $A\bm x$。
 \end{keybox}
 
-\subsection{为什么迭代算法可以只认识 $A\bm x$}
+\subsection{为什么迭代算法只需要算子应用}
 
 把“矩阵”和“算子应用”区分开以后，就能理解为什么 matrix-free 可以与许多迭代算法配合。以残差为例，
 \begin{equation}
