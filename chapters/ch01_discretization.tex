@@ -1430,145 +1430,283 @@ A^T=A.
 
 \section{显式矩阵与 Matrix-Free 算子}
 
-得到 $A\bm u=\bm b$ 后，程序必须回答一个非常具体的问题：\textbf{应用 $A$ 时，算子信息究竟存在哪里？}显式矩阵和 matrix-free 的差异，本质上是两种不同的算子表示方式，而不是两个不同的数学问题。
-
-\subsection{显式稀疏矩阵的存储对象}
-
-显式方法把非零矩阵系数真正保存下来。以常见的 CSR（Compressed Sparse Row）思想为例，一个稀疏矩阵至少需要三类数组：
-\begin{enumerate}
-\item \texttt{values}：所有非零矩阵元素的数值；
-\item \texttt{column\_index}：每个非零元素属于哪一列；
-\item \texttt{row\_pointer}：每一行的非零元素在前两个数组中的起止位置。
-\end{enumerate}
-
-对三维七点离散，内部行大约有七个非零元素。若有 $N$ 个未知量，则
+到目前为止，我们一直把离散系统写成
 \begin{equation}
-\mathrm{nnz}\approx7N,
+A\bm u=\bm b.
 \end{equation}
-其中 $\mathrm{nnz}$ 表示 nonzeros，即非零元素总数。边界会让实际数量略小，但不改变量级。
+这里的 $A$ 首先是一个\textbf{数学上的线性算子}：给定离散向量 $\bm u$，它规定应该得到什么样的 $A\bm u$。但程序还要回答另一个问题：\textbf{这个算子在内存中怎样表示，又怎样真正计算 $A\bm u$？}
 
-显式矩阵的优势是结构完全自描述：一个通用稀疏线性代数程序只看这些数组，就能知道每个未知量与哪些列耦合、耦合系数是多少。代价是：\textbf{不仅要存系数，还要存“这些系数属于哪里”的索引信息。}
+这两个层次不能混在一起。把 $A$ 写成矩阵，并不意味着程序一定要把所有非零矩阵条目逐项保存下来。显式矩阵和 matrix-free 讨论的正是同一个离散算子的两种程序表示。
 
-对于规则 stencil，也可以采用固定对角线、固定邻居等更紧凑的显式格式，从而省掉部分索引。但只要把每个局部系数预先物化并长期保存，它仍属于显式算子表示。
+\subsection{从三个未知量看同一个算子的两种表示}
 
-\subsection{Matrix-Free 的存储对象}
-
-Matrix-free 不保存通用的 $(A_{ij})$ 非零列表，而是保存“生成这些局部系数所需要的信息”，并在应用算子时现场计算。
-
-三维常系数 Poisson 是最极端的例子。若网格间距固定，算子只需要知道
+先回到最小的可检查例子。考虑一维 Poisson 方程
 \begin{equation}
-h_x,\quad h_y,\quad h_z
+-u''(x)=f(x),
 \end{equation}
-以及边界条件等少量元数据，就可以从固定七点公式计算 $Au$。此时没有必要保存 $7N$ 个系数，更没有必要保存 $7N$ 个列索引。
-
-但 matrix-free 并不等于“算子不占内存”。对更一般的式 \eqref{eq:discretization-general-diffusion}，可能仍需保存：
-\begin{itemize}
-\item cell-centered 的 $\alpha_i$；
-\item 各方向 face-centered 的 $\beta$；
-\item 网格尺寸或几何信息；
-\item 边界类型、边界值或边界 mask；
-\item 不规则几何下的体积分数、面积分数或其他局部几何系数。
-\end{itemize}
-区别在于，这些数据描述的是\textbf{物理/几何系数}，而不是每一个矩阵非零元及其列号。
-
-\begin{keybox}
-\textbf{两种表示方式到底存什么：}
-
-显式稀疏矩阵存“已经组装好的代数耦合”：$A_{ij}$ 及其稀疏位置。
-
-Matrix-free 存“生成代数耦合所需的规则和系数”：网格、材料参数、边界与局部几何；$A_{ij}$ 在执行 $Au$ 时临时产生。
-\end{keybox}
-
-\subsection{算子存储与工作向量}
-
-比较内存时必须把两类东西分开：
+取三个内部未知量 $u_1,u_2,u_3$，并令两端为齐次 Dirichlet 条件
+\begin{equation}
+u_0=u_4=0.
+\end{equation}
+标准中心差分给出
+\begin{equation}
+\frac{-u_{i-1}+2u_i-u_{i+1}}{h^2}=f_i,
+\qquad i=1,2,3.
+\label{eq:discretization-mf-three-point}
+\end{equation}
+把三条离散方程写成矩阵形式，就是
 \begin{equation}
 \boxed{
-\text{总内存}
-=\text{算子表示}
-+\text{未知量/右端/残差等工作向量}
-+\text{求解器额外工作区}.
+A=
+\frac1{h^2}
+\begin{bmatrix}
+2&-1&0\\
+-1&2&-1\\
+0&-1&2
+\end{bmatrix},
+\qquad
+A
+\begin{bmatrix}
+u_1\\u_2\\u_3
+\end{bmatrix}
+=
+\begin{bmatrix}
+f_1\\f_2\\f_3
+\end{bmatrix}.
 }
+\label{eq:discretization-mf-explicit-three}
 \end{equation}
 
-无论显式还是 matrix-free，至少都要保存未知量 $u$ 和右端 $b$。迭代求解时通常还会有残差 $r=b-Au$、临时向量和其他求解器工作区；残差与迭代修正将在\chapref{ch:iterative-smoothing}正式建立。因此不能把“matrix-free 不存矩阵”误解成“整个求解只需要一个 $u$ 数组”。
-
-为了把问题说清楚，先只比较单层三维七点问题，并假设所有标量均为 FP64，即每个数占 $8$ byte。
-
-若保留四个 cell-centered 向量
+现在暂时不求解，只看一次算子应用。给定任意向量
 \begin{equation}
-u,\quad b,\quad r,\quad w,
+\bm x=
+\begin{bmatrix}
+x_1&x_2&x_3
+\end{bmatrix}^T,
 \end{equation}
-其共同内存为
+若程序保存了式~\eqref{eq:discretization-mf-explicit-three} 中的矩阵条目，就可以直接做矩阵向量乘法
 \begin{equation}
-M_{vec}=4\times8N=32N\ \text{byte}.
-\label{eq:discretization-vector-memory}
+\bm y=A\bm x.
 \end{equation}
-这部分是两种表示都可能需要的共同成本。
+得到
+\begin{equation}
+\begin{aligned}
+y_1&=\frac{2x_1-x_2}{h^2},\\
+y_2&=\frac{-x_1+2x_2-x_3}{h^2},\\
+y_3&=\frac{-x_2+2x_3}{h^2}.
+\end{aligned}
+\label{eq:discretization-mf-three-apply}
+\end{equation}
 
-\subsection{三维七点算子的存储预算}
+但程序也可以完全不保存这个 $3\times3$ 矩阵，而是直接根据式~\eqref{eq:discretization-mf-three-point} 的 stencil 规则逐点计算式~\eqref{eq:discretization-mf-three-apply}。输出仍然是同一个 $\bm y=A\bm x$。
 
-现在给出一个具体预算。取
+这就是最基本的 matrix-free 思想。它没有改变离散方程，也没有删除数学上的 $A$；它只是没有把 $A$ 逐项物化为一个长期存储的矩阵数据结构。
+
+\begin{keybox}
+\textbf{先把最核心的区别固定下来：}
+
+显式矩阵表示：$A$ 的非零代数耦合被预先计算并保存，应用算子时读取这些矩阵条目。
+
+Matrix-free 表示：不长期保存完整的非零矩阵条目，而是保留生成这些耦合所需的 stencil、系数、几何和边界信息，在执行 $A\bm x$ 时直接计算结果。
+
+因此
+\[
+\boxed{
+A\text{ 是数学对象；explicit / matrix-free 是程序表示。}
+}
+\]
+\end{keybox}
+
+\subsection{从 stencil 到矩阵：什么叫 assembly}
+
+式~\eqref{eq:discretization-mf-three-point} 已经给出了局部离散关系。若选择显式矩阵表示，程序需要把这些局部关系转成全局矩阵条目。以内点 $i$ 为例，
+\begin{equation}
+\frac{-u_{i-1}+2u_i-u_{i+1}}{h^2}
+\end{equation}
+对应第 $i$ 行的三个系数
+\begin{equation}
+A_{i,i-1}=-\frac1{h^2},
+\qquad
+A_{i,i}=\frac2{h^2},
+\qquad
+A_{i,i+1}=-\frac1{h^2}.
+\label{eq:discretization-assembly-row}
+\end{equation}
+把所有局部离散关系以及边界闭合对矩阵和右端的贡献写入全局线性系统，这个过程称为\textbf{装配（assembly）}。
+
+因此显式路径可以概括为
+\begin{equation}
+\boxed{
+\text{离散规则}
+\longrightarrow
+\text{矩阵条目 }A_{ij}
+\longrightarrow
+\text{稀疏矩阵数据结构}
+\longrightarrow
+A\bm x.
+}
+\label{eq:discretization-explicit-path}
+\end{equation}
+而 matrix-free 路径跳过了“长期保存完整矩阵条目”这一步：
+\begin{equation}
+\boxed{
+\text{离散规则与局部系数}
+\longrightarrow
+A\bm x.
+}
+\label{eq:discretization-matrixfree-path}
+\end{equation}
+
+这两个流程必须产生与同一离散算子一致的结果。若边界条件、变系数平均方式或几何系数在两条路径中处理不同，那么所谓“显式与 matrix-free 等价”就已经失效。验证一个 matrix-free 实现时，最直接的正确性测试之一，就是在一个足够小的问题上同时构造显式矩阵，并比较两种路径得到的 $A\bm x$。
+
+\subsection{显式稀疏矩阵在程序中怎样存}
+
+对真实 PDE 网格，$A$ 往往非常大，但上一节已经说明它通常是稀疏的。显式表示并不会存一个 $N\times N$ 的稠密数组，而是只保存非零条目以及它们的位置。
+
+以常见的 CSR（Compressed Sparse Row）为例，主要包含三类数组：
+\begin{enumerate}
+\item \texttt{values}：所有非零矩阵元素的数值；
+\item \texttt{column\_index}：每个非零元素所在的列；
+\item \texttt{row\_pointer}：每一行在前两个数组中的起止位置。
+\end{enumerate}
+
+例如三维七点 stencil 的内部行大约只有七个非零元素，因此若有 $N$ 个未知量，
+\begin{equation}
+\mathrm{nnz}\approx7N.
+\end{equation}
+CSR 的意义不是改变数学上的矩阵，而是避免保存大量必然为零的位置。
+
+显式矩阵也不一定非要使用 CSR。规则 stencil 可以使用固定对角线或固定邻接格式，某些块系统还会使用 block sparse 格式。这里真正决定“显式”的不是具体容器，而是：\textbf{局部代数系数已经被预先物化并长期保存，后续 $A\bm x$ 直接读取这些系数。}
+
+\subsection{Matrix-Free 到底没有存什么}
+
+Matrix-free 省略的是 assembled matrix entries 及其通用稀疏索引结构，不是把算子所需的数据全部消失。
+
+对规则常系数三维 Poisson，若网格间距固定，七点算子的系数可以直接由
+\begin{equation}
+h_x,\qquad h_y,\qquad h_z
+\end{equation}
+以及边界信息生成，因此没有必要为每个 cell 单独保存七个矩阵系数及其列号。
+
+但对一般变系数算子
+\begin{equation}
+-\nabla\cdot\bigl(\beta\nabla u\bigr)+\alpha u=f,
+\end{equation}
+matrix-free 实现仍可能需要保存
+\begin{itemize}
+\item cell-centered 的 $\alpha$；
+\item 各方向 face-centered 的 $\beta$；
+\item 网格尺寸、坐标或局部几何信息；
+\item 边界类型、边界数据或 boundary mask；
+\item 不规则几何下的体积分数、面积分数和其他局部系数。
+\end{itemize}
+这些数据描述的是\textbf{如何生成局部离散作用}，而不是把所有 $A_{ij}$ 及其位置完整保存下来。
+
+\begin{keybox}
+\[
+\boxed{
+\text{matrix-free}\neq\text{data-free}.
+}
+\]
+
+Matrix-free 不存完整 assembled sparse matrix，但仍然必须拥有足够的信息，使程序能够对任意输入 $\bm x$ 正确返回 $A\bm x$。
+\end{keybox}
+
+\subsection{为什么迭代算法可以只认识 $A\bm x$}
+
+把“矩阵”和“算子应用”区分开以后，就能理解为什么 matrix-free 可以与许多迭代算法配合。以残差为例，
+\begin{equation}
+\bm r=\bm b-A\bm u.
+\end{equation}
+计算它并不要求程序逐项访问任意 $A_{ij}$；只要能够给定 $\bm u$ 返回 $A\bm u$ 即可。
+
+很多 Krylov 方法的核心也反复出现这种操作：
+\begin{equation}
+\bm x
+\longmapsto
+A\bm x.
+\end{equation}
+因此从接口上看，一个线性算子完全可以表现为“输入向量，输出算子作用后的向量”，而不必表现为“允许任意查询矩阵条目”的容器。后续章节讨论 Krylov 方法、多重网格和 GPU kernel 时会反复使用这一观点。
+
+不过，\textbf{能做 $A\bm x$ 并不意味着所有算法都天然适合 matrix-free。}直接因子分解需要显式代数结构；某些 AMG setup、稀疏矩阵重排或依赖矩阵图的算法也需要访问矩阵条目或等价的邻接信息。于是 matrix-free 是否合适，不只由 PDE 决定，还取决于后续算法究竟需要“算子作用”，还是需要“矩阵本身”。
+
+\subsection{真正的工程取舍：少搬数据还是少做计算}
+
+显式矩阵把局部系数提前算好。它的优点是后续应用时不必重新推导这些系数，而且可以直接交给通用稀疏线性代数软件。代价是每次计算 $A\bm x$ 时，不仅要读取输入向量，还要从内存读取 matrix values 和索引。
+
+Matrix-free 则把一部分工作推迟到 operator apply 阶段：程序从 stencil、几何和物理系数重新生成局部作用。这样通常可以减少矩阵存储和部分内存流量，但会增加若干浮点运算以及局部系数计算。
+
+因此二者常见的交换关系是
+\begin{equation}
+\boxed{
+\text{显式：更多预计算与存储}
+\quad\longleftrightarrow\quad
+\text{matrix-free：更多现场计算，较少矩阵数据搬运}.
+}
+\label{eq:discretization-explicit-mf-tradeoff}
+\end{equation}
+在现代 CPU/GPU 上，许多低阶 stencil kernel 更容易受 memory bandwidth 而不是峰值浮点吞吐限制，所以“多做少量计算、少搬大量矩阵数据”可能是有利的；但这不是无条件结论，必须结合系数复杂度、缓存、后端实现和完整求解流程判断。
+
+\subsection{三维七点问题：把概念放大到内存预算}
+
+现在再看内存预算，它的作用只是量化前面已经建立的表示差异，而不是定义 matrix-free。
+
+取
 \begin{equation}
 N=256^3=16{,}777{,}216
 \end{equation}
-个未知量。忽略边界辅助层、内存对齐、容器元数据和求解器额外工作区，只估算最核心的数据。
+个未知量，并假设标量为 FP64。为了把“算子表示”和“求解所需工作数据”分开，先假设保留
+\begin{equation}
+u,\qquad b,\qquad r,\qquad w
+\end{equation}
+四个 cell-centered 向量，则
+\begin{equation}
+M_{vec}=4\times8N=32N\ \text{byte},
+\label{eq:discretization-vector-memory}
+\end{equation}
+即约 $512\ \mathrm{MiB}$。这部分并不是显式矩阵专属成本；matrix-free 求解同样需要未知量、右端、残差和相应工作向量。
 
 \paragraph{显式 CSR。}
-假设内部每行近似 $7$ 个非零元，矩阵数值用 FP64，列索引用 32-bit integer，row pointer 用 64-bit integer。则
+内部每行近似七个非零元。若 matrix value 使用 FP64、column index 使用 32-bit integer、row pointer 使用 64-bit integer，则
 \begin{align}
-M_{value}
-&\approx7N\times8
-=56N\ \text{byte}, \\
-M_{col}
-&\approx7N\times4
-=28N\ \text{byte}, \\
-M_{row}
-&\approx(N+1)\times8
-\approx8N\ \text{byte}.
+M_{value}&\approx7N\times8=56N\ \text{byte},\\
+M_{col}&\approx7N\times4=28N\ \text{byte},\\
+M_{row}&\approx(N+1)\times8\approx8N\ \text{byte}.
 \end{align}
-所以仅矩阵本身约为
+所以仅 CSR 算子约为
 \begin{equation}
 \boxed{
 M_{CSR}\approx92N\ \text{byte}
 }
 \label{eq:discretization-csr-memory}
 \end{equation}
-代入 $N=256^3$，约为
+即
 \begin{equation}
 896\ \mathrm{MiB}
 +448\ \mathrm{MiB}
 +128\ \mathrm{MiB}
-=1472\ \mathrm{MiB}
+=
+1472\ \mathrm{MiB}
 \approx1.44\ \mathrm{GiB}.
 \end{equation}
-再加式 \eqref{eq:discretization-vector-memory} 中四个工作向量的 $512\ \mathrm{MiB}$，已经接近
-\begin{equation}
-1.94\ \mathrm{GiB}.
-\end{equation}
-这还没有计算边界辅助层、内存对齐、容器元数据或求解器额外工作区。
+再加四个工作向量，总核心数据接近 $1.94\ \mathrm{GiB}$。
 
-\paragraph{常系数 Matrix-Free。}
-对规则三维 Poisson，算子本身只需要少量网格步长和边界元数据。与 $N$ 成正比的主要成本就是工作向量，因此上述四个 FP64 向量约为
+\paragraph{常系数 matrix-free。}
+对规则三维 Poisson，算子表示主要是少量网格步长和边界元数据，与 $N$ 成正比的核心成本主要来自工作向量。因此在这个刻意简化的例子里，四个 FP64 工作向量约占
 \begin{equation}
-\boxed{512\ \mathrm{MiB}}.
+512\ \mathrm{MiB}.
 \end{equation}
-与通用 CSR 相比，差异并不是“少了七个浮点数”这么简单，还同时少了列索引和行指针。
 
-\paragraph{变系数 Matrix-Free。}
-若保存一个 cell-centered $\alpha$ 和三个方向的 face-centered $\beta$，在大规则三维网格上可粗略估为
+\paragraph{变系数 matrix-free。}
+若保存一个 cell-centered $\alpha$ 和三个方向的 face-centered $\beta$，在大规则三维网格上可把 face 数量近似看成每个方向 $\Oh(N)$，因此系数存储粗略为
 \begin{equation}
-N+3N=4N
+N+3N\approx4N
 \end{equation}
-个 FP64 系数，即约
+个 FP64 数，即约
 \begin{equation}
-32N\ \text{byte}=512\ \mathrm{MiB}.
+32N\ \text{byte}\approx512\ \mathrm{MiB}.
 \end{equation}
-再加四个工作向量，总核心数据约为
-\begin{equation}
-1.0\ \mathrm{GiB}.
-\end{equation}
-这已经明显高于常系数 matrix-free，却仍低于上述通用 CSR 示例。若 $\beta$ 是常数，则三个面系数数组又可以退化为少量标量。
+再加四个工作向量，总核心数据约为 $1.0\ \mathrm{GiB}$。这里的 $3N$ 是大网格量级估计；严格的 face 数会因各方向多一层面而略有差异。
 
 \begin{table}[htbp]
 \centering
@@ -1585,33 +1723,38 @@ N+3N=4N
 变系数 matrix-free 算子 & $\alpha$ 与三个方向 face coefficient & 约 $0.50\ \mathrm{GiB}$\\
 \bottomrule
 \end{tabularx}
-\caption{三维七点问题的核心存储预算。该表刻意不计边界辅助层、内存对齐、容器元数据和求解器额外工作区，因此是理解量级的预算而非具体程序的峰值 RSS。}
+\caption{三维七点问题的核心存储预算。该表用于展示表示方式的量级差异，不计边界辅助层、内存对齐、容器元数据和求解器额外工作区，因此不能直接当作具体程序的峰值 RSS。}
 \label{tab:discretization-storage-budget}
 \end{table}
 
 \begin{warningbox}
-\textbf{不要把上述预算当成任何库的固定内存公式。}
-索引宽度、边界行、稀疏格式、系数是否共享、边界辅助层宽度、工作向量数量和求解器额外工作区都会改变实际 RSS。这里的目标是建立预算方法：先数“每个未知量需要多少 value、多少 index、多少辅助向量”，再乘以 $N$。
+\textbf{内存预算是工程估计，不是某个库的固定公式。}
+索引宽度、稀疏格式、系数是否共享、ghost/boundary storage、向量数量、求解器工作区和并行分区都会改变实际 RSS。预算时应先数清楚“每个未知量需要多少 value、多少 index、多少辅助向量”，再乘以问题规模。
 \end{warningbox}
 
-\subsection{表示方式的工程取舍}
+\subsection{怎样判断采用哪一种表示}
 
-显式矩阵的主要优势是通用性。矩阵一旦组装完成，许多不依赖几何信息的稀疏线性代数算法可以直接使用它；如果同一个矩阵会被反复求解，组装成本也可以摊薄。
+现在可以把选择标准压缩成两个问题。
 
-Matrix-free 的主要优势是减少算子存储和内存流量，并避免把一个本来由简单局部公式定义的算子重复编码成“数值 + 索引”。代价是每次应用算子时需要重新计算局部系数或 stencil；而某些只接受显式矩阵的代数算法也无法直接使用。
+第一，\textbf{离散算子是否可以由较少的局部规则、物理系数和几何信息低成本重建？}规则低阶 Poisson/扩散 stencil 往往满足这一条件，因此 matrix-free 很自然；若算子来源高度不规则，显式稀疏矩阵通常更直接。
 
-因此二者不是“先进方法与落后方法”的关系。判断标准是：
-\begin{equation}
-\boxed{
-\begin{gathered}
-\text{算子结构是否可由较少的几何/物理信息重建，}\\
-\text{以及后续算法是否必须访问显式矩阵条目。}
-\end{gathered}
-}
-\end{equation}
+第二，\textbf{后续算法需要的是 $A\bm x$，还是必须访问矩阵条目、矩阵图或分解结构？}若核心求解过程主要反复调用 operator apply，matrix-free 可以充分发挥优势；若需要直接因子分解、通用 AMG setup、稀疏重排或其他显式代数操作，则显式矩阵可能更合适。
 
-对规则低阶 Poisson/扩散算子，matrix-free 往往非常自然；对一般非结构稀疏系统，显式稀疏矩阵则提供更通用的接口。后面的性能章节还会进一步看到：存储预算不仅决定“能不能装进内存”，也决定一次 $Au$ 需要从内存系统搬运多少字节。
+因此显式矩阵与 matrix-free 不是“落后”和“先进”的关系，而是同一个离散算子的两种表示策略。真正要比较的是完整算法链上的 setup、存储、内存流量、计算量、可复用性和软件接口。
 
+\begin{checkpointbox}
+\textbf{即时检查}
+
+同一个一维三点 Poisson stencil 有三种实现：
+
+(1) 保存完整 CSR 后做 SpMV；
+
+(2) 不保存 $A_{ij}$，只保存 $h$ 和边界信息，运行时直接按三点 stencil 计算 $A\bm x$；
+
+(3) 不用 CSR，但预先保存每一行的左、主、右三个系数数组，再用这些数组计算 $A\bm x$。
+
+哪一种属于 matrix-free？为什么第 (3) 种虽然没有 CSR，仍然属于显式算子表示？再说明用什么小规模测试可以验证第 (1) 与第 (2) 种实现的是同一个离散算子。
+\end{checkpointbox}
 
 \begin{keybox}
 \textbf{关于局部网格细化的前向提示：}本章所有 stencil 都建立在同一离散层上。如果只在局部区域使用更细的网格，新的困难不只是把 $h$ 换成更小的数；粗、细网格会在分辨率交界处相遇，必须重新回答“界面通量如何守恒”“细网格缺失的邻居值从哪里来”“被细网格覆盖的粗网格未知量是否仍是独立自由度”等问题。\chapref{ch:amr-discretization}将从这些问题出发构造自适应网格上的复合离散系统。
