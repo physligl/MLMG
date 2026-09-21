@@ -2,16 +2,25 @@
 \label{ch:mg-cycles}
 
 \begin{keybox}
-\textbf{本章回答三个问题：}two-grid 的粗问题仍然很大时怎样递归？为什么多层 V-cycle 的总工作量仍可接近 $\Oh(N)$？当 V-cycle 已经形成一个近似逆以后，它怎样既作为独立 solver，又作为 CG/GMRES 的 preconditioner？
+\textbf{本章回答四个问题：}two-grid 的粗问题仍然很大时怎样递归？什么条件保证多层循环的总工作量仍可接近 $\Oh(N)$？当 V-cycle 已经形成一个近似逆以后，它怎样既作为独立求解器，又作为 CG/GMRES 的预条件器？当最细求解空间本身就是 AMR 复合空间时，同一套粗空间校正怎样继续成立？
 \end{keybox}
 
 \section{多层递归与循环结构}
 
-假设最细层有 $64$ 个网格间隔。若每次每个方向都粗化 2 倍，一维层级就是
+\chapref{ch:two-grid}只要求存在细空间、粗空间以及连接两者的限制和延拓。进入多层以后，最重要的抽象不是“网格尺寸恰好每次减半”，而是一串求解器空间
+\begin{equation}
+W^{(0)},W^{(1)},\ldots,W^{(L)},
+\qquad
+N_\ell:=\dim W^{(\ell)},
+\label{eq:mg-solver-space-hierarchy}
+\end{equation}
+以及每层上的离散算子 $A_\ell$、限制 $R_\ell^{\ell+1}$ 与延拓 $P_{\ell+1}^{\ell}$。对规则几何多重网格，$W^{(\ell)}$ 可以直接对应越来越粗的网格空间；对代数多重网格，它可以是由矩阵关系生成的粗空间；在本章后面的 FAC/AMR 情形中，$W^{(0)}$ 甚至可以本身就是一个混合分辨率的复合空间。
+
+为了先看最简单的递归轨迹，假设规则一维最细网格有 $64$ 个网格间隔，每次做 2:1 粗化，则
 \begin{equation}
 64\rightarrow32\rightarrow16\rightarrow8\rightarrow4\rightarrow2.
 \end{equation}
-在 three dimensions，$64^3$ 会依次变成 $32^3,16^3,\ldots$。two-grid 中“粗网格误差方程”如果还太大，就不必调用一个完全不同的求解器，而是再次对它执行相同的 smooth--restrict--coarse correction 过程。这样自然得到多重网格递归。
+三维中相应的自由度规模大致按 $64^3,32^3,16^3,\ldots$ 缩小。two-grid 的粗误差方程若仍然太大，就继续把它视为新的“细问题”，再次执行平滑、限制和粗空间校正。多重网格递归由此产生；2:1 几何粗化只是这一递归的典型实例，不是递归成立的定义条件。
 
 \subsection{V-Cycle}
 \label{sec:v-cycle}
@@ -39,54 +48,112 @@
 
 这里 \texttt{BottomSolve} 指递归到达最粗 MG level 后用于终止递归的求解过程。因为最粗问题已经很小，它可以是若干次平滑、小规模直接法，或 Krylov 迭代。Krylov 方法的最低可用定义放在\secref{sec:mg-preconditioner}；不同硬件上 bottom solver 为什么会改变，则分别在\chapref{ch:shared-memory}、\chapref{ch:gpu}、\chapref{ch:mpi}和\chapref{ch:distributed-gpu}讨论。
 
-“V”来自访问层级的路径：从 fine level 一层层向下，再一层层返回。它不是矩阵形状，而是递归调用轨迹的形象表示。为了让递归不只停留在伪代码里，考虑三层 $\ell=0,1,2$。一次 V-cycle 的实际访问顺序是
+“V”来自访问层级的路径：从细层逐层向粗层下降，再逐层返回。它不是矩阵形状，而是递归调用轨迹的形象表示。为了让递归不只停留在伪代码里，考虑三层 $\ell=0,1,2$。一次 V-cycle 的实际访问顺序是
 \begin{align}
-0&\xrightarrow{\text{pre-smooth, residual, restrict}}1
-\xrightarrow{\text{pre-smooth, residual, restrict}}2,
+0&\xrightarrow{\text{预平滑、残差、限制}}1
+\xrightarrow{\text{预平滑、残差、限制}}2,
 \\
-2&\xrightarrow{\text{bottom solve}}2
-\xrightarrow{\text{prolong, correct, post-smooth}}1
-\xrightarrow{\text{prolong, correct, post-smooth}}0.
+2&\xrightarrow{\text{最粗层求解}}2
+\xrightarrow{\text{延拓、校正、后平滑}}1
+\xrightarrow{\text{延拓、校正、后平滑}}0.
 \end{align}
-所以“递归”并不是同时存在多个神秘求解器，而是同一套 two-grid 操作在不同尺度上重复调用；只有到达最粗层时，递归才由 bottom solve 终止。
+所以“递归”并不是同时存在多个不同原理的求解器，而是同一套 two-grid 操作在不同求解器空间上重复调用；只有到达最粗层时，递归才由 bottom solve 终止。
+
+从\chapref{ch:two-grid}的误差传播观点看，这一点还可以写得更精确。若第 $\ell+1$ 层的精确逆 $A_{\ell+1}^{-1}$ 被递归得到的近似逆 $B_{\ell+1}$ 替代，则第 $\ell$ 层的粗空间校正从
+\begin{equation}
+I-P_{\ell+1}^{\ell}A_{\ell+1}^{-1}R_{\ell}^{\ell+1}A_\ell
+\end{equation}
+变为
+\begin{equation}
+\widetilde C_\ell
+=
+I-P_{\ell+1}^{\ell}B_{\ell+1}R_{\ell}^{\ell+1}A_\ell.
+\label{eq:mg-recursive-coarse-correction}
+\end{equation}
+因此 V-cycle 的递归本质是：\textbf{用下一层的多重网格近似逆，替代 two-grid 公式中假定的精确粗层逆。}这条关系把 two-grid 理论与多层算法直接接起来。
 
 \subsection{W-Cycle 与其他循环}
 
-V-cycle 在每一层只递归进入下一粗层一次。如果在粗层连续递归两次，就得到 W-cycle。粗层求解会更充分，但工作量与粗层通信也更多。F-cycle 则介于两者之间。循环类型不是单纯的“收敛强弱开关”，而是在\textbf{每 cycle 成本}与\textbf{所需 cycle 数}之间做取舍。
+V-cycle 在每一层只递归进入下一粗层一次。如果在粗层连续递归两次，就得到 W-cycle。粗层求解会更充分，但工作量与粗层通信也更多。F-cycle 则介于两者之间。循环类型不是单纯的“收敛强弱开关”，而是在\textbf{单次循环成本}与\textbf{所需循环次数}之间做取舍。
 
 \section{计算复杂度与精度控制}
 
 \subsection{V-Cycle 的计算复杂度}
 
-若 $d$ 维 full coarsening 每个方向都缩小 2 倍，则
+先不假定粗空间一定来自规则 $2^d$ 粗化。设第 $\ell$ 个求解器空间的自由度数为 $N_\ell$，并假设一层上的平滑、残差计算和传递总工作量满足
 \begin{equation}
+W_\ell\le c\,N_\ell
+\end{equation}
+其中 $c$ 与层级无关。若粗空间规模存在统一收缩因子
+\begin{equation}
+N_{\ell+1}\le qN_\ell,
+\qquad 0<q<1,
+\label{eq:mg-coarse-space-geometric-decay}
+\end{equation}
+则一次 V-cycle 的总算术工作满足
+\begin{equation}
+W_V
+\le
+c\sum_{\ell=0}^{L}N_\ell
+\le
+cN_0\sum_{j=0}^{\infty}q^j
+=
+\frac{c}{1-q}N_0.
+\label{eq:mg-vcycle-general-linear-work}
+\end{equation}
+所以得到线性复杂度的关键不是“必须把每个方向都减半”，而是\textbf{粗空间规模持续按固定比例衰减，同时每层局部操作保持线性工作量}。
+
+规则 $d$ 维全方向 2:1 粗化（full coarsening）只是式~\eqref{eq:mg-coarse-space-geometric-decay}的一个特例：
+\begin{equation}
+q=2^{-d},
+\qquad
 N_{\ell+1}=\frac{N_\ell}{2^d}.
 \end{equation}
-若每个 unknown 上的平滑、残差和传递工作都是常数级，那么所有层级的 cell work 形成几何级数：
+于是
 \begin{equation}
 N_0+\frac{N_0}{2^d}+\frac{N_0}{2^{2d}}+\cdots
-=\frac{N_0}{1-2^{-d}}.
+=
+\frac{N_0}{1-2^{-d}}.
 \end{equation}
-二维为 $\frac43N_0$，三维为 $\frac87N_0$。因此理想 V-cycle 的算术工作量是
-\begin{equation}
-\Oh(N_0).
-\end{equation}
+二维为 $\frac43N_0$，三维为 $\frac87N_0$。这说明高维 full coarsening 的粗层自由度衰减非常快，但也预示了后续并行章节中的另一个问题：自由度下降得越快，粗层并行度也衰减得越快。
 
-这里的 $\Oh(N)$ 只描述“完成多少基本网格工作”，还没有计入线程同步、GPU kernel launch、MPI latency 等固定成本。后面会看到：算法工作量线性，并不自动意味着并行 wall-clock time 也理想。
+式~\eqref{eq:mg-vcycle-general-linear-work}是\textbf{算术工作模型}，不是 wall-clock time 模型。线程同步、GPU kernel launch、MPI latency、全局归约以及最粗层求解器的固定成本都可能在 $N_\ell$ 很小时占主导。后续章节会把这些成本逐项加入执行模型。
 
 \begin{checkpointbox}
-\textbf{即时检查：}三维中从 $128^3$ 连续 full coarsen 四次，各层 unknown 数分别是多少？把它们相加，与最细层 $128^3$ 相比多了多少比例的 cell work？
+\textbf{即时检查：}三维中从 $128^3$ 连续 full coarsen 四次，各层自由度数分别是多少？把它们相加，与最细层 $128^3$ 相比增加了多少比例的网格工作量？再比较一维情形，解释为什么一维粗层占比显著更大。
 \end{checkpointbox}
+
+\subsection{线性复杂度会在什么情况下失效}
+
+式~\eqref{eq:mg-vcycle-general-linear-work}把线性复杂度的假设暴露得很清楚。至少有三类情况会使简单的 $\Oh(N)$ 结论失效或失去预测力。
+
+第一，若粗空间规模下降得过慢，$q$ 接近 1，则几何级数前面的常数 $1/(1-q)$ 会很大；若根本不存在统一的 $q<1$，就不能直接使用该证明。第二，若某一层的操作不再是线性工作量，例如最粗层直接法的复杂度随粗问题规模超线性增长，则必须把该项单独计入。第三，即使算术工作仍为 $\Oh(N)$，并行固定成本也可能使真实时间在粗层停止随 $N_\ell$ 缩放。
+
+因此工程上真正需要监控的是
+\begin{equation}
+\boxed{
+\text{每层自由度数}
++\text{每层单位自由度成本}
++\text{固定同步/通信成本}
++\text{最粗层求解成本}.
+}
+\label{eq:mg-work-model-components}
+\end{equation}
+这个分解将在\chapref{ch:parallel-model}和\chapref{ch:mg-parallel-operations}中转化为并行性能模型。
 
 \subsection{Full Multigrid}
 
-普通 V-cycle 通常从最细网格上的某个初值开始。Full Multigrid（FMG）反过来：先在最粗网格求一个低分辨率解，再逐级 prolong 到更细网格，并在每一级做少量 V-cycle 修正。
+普通 V-cycle 通常从最细离散空间上的某个初值开始。Full Multigrid（FMG）采用嵌套迭代：先在最粗离散空间求一个低分辨率解，再把\textbf{解的近似}延拓到更细离散空间，并在每一级做少量 V-cycle 修正。
+
+这里要区分 FMG 的解延拓与 V-cycle 中的误差校正延拓。两者可以使用相似的插值公式，但语义不同：前者把一个较粗的物理解近似作为细层初值，后者把粗空间中的误差近似加回当前迭代解。对于 AMR 重网格化，\chapref{ch:amr-discretization}中的状态插值又是第三种语义；不能因为数值权重相似就把三种操作视为同一个步骤。
 
 若离散误差为 $\Oh(h^p)$，线性系统没有必要被求解到远小于离散误差的程度。FMG 的目标是让每一层的代数误差只降低到与该层离散误差相当，从而用接近线性工作的代价达到离散精度\cite{brandt1977,briggs2000,trottenberg2001}。
 
 \subsection{停止准则与误差控制}
 
 残差越小通常意味着代数方程满足得越好，但 PDE 离散本身已经引入误差。如果二阶离散在当前网格上只能达到约 $\Oh(h^2)$ 的空间精度，那么把线性残差无条件从 $10^{-10}$ 压到 $10^{-14}$ 未必改善最终物理解。实际阈值还取决于时间积分、非线性耦合以及更外层的线性/非线性迭代结构。
+
+残差阈值还必须说明所使用的范数和归一化方式。对于不同网格分辨率、不同控制体体积或复合 AMR 空间，未加权 Euclidean norm 未必具有可比较的物理尺度；\chapref{ch:amr-discretization}中的体积权重和零空间约束会直接影响“残差已经足够小”的含义。纯 Neumann 问题还应在与兼容条件一致的子空间中评价残差，而不能把常数零空间方向误当作可被求解器消除的误差。
 
 \section{多重网格求解器与预条件器}
 \label{sec:mg-preconditioner}
@@ -180,7 +247,11 @@ z_k=M^{-1}r_k,
 
 这里有一个不能省略的条件：\textbf{普通 PCG 要求预条件器与 SPD 结构兼容。}若把 V-cycle 当 $M^{-1}$，通常需要保持固定、线性的 cycle，并使用与对称性匹配的 transfer、pre/post smoother 与 coarse solve。任意一个“看起来能降低残差”的 MG cycle 都不自动是合法 PCG 预条件器。
 
-例如非对称的单向 Gauss--Seidel pre-smoother 若没有匹配的反向 post-smoother，可能破坏所需对称结构。实际设计时应检查的是整个 $B_{MG}$，而不是只检查 $A$ 是否 SPD。
+例如非对称的单向 Gauss--Seidel 预平滑若没有匹配的反向后平滑，可能破坏所需对称结构。实际设计时应检查的是整个 $B_{MG}$，而不是只检查 $A$ 是否 SPD。
+
+这里还要把\chapref{ch:two-grid}中的 FD/FV 双路线带进来。若离散空间采用普通 Euclidean 内积，经典 nodal 离散中常见的对称关系可以写成 $R\propto P^T$；若 cell-centered FV 或守恒型 FD 使用体积加权内积，则限制与延拓的伴随关系应相对于相应质量矩阵定义，而不能机械要求数值数组满足同一个转置公式。也就是说，PCG 所需的“对称多重网格预条件器”是\textbf{相对于当前离散空间内积的算子性质}，不是某个固定 stencil 公式。
+
+当粗算子采用 Galerkin 构造、粗层求解保持对称正定，并且预平滑与后平滑构成适当的伴随配对时，每一层 coarse correction 都可以保持与离散内积一致的对称能量结构，从而为构造整体对称正定的 V-cycle 预条件器提供条件。这里并不意味着整个 V-cycle 本身是一个投影；它说明的是\chapref{ch:two-grid}中的粗空间正交结构在递归后仍需要被正确维护。这个条件也解释了为什么 solver hierarchy 的数学设计与具体 smoother 的选择不能完全分离。
 
 \subsection{GMRES、左右预条件与可变预条件器}
 
@@ -198,7 +269,7 @@ AM^{-1}y=b
 \begin{equation}
 z_k=B_k r_k,
 \end{equation}
-例如每次 V-cycle 的 inner tolerance、cycle 数、粗层 solver 或非线性 smoother 都可能改变，则外层方法不能再假设一个固定线性 $M^{-1}$。Flexible GMRES（FGMRES）正是为这种\textbf{可变预条件器}设计的常见方法。这里不展开完整 Arnoldi 推导，但必须建立边界：
+例如每次 V-cycle 的 inner tolerance、循环次数、粗层 solver 或非线性 smoother 都可能改变，则外层方法不能再假设一个固定线性 $M^{-1}$。Flexible GMRES（FGMRES）正是为这种\textbf{可变预条件器}设计的常见方法。这里不展开完整 Arnoldi 推导，但必须建立边界：
 \begin{equation}
 \boxed{
 \begin{aligned}
@@ -214,7 +285,7 @@ z_k=B_k r_k,
 \boxed{
 \begin{aligned}
 \text{operator apply}&\rightarrow\text{residual / dot products}\\
-&\rightarrow\text{MG preconditioner apply}\\
+&\rightarrow\text{MG 预条件器应用}\\
 &\rightarrow\text{vector updates}\rightarrow\text{global reductions}.
 \end{aligned}}
 \label{eq:preconditioner-krylov-execution-flow}
@@ -446,7 +517,9 @@ AMR 层级结构
 \label{eq:amr-mg-two-coarsenings}
 \end{equation}
 
-实际的 MLMG 实现可以把 FAC 型自适应复合校正，与各 AMR 层级内部的几何多重网格、代数多重网格或最粗层 Krylov 求解结合起来。具体调度方式并不唯一，但以下求解器不变量应当保持：
+实际的 MLMG 实现可以把 FAC 型自适应复合校正，与各 AMR 层级内部的几何多重网格、代数多重网格或最粗层 Krylov 求解结合起来。复杂度分析仍然使用式~\eqref{eq:mg-vcycle-general-linear-work}的同一原则，只是此时 $N_\ell$ 表示\textbf{求解器第 $\ell$ 个校正空间的有效自由度数}，而不是某一个 AMR level 的数组长度。只要这些校正空间规模持续几何衰减，接口附近每个自由度只承担有界数量的重构与通量闭合工作，并且最粗层求解没有反客为主，复合 V-cycle/FAC cycle 的理想算术工作仍可保持与 $\dim V(\mathcal H)$ 同阶。局部细化并不会自动破坏线性复杂度，但高度碎片化的 patch、异常大的接口面积或昂贵的接口闭合会增大常数项，并显著改变并行负载分布。
+
+具体调度方式并不唯一，但以下求解器不变量应当保持：
 \begin{enumerate}
 \item 残差范数与收敛判据只在有效复合自由度上计算，被细层覆盖的粗层存储不重复计数；
 \item 每一次 $A_{\mathrm{comp}}u$ 都包含当前的粗细接口耦合；
@@ -464,17 +537,17 @@ AMR 层级结构
 
 \section{本章小结}
 
-本章建立了 V-cycle、W-cycle、F-cycle、FMG、bottom solve 与线性工作复杂度，并把固定 V-cycle 进一步解释为近似逆 $B_{MG}\approx A^{-1}$：它既可形成独立 multigrid iteration，也可作为 PCG/GMRES/FGMRES 的预条件 apply。随后本章在已有 AMR 离散的基础上正式区分 AMR level 与 MG level：前者决定物理离散分辨率，后者服务于误差消除。\chapref{ch:lfa}继续用 Local Fourier Analysis 定量研究平滑与粗网格校正的组合。
+本章把\chapref{ch:two-grid}的粗空间校正递归成多层 V-cycle，并把线性复杂度的条件从规则 $2^d$ 粗化推广为“求解器粗空间规模几何衰减 + 每层局部工作线性”。固定 V-cycle 进一步被解释为近似逆 $B_{MG}\approx A^{-1}$：它既可形成独立多重网格迭代，也可作为 PCG/GMRES/FGMRES 的预条件器；其对称性要求必须相对于当前离散空间的内积理解。随后本章把同一套校正框架作用到 AMR 复合空间，区分物理 AMR 层级与求解器 MG/FAC 层级，并说明复合残差、接口耦合和粗空间传递怎样共同进入一次循环。\chapref{ch:lfa}继续用 Local Fourier Analysis 定量研究平滑与粗网格校正的组合。
 
 \section*{习题}
 
 \subsection*{计算题}
 \begin{enumerate}[label=\arabic*.]
-\item 三维 finest level 有 $256^3$ 个未知量，进行 full coarsening 直到每方向小于 4 个 cell。列出每一级未知量数与相对 finest-level 比例，并求所有 levels unknown 总数。
-\item 假设每个 V-cycle level 上执行 2 次 pre-smoothing、2 次 post-smoothing，每次 sweep 成本为 $cN_\ell$，residual 与 transfer 总成本为 $dN_\ell$。写出整个 V-cycle 的总工作量并求关于 $N_0$ 的闭式上界。
+\item 三维最细层有 $256^3$ 个自由度，进行 full coarsening，直到每个方向少于 4 个 cell。列出每一级自由度数、相对于最细层的比例，并求所有层级的自由度总数。
+\item 假设 V-cycle 的每一层执行 2 次预平滑和 2 次后平滑，每次 sweep 的成本为 $cN_\ell$，残差计算与网格传递的总成本为 $dN_\ell$。写出整个 V-cycle 的总工作量，并求关于 $N_0$ 的闭式上界。
 \item 对 4 层 hierarchy 手工画出一次 V-cycle 与一次 W-cycle 的递归调用树，统计每一级被访问多少次。
-\item 某 V-cycle convergence factor 为 $0.12$，初始 residual norm 为 1。计算达到 $10^{-8}$ 至少需要多少个 cycles；若每 cycle 为 8 ms，求总 solve time。
-\item 比较从零初值做若干 V-cycle 与 FMG 的工作量。给定每层 discretization error 按 $h^2$ 缩放，估算 FMG 每层只需固定少量 cycles 时的总成本。
+\item 某 V-cycle 的收敛因子为 $0.12$，初始残差范数为 1。计算达到 $10^{-8}$ 至少需要多少次循环；若每次循环耗时 8 ms，求总求解时间。
+\item 比较从零初值执行若干次 V-cycle 与 FMG 的工作量。给定每层离散误差按 $h^2$ 缩放，估算 FMG 在每层只需固定少量循环时的总成本。
 \item 给定
 \[
 A=\begin{bmatrix}4&1\\1&3\end{bmatrix},\qquad
@@ -487,6 +560,7 @@ M=\begin{bmatrix}4&0\\0&3\end{bmatrix},
 \begin{enumerate}[label=\arabic*.]
 \item 对 $d$ 维 full coarsening，证明 V-cycle 若每层工作量与 $N_\ell$ 成正比，则总复杂度为 $\Oh(N)$。
 \item 对 W-cycle 建立递推 $T(N)=cN+2T(N/2^d)$，分别分析 $d=1,2,3$ 的渐近复杂度。
+\item 设一个非几何粗空间序列满足 $N_{\ell+1}\le qN_\ell$，但每层单位自由度成本满足 $c_\ell\le c_0(1+\gamma\ell)$。推导一次 V-cycle 总工作量的上界，并判断它是否仍为 $\Oh(N_0)$。
 \item 说明 recursive coarse solve 为什么仍然是在近似求解同一个 coarse error equation，而不是定义一个新的 PDE。
 \item 推导多重网格作为线性预条件器时，一次 V-cycle 对外层 Krylov 方法提供的算子形式，并说明固定 cycle 参数为什么有利于保持线性。
 \item 假设 $A$ 与 $M$ 都 SPD，证明 $M^{-1/2}AM^{-1/2}$ 仍 SPD，并解释为什么这允许把预条件后的问题放进 CG 的 SPD 理论框架。
@@ -495,16 +569,17 @@ M=\begin{bmatrix}4&0\\0&3\end{bmatrix},
 
 \subsection*{编程与上机题}
 \begin{enumerate}[label=\arabic*.]
-\item 将第~\ref{ch:two-grid}章 two-grid 程序改写为递归 V-cycle。用 operation counter 验证总工作量与 finest-grid $N$ 近似线性。
-\item 实现 V-cycle、W-cycle 和 FMG，比较达到同一误差阈值所需的总 work units 与 wall time。
+\item 将第~\ref{ch:two-grid}章 two-grid 程序改写为递归 V-cycle。用 operation counter 验证总工作量与最细层自由度数 $N$ 近似线性。
+\item 实现 V-cycle、W-cycle 和 FMG，比较达到同一误差阈值所需的总 work units 与实际时间。
 \item 改变 bottom-grid 阈值，记录 coarse solve 次数、最粗网格规模与总时间，寻找本机上的最佳阈值。
-\item 在同一 AMR level 内构造 MG hierarchy，打印 AMR level 与 MG level 的二元索引，验证两种层级不会混淆。
+\item 在同一 AMR 层级内构造 MG hierarchy，打印 AMR level 与 MG level 的二元索引，验证两种 level 的含义不会混淆。
+\item 对一个两层局部细化问题，分别统计物理复合空间 $V(\mathcal H)$、FAC 粗空间 $W^{(1)}$ 以及更粗求解器空间的有效自由度数；用式~\eqref{eq:mg-vcycle-general-linear-work}检查这些空间是否满足近似几何衰减，并单独统计粗细接口附近 cells 的工作占比。
 \item 在已有 V-cycle 上实现接口 $z=B_{MG}r$，分别把它接入 Richardson iteration 与 PCG/GMRES。记录相同问题下外层迭代数、每次预条件 apply 成本和总时间。
 \end{enumerate}
 
 \subsection*{工程与综合题}
 \begin{enumerate}[label=\arabic*.]
-\item 给定 fine level 很快、coarse level 很慢的 profile，解释为什么优化 smoother kernel 可能几乎不改变 V-cycle time。
+\item 给定“细层很快、粗层很慢”的性能剖析结果，解释为什么继续优化 smoother kernel 可能几乎不改变 V-cycle 总时间。
 \item 设计一个动态 active-thread/active-rank 策略：随着 $N_\ell$ 下降，何时减少并行参与者？给出需要测量的阈值量而不是固定经验常数。
-\item 比较“多重网格作为独立 solver”和“多重网格作为 Krylov preconditioner”的停止准则、cycle 数和鲁棒性要求。
+\item 比较“多重网格作为独立 solver”和“多重网格作为 Krylov preconditioner”时的停止准则、循环次数和鲁棒性要求。
 \end{enumerate}
