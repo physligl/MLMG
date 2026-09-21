@@ -37,7 +37,7 @@ p(i,j,k)=i+n_x\bigl[(j-1)+n_y(k-1)\bigr],
 
 \section{平滑器}
 
-\subsection{Jacobi：点独立更新}
+\subsection{Jacobi 并行更新}
 
 Weighted Jacobi 可以写成
 \begin{equation}
@@ -71,7 +71,7 @@ r_i=b_i-(Au)_i,
 
 \section{Restriction 与 Prolongation}
 
-\subsection{Restriction：fine-to-coarse gather}
+\subsection{Restriction 的 Gather 映射}
 
 把 restriction 写成 gather 最容易并行：每个 coarse task 负责一个 $b_H(I)$，读取一组 fine residual：
 \begin{equation}
@@ -79,7 +79,7 @@ b_H(I)=\sum_{j\in\mathcal S(I)}w_{Ij}r_h(j).
 \end{equation}
 每个 coarse 输出具有唯一 writer，因此无需原子操作。二维 full-weighting 读取最多九点，三维 tensor-product full-weighting 读取最多二十七点；维数提升直接扩大每个 task 的输入 footprint。
 
-\subsection{Prolongation：优先选择 gather 形式}
+\subsection{Prolongation 的 Gather 映射}
 
 若让每个 coarse task 把贡献 scatter 到多个 fine cells，就可能出现多个 coarse tasks 同时更新同一个 fine output。更适合并行实现的方式是反过来：每个 fine task 主动读取需要的 coarse neighbors，计算
 \begin{equation}

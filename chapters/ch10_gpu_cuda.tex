@@ -239,7 +239,7 @@ p(i+t,j+1,k)=p(i,j+1,k)+t,
 
 哪个更好取决于边界占比、分支复杂度和 kernel 是否已经很短。规则大网格上物理边界比例很小，单独 boundary kernel 往往合理；大量小 AMR patches 时，patch boundary 占比可能很高，结论就不能照搬。
 
-\subsection{多分量数据：AoS 与 SoA}
+\subsection{AoS 与 SoA 数据布局}
 
 若每个 cell 有多个分量，例如 $u,v,w$ 或多个系数，可以有两种常见布局：
 

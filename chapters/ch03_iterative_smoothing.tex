@@ -1,7 +1,7 @@
 \chapter{基本迭代方法与平滑性质}
 \label{ch:iterative-smoothing}
 
-\chapref{ch:discretization}和\chapref{ch:amr-discretization}已经分别完成“连续 PDE $\rightarrow$ 离散线性系统”的两种情形：\chapref{ch:discretization}对应单层网格，\chapref{ch:amr-discretization}对应局部细化后的复合网格。本章开始研究怎样求解 $A\bm u=\bm b$。为了把迭代机制看清楚，先退回最简单的一维 Poisson 单层系统；后面建立的误差、残差和迭代算子同样适用于更一般的离散系统。在选择任何迭代公式之前，先明确“当前近似离真解还有多远”以及“计算机实际能观测什么”。因此本章先建立误差、残差与修正方程，再让 Jacobi 和 Gauss--Seidel 真正迭代起来；最后才抽象出平滑性质、误差传播矩阵和谱半径。
+\chapref{ch:discretization}和\chapref{ch:amr-discretization}已经完成从连续 PDE 到离散线性系统的构造：既包括 FD 路线，也包括 FV 路线；在某些规则守恒格式中两条路线会得到同一个 $A$，在其他布局或网格上则得到不同的离散算子。从本章开始，分析对象主要提升到代数层 $A\bm u=\bm b$。除非特别指出某个结论依赖局部守恒、对称性、stencil 几何或系数位置，否则 Jacobi、Gauss--Seidel、残差与误差传播并不要求 $A$ 必须来自 FD 或 FV 中的某一种。本章为了把迭代机制看清楚，先退回最简单的一维 Poisson 单层系统；后面建立的误差、残差和迭代算子同样适用于更一般的离散系统。在选择任何迭代公式之前，先明确“当前近似离真解还有多远”以及“计算机实际能观测什么”。因此本章先建立误差、残差与修正方程，再让 Jacobi 和 Gauss--Seidel 真正迭代起来；最后才抽象出平滑性质、误差传播矩阵和谱半径。
 
 \begin{keybox}
 \textbf{本章要建立的心智模型：}

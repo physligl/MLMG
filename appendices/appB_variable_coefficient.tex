@@ -1,8 +1,8 @@
-\chapter{变系数有限体积离散与对称性}
+\chapter{变系数扩散的守恒离散与对称性}
 \label{app:variable-coeff}
 
 \begin{keybox}
-\textbf{目的：}把\chapref{ch:discretization}只做概念预告的变系数扩散完整离散一次，说明为什么 face flux、共享 face coefficient 与 harmonic average 会影响守恒性、对称性和后续 solver 选择。
+\textbf{目的：}从共享 face flux 出发重看变系数扩散，明确同一个守恒算子怎样同时具有 flux-difference FD 与 cell-centered FV 两种解释，并说明 face coefficient、harmonic average、守恒性与矩阵对称性之间的关系。
 \end{keybox}
 
 
@@ -10,12 +10,14 @@
 \begin{equation}
 -\frac{d}{dx}\left(\beta(x)\frac{d\phi}{dx}\right)=f.
 \end{equation}
+在规则 cell-centered 网格上，下面的构造可以沿两条路线阅读。FV 路线把方程对控制体积分，并以 face flux 闭合；守恒型 FD 路线直接用相邻半点通量的差分近似散度。只要两条路线使用同一组 face flux，它们会生成同一局部代数行。这里把重点放在这个共享守恒算子的结构，以及两种推导如何到达同一代数结果。
+
 对 cell center $i$，先在 face 定义通量
 \begin{equation}
 F_{i+1/2}
 =-\beta_{i+1/2}\frac{\phi_{i+1}-\phi_i}{h}.
 \end{equation}
-再做守恒散度：
+FV 中对控制体收支求和、再除以 cell measure；守恒型 FD 中直接对两个半点通量作差。两条路线都得到
 \begin{equation}
 -\frac{F_{i+1/2}-F_{i-1/2}}{h}=f_i.
 \end{equation}
@@ -29,7 +31,7 @@ F_{i+1/2}
 -\beta_{i+1/2}\phi_{i+1}
 \right].
 \end{equation}
-若所有 face coefficient $\beta_{i+1/2}>0$，并且相邻 cell 共享同一 face coefficient，则离散矩阵保持对称并通常正定（适当边界条件下）。
+若所有 face coefficient $\beta_{i+1/2}>0$，并且相邻 cells 对同一 face 使用同一个 coefficient，则该守恒离散矩阵保持对称，并在适当边界条件下为正定或半正定。这个结论来自共享耦合系数的代数结构，不依赖我们把该算子称为 FD 还是 FV。
 
 当材料界面系数跳变时，face coefficient 常使用 harmonic average：
 \begin{equation}

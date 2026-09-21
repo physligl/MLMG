@@ -14,7 +14,7 @@
 
 \section*{推导与证明题}
 \begin{enumerate}
-\item 对纯 Neumann Poisson，从连续方程、有限体积守恒和离散矩阵三个层面分别证明常数零空间与兼容条件，并说明三种表述为什么等价。
+\item 对纯 Neumann Poisson，从连续方程、守恒型有限差分、有限体积和离散矩阵四个层面分别说明常数零空间与兼容条件。指出 FD 与 FV 在何种共享通量假设下给出同一离散兼容条件，以及这一代数结论为何不意味着两种离散构造普遍等价。
 \item 假设 $A$ 对称正定、$P$ 满列秩、$R=P^T$。证明 Galerkin coarse operator 对称正定，证明 coarse correction 是投影，并说明它对 $\operatorname{range}(P)$ 的作用。
 \item 对 $d$ 维 full coarsening 推导 V-cycle 与 W-cycle 的工作量递推；再加入每层固定 communication latency，说明为什么算术复杂度保持 $\Oh(N)$ 并不保证并行 time complexity 也线性。
 \end{enumerate}

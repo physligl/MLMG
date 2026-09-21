@@ -3,28 +3,26 @@
 
 \chapref{ch:discretization}建立了单层规则网格上的离散链条：连续椭圆方程经过控制体或差分近似、边界闭合与全局装配，最终形成线性系统 $A\bm u=\bm b$。本章保持同一个连续问题不变，只改变\textbf{离散空间的几何分辨率}：不同物理区域允许使用不同网格尺度。
 
-这一步的本质并不是“把局部网格间距从 $h$ 换成 $h/2$”。局部细化以后，同一物理位置可能同时存在粗层存储和细层存储，但复合离散只能保留一套独立物理自由度；粗、细控制体在接口处具有不同的中心距离与面划分；一个 coarse face 可能被多个 fine faces 覆盖；fine stencil 在 patch 边缘还需要由 coarse data 提供离散延拓。于是 AMR 的核心问题可以表述为：\textbf{怎样从若干规则 Cartesian 子网格构造一个仍然一致、守恒并具有可分析代数结构的复合离散算子。}
+这一步的本质并不是“把局部网格间距从 $h$ 换成 $h/2$”。局部细化以后，同一物理位置可能同时存在粗层存储和细层存储，但复合离散只能保留一套独立物理自由度；粗、细离散在接口处具有不同的空间尺度；fine stencil 在 patch 边缘还需要 coarse data 提供延拓。对于 FV，这些问题表现为 coarse face 与 fine subfaces 的控制体几何和通量配对；对于 FD，则表现为跨层 stencil、半点/面通量或 ghost relation 怎样保持一致。于是 AMR 的核心问题可以表述为：\textbf{怎样从若干规则 Cartesian 子网格构造一个仍然一致、具有目标守恒/对称性质并且代数结构可分析的复合离散算子。}
 
 \begin{keybox}
 \textbf{本章的概念主线是离散空间与算子的构造，而不是 AMR 数据结构本身：}
 \[
 \boxed{
-\text{局部细化几何}
-\rightarrow
-\text{复合离散空间 }V(\mathcal H)
-\rightarrow
-\text{复合控制体集合}
-\rightarrow
-\text{coarse--fine 数值通量}
-}
+\begin{gathered}
+\text{局部细化几何}\rightarrow\text{复合离散空间 }V(\mathcal H)\\
+\begin{cases}
+\text{FV：复合控制体}\rightarrow\text{coarse--fine flux},\\
+\text{FD：跨层 stencil}\rightarrow\text{flux-difference closure}
+\end{cases}
+\rightarrow A_{\mathrm{comp}}
+\end{gathered}}
 \]
 \[
 \boxed{
 \text{离散延拓与同步}
 \rightarrow
-\text{复合算子 }A_{\mathrm{comp}}
-\rightarrow
-\text{守恒性、零空间与一致性}
+\text{一致性、守恒/对称性与零空间}
 \rightarrow
 \text{regridding 下的空间转移}
 }
@@ -32,7 +30,7 @@
 本章中的 level 始终表示\textbf{物理离散层级（AMR level）}。服务于误差消除的 multigrid level 将在后文单独定义。
 \end{keybox}
 
-为了把 coarse--fine interface 上的守恒与一致性分析写清楚，本章固定以\textbf{cell-centered、block-structured AMR 上的标量椭圆型有限体积离散}作为主模型。规则 Cartesian patch 内部的离散行在很多情形下与守恒形式有限差分具有相同代数模板，但跨层接口仍从控制体积分和 numerical face flux 出发构造。nodal discretization、finite element AMR、embedded boundary 等扩展具有不同自由度语义与接口条件，不在本章公式的默认假设内。
+本章以 cell-centered、block-structured AMR 作为具体几何模型，并在这一几何上同时追踪 FV 与守恒型 FD 两种构造。规则 Cartesian patch 上，若守恒型 FD 写成半点/面通量差分，并与 FV 使用同一个数值面通量，则两条路线可以得到同一个 cell-centered 复合算子；此时 coarse--fine flux matching 同时具有 FV 的控制体解释和 FD 的 flux-difference 解释。另一方面，节点型 FD 的自由度集合、边界 stencil 与跨层插值位置不同，不能直接套用 cell-centered 控制体公式。本章因此在推导中明确标记：哪些结论来自 cell-centered 几何，哪些来自共享离散通量，哪些只是 FV 积分解释，哪些同样适用于守恒型 FD。finite element AMR 与 embedded boundary 需要额外的自由度或几何语义，不在本章默认模型内。
 
 \section{局部细化、层级几何与复合离散空间}
 \label{sec:amr-hierarchy-space}
@@ -270,10 +268,10 @@ V(\mathcal H)
 二维 refinement ratio 为 $r=2$ 时，一个 coarse cell 对应多少个 fine cells？三维又对应多少个？若边缘 stencil 深度 $g=1$，式~\eqref{eq:amr-interface-fraction} 对 $n=8$ 与 $n=64$ 分别给出怎样的接口影响比例？这两个结果怎样解释“小 patch 不一定高效”？
 \end{checkpointbox}
 
-\section{复合控制体与守恒离散}
+\section{复合网格上的守恒离散}
 \label{sec:amr-composite-conservation}
 
-式~\eqref{eq:amr-composite-partition}说明，所有 valid cells 共同构成一套不重复的复合控制体集合。因此 AMR 接口离散最稳固的起点仍然是\chapref{ch:discretization}的有限体积积分恒等式，而不是先猜一个跨层 stencil。
+式~\eqref{eq:amr-composite-partition}说明，所有 valid cells 共同构成一套不重复的复合 cell 集合。对 FV，可以直接把这些 cells 解释为复合控制体并从积分恒等式出发；对守恒型 FD，则可以在同一 cell-centered 几何上从离散半点/面通量的差分散度出发。两条路线在共享同一数值通量时汇合到同一个复合离散算子。本节先写控制体形式，再给出守恒型 FD 的 flux-difference 对应，使跨层 stencil 与共享通量之间的关系显式可见。
 
 考虑
 \begin{equation}
@@ -306,7 +304,17 @@ Q_{P,f}
 }
 \label{eq:amr_fv_balance}
 \end{equation}
-式~\eqref{eq:amr_fv_balance} 是本章后续装配的离散母式；其准确性取决于 $\widehat Q$ 与体积分求积的一致性，而其离散守恒性则取决于相邻控制体是否共享同一个反对称数值通量。
+式~\eqref{eq:amr_fv_balance} 是 FV 路线的复合控制体平衡式；其准确性取决于 $\widehat Q$ 与体积分求积的一致性，而其离散守恒性则取决于相邻控制体是否共享同一个反对称数值通量。
+
+同一式子也可以从守恒型 FD 路线得到。以一维 cell-centered 网格为例，把离散扩散算子写成
+\begin{equation}
+(A_hu)_i
+=
+\frac{\widehat F_{i+1/2}-\widehat F_{i-1/2}}{h_i}
++\alpha_i u_i,
+\label{eq:amr-conservative-fd-flux-difference}
+\end{equation}
+其中 $\widehat F_{i\pm1/2}$ 是半点数值通量。乘以 cell measure $V_i$ 后，它与式~\eqref{eq:amr_fv_balance}具有同一 flux-balance 结构。因此后文的 coarse--fine flux matching 不只属于 FV：只要 FD 算子采用共享的 flux-difference 形式，同一匹配条件也直接约束 FD 的跨层离散。真正依赖 FV 的部分是“由连续控制体积分恒等式推出离散式”的解释；真正依赖 cell-centered 几何的部分是 coarse face 与 fine subfaces 的面积覆盖关系。
 
 对于同一 level 上两个正交相邻的 cells $P,N$，一个标准 two-point closure 为
 \begin{equation}
@@ -326,8 +334,13 @@ T_{PN}=\frac{\beta_fA_f}{d_{PN}}.
 内部面在全局求和中因此严格抵消。这里必须区分两个命题：$\widehat Q_{P,f}\approx Q_{P,f}$ 是\textbf{一致性问题}；$\widehat Q_{N,f}=-\widehat Q_{P,f}$ 是\textbf{离散守恒的代数结构}。前者需要光滑性、几何和求积假设，后者一旦共享同一个数值通量便可精确成立。
 
 \begin{keybox}
-\textbf{AMR 接口离散的基本顺序：}
-先固定复合控制体和面法向，再区分连续精确通量 $Q$ 与数值通量 $\widehat Q$；随后构造 coarse--fine 数值通量，使同一物理界面的贡献在两侧离散方程中严格配对。守恒不能代替一致性分析，一致性也不能自动保证守恒。
+\textbf{AMR 接口离散保持两条构造路线：}
+
+FV 路线固定复合控制体和面法向，区分连续精确通量 $Q$ 与数值通量 $\widehat Q$，再构造 coarse--fine 数值通量并逐控制体装配。
+
+守恒型 FD 路线固定跨层 stencil 与半点/面通量位置，用 flux-difference 形式构造离散散度，并要求 coarse 与 fine 侧对同一物理界面使用一致的离散通量。
+
+当两条路线共享同一 $\widehat Q$ 时，它们可以产生同一个复合代数算子。守恒不能代替一致性分析，一致性也不能自动保证守恒。
 \end{keybox}
 
 \section{界面类型与离散闭合}
@@ -337,15 +350,15 @@ T_{PN}=\frac{\beta_fA_f}{d_{PN}}.
 
 物理边界 $\partial\Omega$ 表示连续计算域在这里结束，因此需要外部给定的边界关系闭合未知通量或边界值；coarse--fine interface 位于 $\Omega$ 内部，只是同一个连续解在两种离散尺度之间切换。若把 fine patch 的外缘误当成 Dirichlet 或 Neumann boundary，就等价于在原 PDE 内部人为加入一条新的边界，所解问题已经改变。
 
-因此，对一个 valid cell 的面 $f$，离散闭合至少分成三类：
+对于 cell-centered 守恒离散，一个 valid cell 的邻接至少分成三类：
 \begin{enumerate}
-\item \textbf{same-level interior face：}相邻控制体位于同一 AMR level，直接使用同层 numerical flux；
-\item \textbf{coarse--fine interface：}相邻有效控制体属于不同尺度，必须构造跨层 numerical flux，并保证 coarse face 与其 fine subfaces 的一致装配；
-\item \textbf{physical boundary：}不存在域内相邻控制体，必须由给定的物理边界条件闭合 numerical flux。
+\item \textbf{same-level interior：}相邻有效 cells 位于同一 AMR level；FV 使用同层 numerical flux，flux-difference FD 使用同一半点/面耦合；
+\item \textbf{coarse--fine interface：}相邻有效区域属于不同尺度；FV 需要 coarse face 与 fine subfaces 的通量配对，守恒型 FD 需要与之对应的跨层 flux/stencil closure；
+\item \textbf{physical boundary：}连续计算域在这里结束；FV 闭合 boundary numerical flux，FD 闭合 boundary stencil、ghost relation 或边界自由度。
 \end{enumerate}
 若 fine patch 本身触碰 $\partial\Omega$，则由 finest available representation 在该物理边界上执行相应边界离散；被 finer level 覆盖的 coarse cells 不再独立贡献另一套边界方程。
 
-这三个分支最终都进入式~\eqref{eq:amr_fv_balance}，区别只在于 $\widehat Q_{P,f}$ 的构造来源不同。这样的分类使后续 ghost filling、界面通量和物理边界处理共享同一控制体框架，而不需要把它们理解成互不相关的软件特例。
+在 FV 表示中，这三个分支都可以直接写入式~\eqref{eq:amr_fv_balance}；在守恒型 FD 中，它们进入相应的离散散度/边界 stencil。两条路线可以共享 ghost filling 与数值通量数据，但不能因此把“状态延拓”“通量匹配”和“差分 stencil 闭合”视为同一个数学操作。
 
 
 \begin{keybox}
@@ -1402,14 +1415,15 @@ V(\mathcal H)
 \rightarrow
 V(\mathcal H)
 \rightarrow
-\text{composite control volumes}
+\begin{cases}
+\text{FV：composite control-volume balance},\\
+\text{FD：composite flux-difference/stencil closure}
+\end{cases}
 \rightarrow
-\widehat Q_{cf}
-\rightarrow
-K\text{ 或 }A=M^{-1}K.
+A_{\mathrm{comp}}.
 }
 \end{equation}
-连续精确通量 $Q$ 与数值通量 $\widehat Q$ 必须严格区分。coarse--fine conservation 来自 numerical flux 的共享装配，accuracy 则来自 $\widehat Q$、interpolation、reconstruction 与 quadrature 对连续 operator 的一致近似；两者是不同性质。二维和三维中，一个 coarse face 对应多个 fine subfaces，切向 reconstruction 会进一步扩大 matrix graph，因此一维接口公式不能只通过增加邻居数量机械推广。
+在 cell-centered 守恒格式中，两条路线若共享同一个 coarse--fine numerical flux，可以得到同一个 composite operator；FV 提供控制体积分解释，守恒型 FD 提供差分散度解释。连续精确通量 $Q$ 与数值通量 $\widehat Q$ 必须严格区分。coarse--fine conservation 来自 numerical flux 的共享装配，accuracy 则来自 $\widehat Q$、interpolation、reconstruction 与 quadrature/差分近似对连续 operator 的一致近似；两者是不同性质。二维和三维中，一个 coarse face 对应多个 fine subfaces，切向 reconstruction 会进一步扩大 matrix graph，因此一维接口公式不能只通过增加邻居数量机械推广。
 
 Ghost fill 在数学上是把复合离散函数延拓到 stencil 所需辅助位置的 operator；same-level copy、coarse-to-fine interpolation 与 physical boundary closure 是三个不同分支。固定线性 interpolation 可以通过 ghost elimination 直接进入 composite matrix；状态相关的 nonlinear reconstruction 则产生非线性或 Jacobian-dependent operator，不能解释成固定 sparse matrix。
 
@@ -1450,6 +1464,7 @@ average-down 与 AMR interpolation 则描述同一物理状态在不同分辨率
 \begin{enumerate}[label=\arabic*.]
 \item 实现二维 block-structured hierarchy 的 valid/covered mask 构造器。显式验证所有 valid cell volumes 的并集覆盖 $\Omega$ 且不存在 interior overlap；再输出 storage cell count 与 composite DOF count。
 \item 实现本章的一维 two-level composite Poisson assembler，同时输出 cell-integrated $K$、volume matrix $M$ 和 $A=M^{-1}K$。数值检查 $\|K-K^T\|$、$\|MA-A^TM\|$ 与纯 Neumann 情况下的 $\|K\bm1\|$。
+\item 在同一个一维 two-level cell-centered hierarchy 上，分别以“控制体逐面收支”和“半点通量差分”实现 FV 与守恒型 FD。让两种实现读取同一组 coarse--fine interface flux coefficients，逐行比较生成的 composite operator；随后故意改变其中一路的 interface flux，观察两条离散路线从何处开始分离。
 \item 实现二维 $r=2$ coarse-face/fine-subface numerical flux matching。随机生成 interface states，验证 coarse flux 与 fine subface flux sum 在机器精度范围内一致；随后故意让 coarse 与 fine 两侧各自重算不同 flux，观察 global conservation defect。
 \item 实现一个 linear coarse-to-fine ghost extension，并通过常数场、线性场和二次场测试其 polynomial reproduction。将 ghost relation 显式消元后，与 matrix-free ghost-fill-plus-stencil apply 的结果逐项比较。
 \item 设计 manufactured-solution AMR convergence experiment。保持 refinement region 的物理位置与形状可比，对所有 level spacing 同时减半，报告 composite $L_2$、$L_\infty$ error 与式~\eqref{eq:amr-observed-order} 的 observed order；同时单独报告 interface-near error。
