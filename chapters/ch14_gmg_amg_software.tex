@@ -141,7 +141,7 @@ $C_g$ 回答“整个 hierarchy 一共保存多少未知量”；$C_o$ 则进一
 \subsection{几何多重网格与代数多重网格}
 
 现在再比较 GMG 与 AMG 就不会停留在名称层面。GMG 把“邻接、粗化、插值”主要从几何中得到；AMG 把同一组问题转化为 matrix graph、strength、coarse variables/aggregates 和 algebraic interpolation。二者进入 solve 阶段以后仍共享\chapref{ch:mg-cycles}的 V-cycle 骨架。
-\chapref{ch:portability}已经建立 execution space、memory space、后端特化与完整 solve 评价的统一抽象。本节把这些抽象落到具体求解软件：进一步考察 MueLu/Tpetra、Ginkgo 以及后续各框架怎样构造 hierarchy、存储 $P/R/A_c$、选择 smoother，并把这些算法对象映射到具体执行后端。
+\chapref{ch:portability}已经建立 execution space、memory space、后端特化与完整 solve 评价的统一抽象。本节把这些抽象落到具体求解软件栈：考察 MueLu 如何基于 Tpetra 等分布式线性代数对象组织 multigrid hierarchy，并比较 Ginkgo 及后续框架怎样表示 $P/R/A_c$、选择 smoother、管理向量/矩阵数据，再把这些算法对象映射到具体执行后端。
 
 在软件实现中，\textbf{setup} 指构造 hierarchy、传递算子和粗网格算子的阶段；\textbf{solve} 指复用已建立 hierarchy 执行一个或多个多重网格循环。GMG 通常 setup 更轻、operator 更规则；AMG 更通用，但 setup 可能包含 graph coarsening、interpolation construction 与 RAP/SpGEMM。是否值得付出这些成本，取决于几何信息是否可用、矩阵是否重复求解以及目标硬件上的 setup/solve 比例。
 
