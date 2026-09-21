@@ -1653,7 +1653,7 @@ Matrix-free（工程扩展） & 不显式保存完整矩阵，而是保存生成
 
 本章习题按“手算离散 $\rightarrow$ 推导结构 $\rightarrow$ 编程验证 $\rightarrow$ 工程判断”组织。计算题应写出中间步骤，不只给最终结论。
 
-\subsection*{计算题}
+\subsection*{离散构造与结构推导}
 \begin{enumerate}[label=\arabic*.]
 \item 取 $u(x)=e^x$，在 $x=0.5$ 处分别用 $h=0.2,0.1,0.05$ 的三点中心差分近似 $u''(x)$。计算每个 $h$ 下的绝对误差，并用相邻两组误差估计实验收敛阶。
 \item 对边值问题
@@ -1677,10 +1677,7 @@ Matrix-free（工程扩展） & 不显式保存完整矩阵，而是保存生成
 \item 对一个二维左下角 cell-centered 控制体，西侧给 Dirichlet $u=2$，南侧给外法向 Neumann $\partial_nu=3$，东、北 transmissibility 均为 1，西侧 transmissibility 为 2，南侧 $\beta A=4$，且 $fV=5$。使用式~\eqref{eq:discretization-mixed-corner-row}写出该矩阵行的数值系数和右端。
 \item 考虑一个三维 cell-centered 角部控制体 $P$。其东、北、上三个内部面 transmissibility 均为 1；西面为 Dirichlet $u=2$ 且 $T_W=2$；南面为 Neumann $\partial_nu=3$ 且 $\beta A=4$；下面为 Robin $2u+\partial_nu=5$，取 $\delta=1/2$ 且 $\beta A=2$；另有 $fV=1$、$\alpha=0$。逐面计算三个物理边界的矩阵/右端贡献，并写出 $P$ 行。解释为什么这里不是给几何角点写三条独立边界方程。
 \item 对 $n_x=n_y=n_z=2$ 的三维内部网格，利用式~\eqref{eq:discretization-three-dimensional-kronecker}写出 $8\times8$ 七点 Poisson 矩阵的块结构，并指出 $x,y,z$ 三个方向邻居在一维编号中的跨度。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 用 Taylor 展开推导三点中心差分二阶导数公式，并严格得到截断误差的 $\Oh(h^2)$ 主项。
 \item 从精确积分恒等式~\eqref{eq:discretization-fv-poisson-balance}与数值通量~\eqref{eq:discretization-fv-poisson-two-point-flux}出发，对一维均匀 cell-centered 网格推导式~\eqref{eq:discretization-fv-one-dimensional-poisson}。明确区分 $Q_{P,f}$ 与 $\widehat Q_{P,f}$，并证明式~\eqref{eq:discretization-numerical-flux-antisymmetry}使任意内部共享面在全局求和时精确抵消。最后用 Taylor 展开验证内部离散的二阶局部截断误差。
 \item 从式~\eqref{eq:discretization-centered-first-derivative-midpoint}和条件~\eqref{eq:discretization-face-beta-consistency}出发，证明数值半点通量 $\widehat F_{i+1/2}$ 对连续通量 $F(x_{i+1/2})$ 二阶一致，并进一步推导守恒型 FD 行~\eqref{eq:discretization-fd-variable-row}的二阶局部截断误差。再从 FV 离散式~\eqref{eq:discretization-fv-balance-general}说明，在同一均匀网格、同一面系数和同一中点求积下为何会得到相同代数行。
@@ -1695,7 +1692,7 @@ Matrix-free（工程扩展） & 不显式保存完整矩阵，而是保存生成
 \item 从分块离散系统消去外域自由度，推导 Schur complement，并说明为什么一般 DtN 离散边界块可能是非局部的。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{数值验证}
 \begin{enumerate}[label=\arabic*.]
 \item 编写一维 cell-centered Poisson/扩散 FV 装配器，内部面统一通过数值通量接口处理，物理边界面至少支持 Dirichlet、Neumann 和 Robin。对一个有解析解的问题依次取 $N=16,32,64,128$，报告 $L_2$ 与 $L_\infty$ 误差及实验收敛阶。随后再实现一个节点型 FD 边界版本，验证在选定的规则网格和相同低阶闭合下，两种表示是否生成预期的等价代数关系；不要把这种等价推广到一般网格。
 \item 分别实现二维五点 Poisson 的显式稀疏矩阵乘和 matrix-free stencil apply。对随机向量验证两种实现输出一致，并报告误差范数。
@@ -1703,7 +1700,7 @@ Matrix-free（工程扩展） & 不显式保存完整矩阵，而是保存生成
 \item 构造一个纯 Neumann 离散矩阵，数值验证 $A\bm1\approx0$；再人为给一个不满足兼容条件的右端，观察直接/迭代求解器的表现并解释原因。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{边界诊断与综合}
 \begin{enumerate}[label=\arabic*.]
 \item 对 $128^3$ 三维七点 Poisson，按 FP64 value、32-bit column index、64-bit row pointer 的 CSR 假设精确估算矩阵存储；再与七系数结构化显式存储、常系数 matrix-free 和四个 FP64 工作向量比较。
 \item 给出一个“显式矩阵更合适”和一个“matrix-free 更合适”的实际算子场景。判断时必须从算子信息是否可低成本重建、下游算法是否需要矩阵条目、内存流量三个角度论证。

@@ -170,24 +170,21 @@ solve
 
 \section*{习题}
 
-\subsection*{计算题}
+\subsection*{基准量与统计推导}
 \begin{enumerate}[label=\arabic*.]
 \item 某 benchmark 运行时间为 $[10.2,10.0,9.9,10.1,35.0]$ ms。先排序；采用 Tukey 约定（奇数样本的总体中位数不再计入上下半组）计算均值、中位数、$Q_1,Q_3$ 与 IQR，并判断哪一个统计量更适合报告典型性能。
 \item 强缩放基准在 $P=4,8,16,32$ 时耗时为 $80,43,24,16$ s。以 $P_0=4$ 为基准计算 speedup 与 parallel efficiency。
 \item 弱缩放中每 rank 固定 $10^6$ unknowns，$P=1,8,64$ 时耗时为 $1.0,1.08,1.35$ s。计算相对弱缩放效率。
 \item 一个 solver setup=2 s、每次 solve=0.1 s；另一个 setup=0.2 s、每次 solve=0.14 s。求两者总时间相等时的 reuse 次数，并判断重复 1、20、100 次时谁更快。
 \item smoother A 每 cycle 8 ms、convergence factor 0.15；B 每 cycle 5 ms、factor 0.30。假设初始 residual 为 1，计算达到 $10^{-8}$ 所需 cycles 与总时间。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 从 speedup 定义推导以任意基准资源数 $P_0$ 定义的 strong-scaling efficiency，说明为什么不必假设单 rank 能运行。
 \item 推导 setup/solve 总成本 $T=T_{setup}+N_{reuse}T_{solve}$ 的 break-even reuse 次数公式。
 \item 对几何收敛 $\|r_k\|\approx q^k\|r_0\|$ 推导达到 tolerance $\varepsilon$ 所需 cycle 数。
 \item 说明为什么只有在 PDE、离散、停止准则和初值等数值路径等价时，性能比较才有可解释性；构造一个“更快只是因为少做了迭代”的反例。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{基准实验设计}
 \begin{enumerate}[label=\arabic*.]
 \item 写一个 benchmark harness：warm-up 后重复至少 15 次，输出 median、IQR、min/max，并保存原始样本。
 \item 实现 manufactured solution convergence test，自动对多组 $h$ 计算误差和实验阶，若阶数偏离预期则报错。
@@ -195,7 +192,7 @@ solve
 \item 实现 setup/solve 分离计时，并模拟不同 $N_{reuse}$ 计算摊销后的总成本。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{证据解释与公平性诊断}
 \begin{enumerate}[label=\arabic*.]
 \item 设计一张 CPU vs GPU benchmark card，列出必须固定的数值条件和必须分别测量的性能指标。
 \item 为什么只报告“最快一次”容易误导？结合 warm-up、JIT、cache、系统噪声说明。

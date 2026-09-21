@@ -584,7 +584,7 @@ LFA 的价值是机制分析和参数筛选。物理边界、AMR interface、强
 
 \section*{习题}
 
-\subsection*{计算题}
+\subsection*{Fourier 分析与两网格推导}
 \begin{enumerate}[label=\arabic*.]
 \item 从 $\varphi_j(\theta)=e^{\mathrm i j\theta}$ 出发，逐步计算一维 Poisson stencil 的 Fourier symbol~\eqref{eq:lfa-poisson-1d-symbol}。
 
@@ -597,10 +597,7 @@ LFA 的价值是机制分析和参数筛选。物理边界、AMR interface、强
 \item 推导二维五点 Poisson 的 $\widetilde A(\theta_x,\theta_y)$ 与 $\widetilde{D^{-1}A}$，并计算 modes $(\pi,0)$、$(\pi,\pi)$、$(\pi/2,\pi/2)$ 的数值。
 
 \item 对二维 basic frequency $(\theta_x,\theta_y)=(\pi/4,\pi/6)$，列出式~\eqref{eq:lfa-two-dimensional-harmonics}中的四个 aliased harmonics，并把每个 frequency 分量映射回 $[-\pi,\pi)$。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 证明在无限/周期均匀网格上，任意常系数有限 stencil 的 Fourier modes 是特征函数，并写出一般 symbol 为 stencil coefficients 的离散 Fourier transform。
 
 \item 从 full-weighting 与 linear interpolation 的空间公式独立推导式~\eqref{eq:lfa-pair-restriction}和~\eqref{eq:lfa-pair-prolongation}，不要直接引用正文结果。
@@ -614,7 +611,7 @@ LFA 的价值是机制分析和参数筛选。物理边界、AMR interface、强
 \item 解释为什么二维 full coarsening 会得到 $2^2=4$ 个 harmonics，而三维得到 $2^3=8$ 个。把论证写成每个坐标方向独立 aliasing 的 tensor-product 结构。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{符号与数值核验}
 \begin{enumerate}[label=\arabic*.]
 \item 编程扫描 $\theta\in(-\pi/2,\pi/2]$ 与若干 $\omega$，直接组装式~\eqref{eq:lfa-two-grid-matrix-1d}并计算 spectral radius。确认 $\omega=2/3$ 时曲线在非零基本频率上恒为 $1/9$。
 
@@ -627,7 +624,7 @@ LFA 的价值是机制分析和参数筛选。物理边界、AMR interface、强
 \item 将 LFA 预测与有限 Dirichlet grid 上的实测 two-grid factor 比较。随着 grid refinement 增大，观察 interior-dominated asymptotic factor 是否趋近 LFA 预测，并解释 finite boundary effect。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{适用边界与迁移}
 \begin{enumerate}[label=\arabic*.]
 \item 一个 smoother 的 LFA smoothing factor 更小，但每 sweep 成本高 $60\%$。设计最小 benchmark，使比较对象从“每 sweep 收敛强弱”转为固定 tolerance 下的 time-to-solution。
 

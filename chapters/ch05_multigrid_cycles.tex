@@ -541,7 +541,7 @@ AMR 层级结构
 
 \section*{习题}
 
-\subsection*{计算题}
+\subsection*{循环、复杂度与预条件推导}
 \begin{enumerate}[label=\arabic*.]
 \item 三维最细层有 $256^3$ 个自由度，进行 full coarsening，直到每个方向少于 4 个 cell。列出每一级自由度数、相对于最细层的比例，并求所有层级的自由度总数。
 \item 假设 V-cycle 的每一层执行 2 次预平滑和 2 次后平滑，每次 sweep 的成本为 $cN_\ell$，残差计算与网格传递的总成本为 $dN_\ell$。写出整个 V-cycle 的总工作量，并求关于 $N_0$ 的闭式上界。
@@ -554,10 +554,7 @@ A=\begin{bmatrix}4&1\\1&3\end{bmatrix},\qquad
 M=\begin{bmatrix}4&0\\0&3\end{bmatrix},
 \]
 计算 $M^{-1}A$ 的特征值和条件数，并与 $A$ 的特征值条件数比较。再对 $r=(1,1)^T$ 计算 $z=M^{-1}r$，解释它为什么是对误差 $A^{-1}r$ 的近似。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 对 $d$ 维 full coarsening，证明 V-cycle 若每层工作量与 $N_\ell$ 成正比，则总复杂度为 $\Oh(N)$。
 \item 对 W-cycle 建立递推 $T(N)=cN+2T(N/2^d)$，分别分析 $d=1,2,3$ 的渐近复杂度。
 \item 设一个非几何粗空间序列满足 $N_{\ell+1}\le qN_\ell$，但每层单位自由度成本满足 $c_\ell\le c_0(1+\gamma\ell)$。推导一次 V-cycle 总工作量的上界，并判断它是否仍为 $\Oh(N_0)$。
@@ -567,7 +564,7 @@ M=\begin{bmatrix}4&0\\0&3\end{bmatrix},
 \item 说明一个 V-cycle 若每次根据当前 residual 自适应改变 inner tolerance，为什么一般不能再视为固定线性算子 $B_{MG}$；据此解释 FGMRES 的动机。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{求解实验}
 \begin{enumerate}[label=\arabic*.]
 \item 将第~\ref{ch:two-grid}章 two-grid 程序改写为递归 V-cycle。用 operation counter 验证总工作量与最细层自由度数 $N$ 近似线性。
 \item 实现 V-cycle、W-cycle 和 FMG，比较达到同一误差阈值所需的总 work units 与实际时间。
@@ -577,7 +574,7 @@ M=\begin{bmatrix}4&0\\0&3\end{bmatrix},
 \item 在已有 V-cycle 上实现接口 $z=B_{MG}r$，分别把它接入 Richardson iteration 与 PCG/GMRES。记录相同问题下外层迭代数、每次预条件 apply 成本和总时间。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{层级设计与性能判断}
 \begin{enumerate}[label=\arabic*.]
 \item 给定“细层很快、粗层很慢”的性能剖析结果，解释为什么继续优化 smoother kernel 可能几乎不改变 V-cycle 总时间。
 \item 设计一个动态 active-thread/active-rank 策略：随着 $N_\ell$ 下降，何时减少并行参与者？给出需要测量的阈值量而不是固定经验常数。

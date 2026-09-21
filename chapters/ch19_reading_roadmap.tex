@@ -66,22 +66,19 @@ MueLu/Kokkos 与 Ginkgo 代表两种很有价值的现代路径：一个强调�
 
 \section*{习题}
 
-\subsection*{计算题}
+\subsection*{论文结构与证据拆解}
 \begin{enumerate}[label=\arabic*.]
 \item 任选一个开源 3D 7-point stencil kernel，从源码逐行统计每 cell 的显式 FLOP、数组读取/写入和理论 bytes，计算 arithmetic intensity，并与项目 benchmark 报告比较。
 \item 从一个实际 V-cycle trace 中记录各 level unknowns 与时间，计算每 unknown 时间、相邻层工作量缩减比和 coarse overhead 比例。
 \item 任选一篇论文中的 scaling 图，读取至少四个数据点，重新计算 speedup/efficiency；检查作者的结论是否与数据一致。
 \item 对一个开源 AMG hierarchy 的日志，利用每层 unknowns 与 nnz 计算 grid/operator complexity，并与论文或文档报告对照。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 选择源码中的一个 residual/stencil kernel，把代码还原成数学算子，证明它与书中对应离散式等价（忽略边界处理差异）。
 \item 选择一个 restriction/prolongation 实现，从索引和权重推导其数学矩阵 $R$ 或 $P$，并检查是否保持常数。
 \item 选择一篇 multigrid 论文中的核心复杂度结论，依据论文给出的层级缩放假设重新完成推导，而不是直接引用作者结论。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{复现与阅读实践}
 \begin{enumerate}[label=\arabic*.]
 \item 任选一个开源 solver，成功构建并运行最小 Poisson case；记录 build 配置、问题规模、solver 参数和 residual history。
 \item 沿源码调用链追踪一次 V-cycle：从外层 solve 到 pre-smooth、residual、restriction、coarse solve、prolongation、post-smooth，画出调用图并标注数据结构。
@@ -89,7 +86,7 @@ MueLu/Kokkos 与 Ginkgo 代表两种很有价值的现代路径：一个强调�
 \item 复现论文或官方文档中的一个小 benchmark；若无法复现绝对数字，至少比较趋势并分析硬件/版本差异。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{研究路线设计}
 \begin{enumerate}[label=\arabic*.]
 \item 用四格阅读卡整理一篇论文：“数学对象、多重网格对象、执行对象、证据”。任何无法落入四格的术语都必须继续追踪定义。
 \item 若论文只报告 kernel bandwidth，没有 residual history、iteration count 或 time-to-solution，列出哪些性能结论可以成立、哪些不能成立。

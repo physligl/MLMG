@@ -366,7 +366,7 @@ S^k\bm v=\lambda^k\bm v.
 
 本章把线性代数中的矩阵迭代与网格误差联系起来。计算题应手算迭代向量、残差、误差、迭代矩阵及其谱。
 
-\subsection*{计算题}
+\subsection*{迭代机制与收敛推导}
 \begin{enumerate}[label=\arabic*.]
 \item 对
 \[
@@ -380,10 +380,7 @@ A=\begin{bmatrix}2&-1&0\\-1&2&-1\\0&-1&2\end{bmatrix},\qquad
 \item 已知某次迭代的精确解 $\bm u^\star=(1,1,1)^T$、当前近似 $\bm u=(0.9,1.1,0.8)^T$，对给定 $A$ 计算误差 $\bm e$、残差 $\bm r$，并直接验证 $\bm r=A\bm e$。
 \item 某迭代矩阵在两个误差方向上的特征值为 $0.2$ 与 $0.95$，初始系数分别为 1 与 0.1。计算 1、5、20 轮后的两个分量大小，并判断何时慢模态开始主导。
 \item 对 $h_x=1/2,h_y=1/4$ 的二维 Poisson，使用式~\eqref{eq:iteration-two-dimensional-jacobi}写出一个内部点的 Jacobi 更新权重。再给 $3\times3$ 内部点按 $(i+j)\bmod2$ 标出红黑颜色，列出中心点直接耦合的四个邻居颜色。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 从 $A\bm u^\star=\bm b$ 与残差定义证明 $\bm r=A\bm e$。
 \item 从一般 stationary iteration
 \[
@@ -395,7 +392,7 @@ A=\begin{bmatrix}2&-1&0\\-1&2&-1\\0&-1&2\end{bmatrix},\qquad
 \item 对二维五点网格证明 red--black coloring 下同一颜色的网格点互不通过 stencil 直接耦合，从而说明一个颜色内部可并行更新。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{频率与数值实验}
 \begin{enumerate}[label=\arabic*.]
 \item 实现 Jacobi、weighted Jacobi、Gauss--Seidel 与 RBGS。对同一 Poisson 系统同时记录 $\|r^{(k)}\|_2$ 与已知解析解下的 $\|e^{(k)}\|_2$。
 \item 人为构造低频误差 $\sin(\pi x)$ 与高频误差 $(-1)^i$，分别做若干轮 weighted Jacobi，画出误差形状和范数随迭代变化。
@@ -403,7 +400,7 @@ A=\begin{bmatrix}2&-1&0\\-1&2&-1\\0&-1&2\end{bmatrix},\qquad
 \item 数值求出小规模 Jacobi/GS 误差传播矩阵的特征值，并与理论推导比较。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{平滑器选择与诊断}
 \begin{enumerate}[label=\arabic*.]
 \item 对同一问题比较 Jacobi 与 RBGS 的“单 sweep 时间、迭代次数、达到同一 residual tolerance 的总时间”。为什么只比较每轮收敛强弱会误判？
 \item 解释“一个迭代器收敛”与“它是好的 multigrid smoother”之间的区别，并设计一个数值实验来区分两者。

@@ -504,7 +504,7 @@ nodal FD 与 cell-centered FV/守恒型 FD 给出了两种不同的自由度几�
 
 本章习题不要求背诵 transfer stencil，而要求能够从自由度布局、离散测度与 coarse-space 目标推导或判断 transfer。
 
-\subsection*{计算题}
+\subsection*{粗空间构造与两网格推导}
 \begin{enumerate}[label=\arabic*.]
 \item 对 nodal fine residual
 \[
@@ -544,10 +544,7 @@ C_h=I-PA_H^{-1}RA_h,
 计算对应 coarse residual。再给四个 coarse corner values $0,2,4,6$，计算中心 fine node 的 bilinear prolongation 值。
 
 \item 一个二维 coarse control volume 含四个等体积 fine cells，其 residual densities 为 $1,3,5,7$。分别计算 volume-normalized restriction 与 integrated-residual restriction；说明为什么结果数值不同但物理总 residual 一致。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 从 residual equation 推导 coarse error equation，解释为什么 restriction 的对象是当前 residual，而不是把原问题右端机械缩小。
 
 \item 对一维 nodal linear prolongation 写出矩阵 $P$，取 $M_h=hI$、$M_H=2hI$，由式~\eqref{eq:twogrid-weighted-adjoint-transfer}推导 $R=\frac12P^T$ 并恢复 full-weighting stencil。
@@ -563,7 +560,7 @@ C_h=I-PA_H^{-1}RA_h,
 \item 构造一个 fine-space error $e_h$，使其恰好属于 $\operatorname{range}(P)$；再构造一个与 coarse space 在 $A_h$-inner product 下正交的误差。分别说明 Galerkin coarse correction 对二者的作用。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{数值验证}
 \begin{enumerate}[label=\arabic*.]
 \item 分别实现两组 transfer：nodal full-weighting 配合 linear prolongation，以及 cell-centered volume restriction 配合 piecewise-constant prolongation。对常数向量检查 $RP=I$；对线性函数检查两类 prolongation 的逼近误差，并解释自由度位置为什么影响结果。
 
@@ -574,7 +571,7 @@ C_h=I-PA_H^{-1}RA_h,
 \item 对同一个规则 cell-centered Poisson 问题，分别实现 coarse rediscretization 与 Galerkin coarse operator。比较常系数、平滑变系数和强跳变系数下二者的矩阵差异与 two-grid convergence factor。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{Transfer 诊断与迁移}
 \begin{enumerate}[label=\arabic*.]
 \item 一个代码库同时支持 nodal FD 与 cell-centered FV。设计 transfer API 时，哪些信息必须显式携带才能避免把“nodal injection”“volume average”“integrated residual sum”错误地统一成一个无语义的 \texttt{restrict()}？至少从 DOF location、quantity semantics、geometry 与 inner product 四个方面回答。
 

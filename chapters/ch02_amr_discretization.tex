@@ -1449,7 +1449,7 @@ average-down 与 AMR interpolation 则描述同一物理状态在不同分辨率
 
 本章习题按“几何与空间表示 $\rightarrow$ numerical flux $\rightarrow$ operator structure $\rightarrow$ consistency/convergence $\rightarrow$ regridding”组织。计算时必须明确自由度语义、valid/covered 区域、face orientation、integrated flux 与 row scaling；不能只写最终 stencil 系数。
 
-\subsection*{计算题}
+\subsection*{层级表示与接口推导}
 \begin{enumerate}[label=\arabic*.]
 \item 二维 refinement ratio 为 $r=2$，一个 square fine patch 每个方向有 $n=8,16,64$ 个 fine cells，stencil interface depth 为 $g=1$。用式~\eqref{eq:amr-interface-fraction} 计算接口影响比例，并比较其随 $n$ 的变化。
 \item 对一维 coarse--fine interface，令 $H=2h$、$h=1$、$\beta_C=1$、$\beta_F=4$。从界面状态 $u_\Gamma$ 的通量连续条件消去 $u_\Gamma$，得到 $T_{CF}$，并写出该界面对 coarse 与 fine 两个 cell-integrated rows 的贡献。
@@ -1459,10 +1459,7 @@ average-down 与 AMR interpolation 则描述同一物理状态在不同分辨率
 \item 一个二维 covered coarse cell 的四个 fine cell averages 为 $1,2,3,6$。计算 conservative average-down 后的 coarse average；若这四个数字改为 cell-integrated quantities，计算 coarse integral，并解释两个公式为什么不同。
 \item 对一维 $r=2$ 的 piecewise-constant transfer，使用式~\eqref{eq:amr-simple-transfer-projector} 计算 $P_0R$ 的特征值与特征向量，并说明为什么 $(1,1)^T$ 被保留而 $(1,-1)^T$ 被消去。把这一结果解释为“coarse representation 保留平均模态但丢失 subcell variation”。
 \item 给定 $N_c=1200$ 个 valid coarse cells、$N_{cov}=300$ 个 covered coarse cells 和 $N_f=1200$ 个 fine cells。分别计算 hierarchy storage cell count 与 composite DOF count；若每个存储 cell 保存 6 个 FP64 fields，再比较两种计数对应的数据量。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 证明标准嵌套且不存在重复 valid coverage 时，式~\eqref{eq:amr-composite-partition} 给出的 valid cells 构成计算域的复合控制体划分。说明这一性质为什么是 composite integral norm 与 global conservation 的前提。
 \item 从连续精确通量的积分可加性证明式~\eqref{eq:amr-exact-flux-partition}；再独立证明，若 numerical flux 满足式~\eqref{eq:amr_flux_matching_general}，coarse--fine interface 在所有 valid-cell equations 求和时不产生净内部源项。指出这两个证明分别属于连续恒等式和离散代数恒等式。
 \item 从“coarse center--interface--fine center”上的分段线性局部模型推导式~\eqref{eq:amr_cf_transmissibility}，并验证 $H=h$ 时退化为同层 two-point transmissibility。
@@ -1472,7 +1469,7 @@ average-down 与 AMR interpolation 则描述同一物理状态在不同分辨率
 \item 设两层 regridding 中 $P_{\mathrm{AMR}}$ 保持常数，$R_{\mathrm{AMR}}$ 是 conservative average-down，$\Pi_{\mathrm{copy}}$ 精确复制同分辨率数据。证明 $\mathcal T_{\mathrm{regrid}}\bm1=\bm1$；若 $u$ 表示守恒密度，再写出新增细化区域必须满足的局部积分约束。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{实现与守恒验证}
 \begin{enumerate}[label=\arabic*.]
 \item 实现二维 block-structured hierarchy 的 valid/covered mask 构造器。显式验证所有 valid cell volumes 的并集覆盖 $\Omega$ 且不存在 interior overlap；再输出 storage cell count 与 composite DOF count。
 \item 实现本章的一维 two-level composite Poisson assembler，同时输出 cell-integrated $K$、volume matrix $M$ 和 $A=M^{-1}K$。数值检查 $\|K-K^T\|$、$\|MA-A^TM\|$ 与纯 Neumann 情况下的 $\|K\bm1\|$。
@@ -1483,7 +1480,7 @@ average-down 与 AMR interpolation 则描述同一物理状态在不同分辨率
 \item 实现式~\eqref{eq:amr-regrid-piecewise-transfer} 的两层 regridding transfer。构造 $\mathcal R_{\mathrm{keep}}$、$\mathcal R_{\mathrm{refine}}$ 与 $\mathcal R_{\mathrm{derefine}}$，分别执行 overlap copy、AMR interpolation 与 average-down；检查 constant preservation、conserved integral 与 transfer error。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{AMR 诊断与设计}
 \begin{enumerate}[label=\arabic*.]
 \item 给定 stencil depth $g$ 与每个 patch 方向的 cell count $n$，同时考虑式~\eqref{eq:amr-interface-fraction}、ghost storage 和 patch scheduling，分析为什么无限减小 patch size 不会单调提高 AMR 并行性能。区分几何上的 interface fraction 与具体机器上的性能结论。
 \item 比较显式 composite matrix 与 matrix-free ghost-fill/stencil apply。说明在 fixed linear interpolation 下两者怎样表示同一个线性 operator；再讨论 nonlinear limiter 出现后为什么需要改变 operator abstraction。

@@ -92,22 +92,19 @@ GPU 对小问题没有“必须更快”的理论保证。
 
 \section*{习题}
 
-\subsection*{计算题}
+\subsection*{定量诊断与根因推理}
 \begin{enumerate}[label=\arabic*.]
 \item 某 V-cycle 各阶段时间从优化前 $[40,15,10,5]$ ms 变为 $[20,15,10,5]$ ms。计算局部 kernel 加速比与全 V-cycle 加速比，并用 Amdahl 解释差异。
 \item 一组 OpenMP strong-scaling 数据为 $T_1=100$ ms、$T_8=18$ ms、$T_{16}=14$ ms、$T_{32}=14$ ms。计算各线程数的 efficiency，并判断最值得进一步区分 bandwidth saturation 与 synchronization 的区间。
 \item GPU profile 显示 fine/coarse levels 的 kernel time 分别为 $[5,2,1,0.3,0.1]$ ms，launch/sync 固定成本每 level 0.2 ms。计算每层固定成本比例。
 \item 某 solver 改版后 iteration count 从 12 增到 30，每 cycle 时间从 10 ms 降到 7 ms。计算总 solve time，并判断性能回归主要属于数值路径还是单 cycle 性能。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 建立总时间 $T=N_{iter}T_{cycle}$ 的微分/比例模型，推导 iteration count 与 cycle cost 的相对变化怎样共同决定 time-to-solution。
 \item 对 memory-bound kernel 用 Roofline 上界证明：当实测带宽已接近可持续带宽时，仅减少指令数未必显著加速。
 \item 用假设检验式思路说明“观察到低 occupancy”为什么不是“低 occupancy 导致慢”的逻辑证明；至少列出一个替代根因。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{证伪实验}
 \begin{enumerate}[label=\arabic*.]
 \item 给 solver 加分层计时：setup、每个 MG level、smoother、residual、transfer、communication、bottom solve。输出一棵可聚合的 timing tree。
 \item 人为制造一个 NUMA 错误放置版本和一个正确版本，用 profiler/硬件计数器区分 remote memory、bandwidth 与 barrier 行为。
@@ -115,7 +112,7 @@ GPU 对小问题没有“必须更快”的理论保证。
 \item 设计一个单变量 A/B 实验验证“迭代次数增加来自 coarse operator 不一致”这一假设。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{综合诊断}
 \begin{enumerate}[label=\arabic*.]
 \item GPU fine level 已达到高带宽但 V-cycle 仍慢，提出三个 coarse-level 根因，并为每个根因指定一个能证伪它的观测。
 \item OpenMP 不再随线程数加速，给出区分 bandwidth saturation、NUMA、load imbalance、barrier 四种根因的诊断顺序。

@@ -206,23 +206,20 @@ ghost fill & 复制/插值 & owner 到 ghost & 数据交换/插值完成\\
 
 \section*{习题}
 
-\subsection*{计算题}
+\subsection*{操作语义与 DAG 推导}
 \begin{enumerate}[label=\arabic*.]
 \item 对 $64^3$、$32^3$、$16^3$、$8^3$ 四层网格，计算每层 residual task 数，并求相对 finest level 的并行 task 比例。
 \item 二维 full-weighting 每个 coarse output 读取 9 个 fine values。对 $1024^2$ fine grid 估算一次 restriction 的 coarse task 数、fine value 读取次数上界与输出写次数。
 \item 三维立方子域每边 $n$ 个 cells，halo 厚度为 1。忽略棱角重复，估算 owned cells 与六个 face halos 的比例，并计算 $n=16,32,64$。
 \item 给定一层 $u,b,r,e$ 四个 double 向量与三个面系数数组，估算 $256^3$ 网格的基础存储量；再讨论 Jacobi ping-pong 增加一个 $u^{new}$ 后的变化。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 证明 gather 形式的 restriction 若每个 coarse output 只有唯一 writer，则不需要 atomic update。
 \item 证明三维 full coarsening 下各层 task 总数形成系数为 $1/8$ 的几何级数，但最粗层可用并行度仍会迅速下降。
 \item 对 RBGS 写出 red/black 两阶段 DAG，说明为什么颜色内部可并行而颜色之间必须有依赖边。
 \item 比较 scatter prolongation 与 gather prolongation，形式化指出 scatter 中产生 write--write conflict 的条件。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{任务实现与验证}
 \begin{enumerate}[label=\arabic*.]
 \item 为 Jacobi、residual、restriction、prolongation、correction 和 norm 分别实现串行 kernel，并记录每个 kernel 的读写字节与 FLOPs。
 \item 实现 gather 与 scatter 两种 prolongation，使用 race detector 或原子计数验证 scatter 冲突来源。
@@ -230,7 +227,7 @@ ghost fill & 复制/插值 & owner 到 ghost & 数据交换/插值完成\\
 \item 将 interior cells 与 physical-boundary cells 分成两个 loop，比较与单 loop 内部分支的性能和代码复杂度。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{调度与粒度设计}
 \begin{enumerate}[label=\arabic*.]
 \item 设计一个 V-cycle buffer reuse 方案，标出哪些向量可复用、哪些因为数据仍被后继 task 使用而不能覆盖。
 \item 对 point Jacobi、RBGS 和 line smoother，分别画出 task granularity 与 dependency DAG，判断哪一种更容易映射到 GPU。

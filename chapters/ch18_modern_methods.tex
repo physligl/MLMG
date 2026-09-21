@@ -222,17 +222,14 @@ sum factorization 的作用可以在这个最小模型上理解：若高维基�
 
 \section*{习题}
 
-\subsection*{计算题}
+\subsection*{现代方法的数学与性能模型}
 \begin{enumerate}[label=\arabic*.]
 \item 一个三维高阶单元在每个方向使用 $p+1$ 个局部基函数。分别计算 $p=7$ 与 $p=3$ 时每单元局部 DOF 数，并估计一次 $p$-coarsening 后局部未知量减少比例。
 \item 一个层级数据集包含 $4N$ 个 FP64 标量。计算其存储量；若其中 $2N$ 个改为 FP32，计算新存储量和理论 bytes 减少比例。
 \item 一个 memory-bound V-cycle 每次从 DRAM 搬运 800 GB 数据，硬件可持续带宽 1.6 TB/s。若 mixed precision 将流量降到 520 GB，但增加 15\% FLOP 且仍 bandwidth-bound，估算理想时间变化。
 \item 某 low-precision coarse correction 每次把 residual 降低到原来的 0.25，但随后高精度 refinement 有固定 0.1 ms 成本。计算达到 $10^{-8}$ 需要多少 correction steps，并建立总时间表达式。
 \item 高阶 matrix-free kernel arithmetic intensity 为 12 FLOP/byte，低阶 CSR 为 0.3 FLOP/byte。对 ridge point 8 FLOP/byte 的 GPU 判断二者分别处在哪个 Roofline 区域。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 从式~\eqref{eq:modern-fas-rhs}出发，在线性情形 $F_h(u)=A_hu$ 下令 $e_H=u_H-I_h^H u_h$，推导它如何退化为标准 coarse-grid correction，并指出需要怎样选择 coarse operator 才与前文 Galerkin 结构一致。
 \item 对一个由点子空间、line 子空间和 coarse space 组成的抽象分解，解释 additive 与 multiplicative 校正的执行依赖差异，并判断哪一种更容易并行。
 \item 若低精度 correction 满足 $\|e_{k+1}\|\le q\|e_k\|$、$q<1$，推导达到给定误差阈值所需 correction 次数，并说明何时高精度 outer refinement 可以容忍低精度 inner solve。
@@ -241,7 +238,7 @@ sum factorization 的作用可以在这个最小模型上理解：若高维基�
 \item 对高阶 matrix-free，说明“增加 FLOP、减少 bytes”为什么可能提高 GPU 利用率；用 Roofline 公式给出条件。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{数值与性能实验}
 \begin{enumerate}[label=\arabic*.]
 \item 将 V-cycle 的部分 level/向量改为 FP32，其余保持 FP64，比较 residual history、最终误差、bytes 与 wall time。
 \item 实现 mixed-precision iterative refinement：低精度求 correction，高精度计算 residual。扫描 inner tolerance，观察稳定区间。
@@ -249,7 +246,7 @@ sum factorization 的作用可以在这个最小模型上理解：若高维基�
 \item 若硬件支持，实验一个 block-dense/tensor-core-friendly smoother，与普通 sparse smoother 比较 setup 与 solve 成本。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{研究比较与技术选择}
 \begin{enumerate}[label=\arabic*.]
 \item mixed precision 节省 35\% 时间但使迭代次数增加 20\%。说明还需要哪些 accuracy/robustness 证据才能决定是否采用。
 \item GPU 算力继续提高但网络 latency 基本不变时，解释为什么 coarse-grid communication 会成为更显著的瓶颈。

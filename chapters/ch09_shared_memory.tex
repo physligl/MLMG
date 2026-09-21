@@ -122,28 +122,26 @@ P_\ell\le \min(P,N_\ell/g_{\min}),
 共享内存映射保留了\chapref{ch:mg-parallel-operations}的操作结构：stencil/gather task 由线程处理 tile，唯一 writer 保证正确性，RBGS 与 reduction 引入显式同步，NUMA 与 cache 决定数据位置成本。粗层问题不是算法 work 变多，而是 task 数下降后同步和内存系统固定成本无法被足够工作摊薄。
 
 \section*{习题}
-\subsection*{计算题}
+\subsection*{共享内存成本与正确性}
 \begin{enumerate}[label=\arabic*.]
 \item $256^3$ 网格用 32 线程静态均分，计算每线程 cell 数；连续 coarsen 三层后重复计算，并判断哪一层开始低于每线程 4096 cells。
 \item 一个 $32^3$ tile 的一层 halo 输入工作集为 $34^3$。计算式~\eqref{eq:shared-memory-working-set-amplification}；再比较 $16^3$ tile。
 \item RBGS 做 3 次 pre 和 3 次 post sweep，每 sweep 两颜色。计算一个 V-cycle level 至少包含多少次颜色阶段同步。
 \item 双 socket 各 8 通道内存，local bandwidth 为 150 GB/s，remote bandwidth 为 80 GB/s。若 40\% 流量错误落到 remote node，计算简单加权带宽上界。
-\end{enumerate}
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
+
 \item 证明 Jacobi 旧数组只读、新数组唯一 writer 时，不需要 tile 间锁。
 \item 证明 RBGS 对五点/七点 Cartesian stencil 的同色点不直接耦合。
 \item 说明 first-touch 只影响物理页面位置而不改变数值结果，并推导 remote access 只进入性能模型。
 \item 对融合 prolongation+correction 给出保持数值等价所需的数据依赖条件。
 \end{enumerate}
-\subsection*{编程与上机题}
+\subsection*{线程与 NUMA 实验}
 \begin{enumerate}[label=\arabic*.]
 \item 用 OpenMP 或等价共享内存接口实现 residual、Jacobi、restriction、prolongation 与 reduction。
 \item 扫描 tile 大小并记录 bandwidth、cache miss 与 wall time。
 \item 比较 static/dynamic schedule 在均匀网格和不均匀 patch workload 上的差别。
 \item 在双 socket 机器上比较 serial initialization 与 parallel first-touch。
 \end{enumerate}
-\subsection*{工程与综合题}
+\subsection*{扩展性诊断}
 \begin{enumerate}[label=\arabic*.]
 \item 设计按 MG level 自动缩减线程数的策略，并说明观测哪些指标决定阈值。
 \item 比较 Jacobi 与 RBGS：同时报告 convergence factor、barrier 次数和 time-to-solution。

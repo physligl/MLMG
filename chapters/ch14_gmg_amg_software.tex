@@ -308,7 +308,7 @@ AmgX & GPU AMG & CUDA + MPI & NVIDIA GPU 专用优化 & aggregation、coloring�
 
 \section*{习题}
 
-\subsection*{计算题}
+\subsection*{层级构造与复杂度推导}
 \begin{enumerate}[label=\arabic*.]
 \item 对
 \[
@@ -335,17 +335,14 @@ A=\begin{bmatrix}2&-1&0\\-1&2&-1\\0&-1&2\end{bmatrix},
 取 $R=P^T$，手算 $A_c=RAP$ 的全部条目。
 \item 对上一题任取 $e_c=(1,-1)^T$，计算 $Pe_c$；指出哪些 fine unknown 是直接继承、哪些是插值得到。
 \item 某 AMG hierarchy 的 unknown 数为 $[10^6,2.5\times10^5,6.25\times10^4]$，nnz 数为 $[7,9,14]$ 乘以对应 unknown 数。计算 grid complexity 与 operator complexity。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 若 $A$ 对称正定且 $P$ 满列秩，证明 Galerkin coarse operator $A_c=P^TAP$ 仍对称正定。
 \item 从矩阵乘法定义说明为什么 RAP/SpGEMM 可能使 coarse matrix 的 stencil 比 fine matrix 更宽，从而导致 operator complexity 大于 grid complexity。
 \item 比较 classical C/F coarsening 与 aggregation：分别说明 coarse variables 的数学含义，以及 prolongation 构造需要满足的最低一致性要求。
 \item 证明规则 Cartesian Poisson 中几何 coarse grid 已知时，可以直接生成 coarse stencil，而一般 AMG 只能从矩阵关系构造 transfer/coarse operator。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{软件实验与复现}
 \begin{enumerate}[label=\arabic*.]
 \item 编程验证上一组小矩阵的 $P^TAP$ 结果；再随机生成 SPD 三对角矩阵，检查 $A_c$ 的对称性和正定性。
 \item 实现一个最简 aggregation AMG setup：构造 matrix graph、简单聚合、piecewise-constant $P$、$R=P^T$ 与 RAP。对小 Poisson 问题输出每层矩阵。
@@ -353,7 +350,7 @@ A=\begin{bmatrix}2&-1&0\\-1&2&-1\\0&-1&2\end{bmatrix},
 \item 对比 GMG 与 AMG：在规则 Poisson 上分别记录 hierarchy setup 与 solve；再加入随机变系数，观察两者的鲁棒性和 setup 变化。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{库选择与配置诊断}
 \begin{enumerate}[label=\arabic*.]
 \item 把 AMReX、hypre、PETSc、MueLu、Ginkgo、AmgX 任选五个映射到“setup--transfer--coarse operator--smoother--redistribution”统一链，指出各自最值得 profile 的阶段。
 \item 一个 AMG setup 很快但 operator complexity=3.5，另一个 setup 慢一倍但 operator complexity=1.4。设计重复求解场景下的总成本比较。

@@ -859,7 +859,7 @@ GPU 多重网格可以沿一条统一因果链重建：
 
 \section*{习题}
 
-\subsection*{计算题}
+\subsection*{GPU 成本模型与映射推导}
 \begin{enumerate}[label=\arabic*.]
 \item 一个 kernel 处理 $N=10^7$ 个 cells，采用 256 threads/block。计算 block 数。若 GPU 有 120 个 SM，平均每个 SM 最少要处理多少 blocks 才能完成整个 grid？说明这不是 resident-block 数。
 \item 一个 warp 的 32 个 threads 分别读取连续的 double 元素。计算有效数据字节数。若每个 lane 的地址改为相隔 32 bytes，比较两种模式需要覆盖的地址跨度，并解释哪一种更容易产生额外 transactions。
@@ -869,10 +869,7 @@ GPU 多重网格可以沿一条统一因果链重建：
 \item 使用式~\eqref{eq:gpu-basic-memory-budget}计算 $512^3$ finest grid 的 $u,b,r$ 三个 double vectors 在完整三维 hierarchy 上的 GiB。再加入一份 Jacobi ping-pong $u^{new}$，重新计算。
 \item 某 V-cycle 有 40 个短 kernels，每个 device execution 为 $4\,\mu s$，host-side submission 平均等效为 $2\,\mu s$ 且无法完全重叠。估算 submission 在该简化模型中的比例；若 Graph 将每 kernel 的重复 submission 成本摊薄为原来的 $1/4$，重新估算。
 \item 某 kernel 每 block 使用 256 threads、每 thread 64 registers；另一个版本每 thread 96 registers。设某设备每 SM 有 65536 个 32-bit registers，忽略其他限制，分别估算单 SM 最多能同时容纳多少完整 blocks，并讨论 register pressure 对 occupancy 的影响。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 设 warp lane $t$ 负责 $(i+t,j,k)$。利用式~\eqref{eq:gpu-linear-index}证明 center、$+y$、$-y$、$+z$、$-z$ 五组 loads 中，同一组内的 lane-to-lane 地址差都为 1。说明这为什么反驳“大 stride 邻居一定不 coalesced”的说法。
 \item 推导一般 $B_x\times B_y\times B_z$ tile 的完整 radius-one halo 放大因子，并分析 $B_x,B_y,B_z\rightarrow\infty$ 时的极限。
 \item 证明在普通 CUDA kernel 中，若算法要求 block A 等待 block B 的中间结果，而 B 可能尚未被调度，则仅依赖 block-local barrier 无法保证正确性。说明为什么拆成两个 kernels 可以恢复一个全 grid 的 phase boundary。
@@ -881,7 +878,7 @@ GPU 多重网格可以沿一条统一因果链重建：
 \item 比较 weighted Jacobi 与 RBGS 的 GPU dependency DAG：证明 Jacobi 可以在一个 sweep 内完全点并行，而 RBGS 至少需要 red/black 两个有序阶段。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{GPU 实验与 Profiling}
 \begin{enumerate}[label=\arabic*.]
 \item 实现一个 one-thread-per-cell 七点 residual baseline。先验证数值正确性，再分别测试 128、256、512 threads/block；记录时间、achieved bandwidth、registers/thread 与 occupancy。
 \item 在同一 residual kernel 中交换 thread mapping：版本 A 让相邻 lanes 沿 $x$，版本 B 让相邻 lanes 沿 $y$。用 Nsight Compute 的 memory workload 指标验证两种布局的 global-memory transaction 差异。
@@ -893,7 +890,7 @@ GPU 多重网格可以沿一条统一因果链重建：
 \item 若使用 AMReX，分别测试不同 Box size 或 max grid size，记录 box 数、kernel 数、GPU utilization 和 MLMG solve time；解释为什么 CPU 上较好的 tile/box 粒度未必适合 GPU。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{瓶颈诊断与实现选择}
 \begin{enumerate}[label=\arabic*.]
 \item 给定一个三维 variable-coefficient Poisson operator，设计 device 数据布局：$u,b,r$、三个方向 face coefficients、boundary metadata 与 temporaries 分别如何组织？说明 AoS/SoA 决策依据。
 \item 某 Nsight Systems timeline 显示大量 $5$--$10\,\mu s$ kernels，中间有明显 host gaps，但单 kernel Nsight Compute 已接近 DRAM roof。提出三个优先级有序的优化假设，并说明每个假设需要什么证据证伪。

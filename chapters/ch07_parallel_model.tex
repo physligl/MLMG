@@ -188,23 +188,20 @@ reduction & thread tree reduction & block/device reduction & local reduction + g
 
 \section*{习题}
 
-\subsection*{计算题}
+\subsection*{工作量与依赖推导}
 \begin{enumerate}[label=\arabic*.]
 \item 一个 DAG 有 64 个单位工作 task，关键路径长度为 8。计算 $W,S,W/S$，并分别给出 $P=4,8,32$ 时由式~\eqref{eq:parallel-lower-bound}得到的时间下界。
 \item 某程序串行比例为 $s=0.04$。计算无限并行度下的 Amdahl 加速上限，并计算 $P=8,32,128$ 时理想并行部分完全线性缩放下的加速比。
 \item 用 $T=\alpha+\beta m$，取 $\alpha=2\,\mu s$、带宽 $1/\beta=20\,\mathrm{GB/s}$，计算 $m=1\,\mathrm{KB},1\,\mathrm{MB},100\,\mathrm{MB}$ 的消息时间，并判断各自更受 latency 还是 bandwidth 主导。
 \item 一个 kernel 每个元素做 18 FLOPs，主存实际读写 64 B。计算 arithmetic intensity；若内存带宽为 $200\,\mathrm{GB/s}$、峰值算力为 $4\,\mathrm{TFLOP/s}$，求 Roofline 上界。
-\end{enumerate}
 
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
 \item 证明任何调度都必须满足 $T_P\ge W/P$ 与 $T_P\ge S$，从而得到式~\eqref{eq:parallel-lower-bound}。
 \item 证明若每个输出位置具有唯一 writer，且所有输入在阶段开始前已经就绪，则纯 gather kernel 不需要为输出写入设置互斥锁。
 \item 对二叉 reduction tree 推导 $N$ 个输入的 work 与 span，并与串行 reduction 比较。
 \item 给出一个 scatter kernel 存在 write--write race 的具体例子，并证明把它改写成等价 gather 可以消除该 race。
 \end{enumerate}
 
-\subsection*{编程与上机题}
+\subsection*{并行实验}
 \begin{enumerate}[label=\arabic*.]
 \item 实现 map、stencil 和 reduction 三个最小 kernel，记录它们的读写集合并画出 dependency DAG。
 \item 为一维三点 stencil 实现两种分块粒度，测量单线程和多线程的内存带宽与调度开销。
@@ -212,7 +209,7 @@ reduction & thread tree reduction & block/device reduction & local reduction + g
 \item 使用 profiler 或硬件计数器测一个低算术强度 kernel，比较实测带宽与 Roofline 预测。
 \end{enumerate}
 
-\subsection*{工程与综合题}
+\subsection*{模型诊断与映射}
 \begin{enumerate}[label=\arabic*.]
 \item 给定一个新数值 kernel，设计一张检查表：task 是什么、读写什么、谁拥有输出、是否需要 barrier/reduction/communication、怎样判断粒度是否过细。
 \item 某优化把 FLOPs 降低 30\%，却使内存流量增加 2 倍。用 Roofline 与式~\eqref{eq:parallel-cost-decomposition}讨论它可能在哪些机器上更慢。

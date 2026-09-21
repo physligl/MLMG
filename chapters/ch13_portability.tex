@@ -128,25 +128,23 @@ T_{solve}=\sum_{\ell}\sum_{op}T_{\ell,op},
 异构可移植性的核心是稳定算法语义与可替换执行后端：任务、ownership、memory view、reduction 与 halo dependency 必须被清楚表达；tile、thread/block、stream 和后端调优参数则允许特化。真正的评价对象是完整 V-cycle/solve，而不是某个孤立 kernel 能否跨平台运行。
 
 \section*{习题}
-\subsection*{计算题}
+\subsection*{抽象边界与性能模型}
 \begin{enumerate}[label=\arabic*.]
 \item 某 portable backend 在 CPU/GPU 上分别达到各自原生最佳性能的 85\%/72\%。计算简单几何平均效率，并讨论该指标忽略了什么。
 \item 给定 V-cycle 五类 operation 时间，分别计算两个后端的 total cycle time，判断单独 stencil 快 20\% 是否足以让整体更快。
 \item 一个 backend 需要每 cycle 额外做两次 host-device sync，各 15 $\mu$s。计算在 100 $\mu$s 与 2 ms cycle 上的相对开销。
-\end{enumerate}
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
+
 \item 说明为什么 execution-space 抽象不能自动解决 memory-space 正确性。
 \item 给出“语义可移植、调度参数后端特化”不会改变数值结果的条件。
 \item 证明若 abstraction 隐藏了 halo ownership，则分布式 stencil 无法仅凭 local parallel-for 保证全局正确性。
 \end{enumerate}
-\subsection*{编程与上机题}
+\subsection*{跨后端验证}
 \begin{enumerate}[label=\arabic*.]
 \item 为 residual/restriction/prolongation 设计统一 kernel interface，并实现两个执行后端。
 \item 比较 AoS/SoA 或不同多维 layout 在 CPU/GPU 上的影响。
 \item 为同一 V-cycle 收集 backend-neutral phase timing。
 \end{enumerate}
-\subsection*{工程与综合题}
+\subsection*{可移植性决策}
 \begin{enumerate}[label=\arabic*.]
 \item 设计一个 backend abstraction，明确哪些概念必须暴露给数值层、哪些必须隐藏。
 \item 评审一个“所有硬件统一 tile size”的方案，指出性能可移植性风险。

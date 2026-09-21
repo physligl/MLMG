@@ -149,28 +149,26 @@ T_{redistribute}+T_{coarse\ solve\ on\ fewer\ ranks}
 MPI 多重网格建立在 owned+ghost 的分布式数组模型上。Halo exchange 是 stencil 跨所有权边界读取的实现，global reduction 来自 norm/dot 的聚合依赖，coarse rank consolidation 则由 $N_\ell$ 下降导致的并行度不足驱动。真正的分布式 V-cycle 是邻居通信、局部 work、collective 和 rank-set redistribution 共同组成的 DAG。
 
 \section*{习题}
-\subsection*{计算题}
+\subsection*{通信量与正确性推导}
 \begin{enumerate}[label=\arabic*.]
 \item 三维全局 $512^3$ 网格按 $8\times8\times8$ ranks 均分。计算每 rank owned 尺寸、一层六面 halo values 和 halo/owned 比。
 \item 对同一全局问题改成 $16^3$ ranks，重复计算并比较 strong-scaling 下 surface/volume 变化。
 \item 取 $\alpha=1.5\,\mu s$、网络带宽 25 GB/s，计算发送一个 $64^2$ double face 与 $16^2$ double face 的消息时间。
 \item 给定每 rank 最少 20000 unknowns，计算 $256^3\rightarrow128^3\rightarrow64^3\rightarrow32^3$ hierarchy 上允许的最大活跃 rank 数。
-\end{enumerate}
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
+
 \item 推导式~\eqref{eq:mpi-surface-volume-ratio}，并推广到 $d$ 维超立方子域。
 \item 证明 ghost 更新完成后，本地算子式~\eqref{eq:mpi-local-operator}与相应全局 stencil 行等价。
 \item 分析为什么 global reduction 的依赖范围与 nearest-neighbor halo 不同。
 \item 建立 rank consolidation 的 break-even 不等式。
 \end{enumerate}
-\subsection*{编程与上机题}
+\subsection*{MPI 实验}
 \begin{enumerate}[label=\arabic*.]
 \item 实现三维 halo exchange 与 local residual，验证多 rank 结果与单 rank 一致。
 \item 使用 nonblocking communication 实现式~\eqref{eq:mpi-overlap-pattern}，比较 overlap 前后时间线。
 \item 实现 residual norm 的 local reduction + allreduce，测量不同 rank 数下 collective 成本。
 \item 构造两级 rank consolidation 原型，记录 redistribution 与 coarse solve 时间。
 \end{enumerate}
-\subsection*{工程与综合题}
+\subsection*{扩展性与拓扑诊断}
 \begin{enumerate}[label=\arabic*.]
 \item 设计一个结构，使代码能区分 physical ghost、MPI ghost 与 AMR coarse--fine ghost。
 \item 对 strong scaling 失速案例，区分 surface/volume、latency、load imbalance 与 global reduction 四种原因。

@@ -155,28 +155,26 @@ T_{Krylov}=T_{op}+T_{global\ reduce}+T_{MG\ preconditioner}+T_{vector},
 分布式 GPU 多重网格是“rank 所有权 + device residency”的双层映射。GPU-aware MPI 改变数据路径而不改变 halo 语义；通信重叠依赖足够的内部工作和异步推进；粗化同时削弱设备占用率与 rank 级并行度，因此粗层重分布往往是多 GPU 扩展性的核心设计点。
 
 \section*{习题}
-\subsection*{计算题}
+\subsection*{通信与粗层成本模型}
 \begin{enumerate}[label=\arabic*.]
 \item 一个 device halo 为 8 MB，PCIe D2H/H2D 各 20 GB/s，网络 25 GB/s。估算 staged 路径的数据搬运时间下界，并与忽略 host staging 的 GPU-aware 路径比较。
 \item 64 GPUs 上 $512^3$ 网格连续 coarsen，计算每层 cells/GPU；给定阈值 32768 cells/GPU，决定从哪层开始收缩 GPU 数。
 \item pack kernel 8 $\mu$s、network 20 $\mu$s、unpack 6 $\mu$s、interior kernel 30 $\mu$s。计算理想完全重叠与完全串行两种时间。
 \item 外层 Krylov 每步 2 次 allreduce，各 10 $\mu$s；MG preconditioner 120 $\mu$s。计算 reduction 占 iteration 比例。
-\end{enumerate}
-\subsection*{推导与证明题}
-\begin{enumerate}[label=\arabic*.]
+
 \item 建立 staged 与 direct-device halo path 的成本模型并推导 break-even 条件。
 \item 说明为何 GPU-aware MPI 不改变离散算子的数学结果，只改变数据移动路径。
 \item 推导 communicator shrink 后 redistribution 成本需要满足的 break-even 不等式。
 \item 解释 nearest-neighbor halo 与 global allreduce 在依赖图中的范围差异。
 \end{enumerate}
-\subsection*{编程与上机题}
+\subsection*{多 GPU 执行实验}
 \begin{enumerate}[label=\arabic*.]
 \item 实现 device pack/unpack + MPI halo，验证与 host staging 版本数值一致。
 \item 使用 streams/nonblocking MPI 尝试 overlap interior compute 与 halo communication。
 \item 记录多 GPU V-cycle trace，分离 pack、network、unpack、interior、boundary 时间。
 \item 实现简单 communicator shrink 原型并比较 coarse-level 时间。
 \end{enumerate}
-\subsection*{工程与综合题}
+\subsection*{数据流与架构诊断}
 \begin{enumerate}[label=\arabic*.]
 \item 设计 rank/device/stream 的映射规则，说明它如何避免跨 NUMA socket 的错误 GPU affinity。
 \item 对“单 GPU kernel 优化 2 倍但多 GPU总时间只改善 8\%”建立可能的因果解释。
