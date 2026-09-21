@@ -835,7 +835,7 @@ A_{\mathrm{comp}}=M^{-1}K
 \begin{equation}
 MA_{\mathrm{comp}}=K=K^T=A_{\mathrm{comp}}^TM,
 \end{equation}
-所以 $A_{\mathrm{comp}}$ 在 $M$-weighted inner product 下仍然自伴。这个区分会直接影响后续 Krylov 方法和多重网格平滑器对 operator structure 的判断。
+所以 $A_{\mathrm{comp}}$ 在 $M$-加权内积下仍然自伴。这里暂时只需知道：Krylov 方法会利用算子的对称性或自伴结构来构造迭代空间，其最低可用定义见\chapref{ch:mg-cycles}的\secref{sec:mg-preconditioner}。这个区分也会直接影响后续 Krylov 方法和多重网格平滑器对算子结构的判断。
 
 对一个采用成对 transmissibility 的纯扩散离散，若忽略边界项，可以把离散能量写成示意形式
 \begin{equation}

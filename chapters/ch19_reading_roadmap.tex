@@ -44,7 +44,7 @@
 \begin{equation}
 \text{strength graph}\rightarrow\text{coarsening}\rightarrow\text{interpolation}\rightarrow RAP.
 \end{equation}
-再把 solve 拆为 smoother/SpMV/restriction/prolongation/coarse solve。这样才能理解 AMG 与 GMG 在 GPU 上为什么有不同热点。
+再把求解过程拆为 smoother、SpMV、restriction、prolongation 和 coarse solve（粗层求解）。这样才能理解 AMG 与 GMG 在 GPU 上为什么有不同热点。
 
 \subsection{性能可移植框架}
 

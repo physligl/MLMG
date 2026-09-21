@@ -265,7 +265,7 @@ GPU stencil 的性能问题可以压缩成三个层次：
 }
 \]
 
-这三个层次分别对应 bandwidth/cache、occupancy/resource pressure 和 coarse-level parallelism，不能混成一个“GPU utilization”。
+这三个层次分别对应内存带宽/缓存、占用率与资源压力、以及粗层并行度，不能混成一个笼统的“GPU utilization”。
 
 \subsection{七点 Residual 的算术强度}
 
@@ -635,7 +635,7 @@ M_{ubr}
 \label{eq:gpu-basic-memory-budget}
 \end{equation}
 
-对 $512^3$ finest grid，这一项本身约为 $3.43$ GiB；还没有算 coefficients、geometry、Jacobi ping-pong、temporary reductions、AMR ghost cells 或 coarse operators。GPU 显存容量因此可能比 FLOP/s 更早成为规模上限。
+对 $512^3$ 最细网格，这一项本身约为 $3.43$ GiB；还没有计算系数场、几何数据、Jacobi 双缓冲、临时归约缓冲区、AMR ghost cells 或粗层算子。GPU 显存容量因此可能比 FLOP/s 更早成为规模上限。
 
 \subsection{Matrix-Free 与显式稀疏矩阵}
 
@@ -758,7 +758,7 @@ GPU 优化最危险的做法是“从源码猜瓶颈”。本章建议固定使�
 \label{eq:gpu-profiling-chain}
 \end{equation}
 
-Nsight Systems 适合回答“时间到底花在哪个阶段、有没有 host gap、copy、同步、很多短 kernel、stream 是否真正重叠”；Nsight Compute 则适合进入某个具体 kernel，看 launch configuration、memory workload、occupancy、warp states 和 Roofline\cite{nsightSystems2026,nsightCompute2026}。
+Nsight Systems 适合回答“时间到底花在哪个阶段、是否存在主机端空档、内存拷贝、同步、过多短 kernel，以及 stream 是否真正重叠”；Nsight Compute 则用于深入某个具体 kernel，检查启动配置、内存访问、occupancy、warp 状态和 Roofline\cite{nsightSystems2026,nsightCompute2026}。
 
 \subsection{Timeline 级诊断}
 

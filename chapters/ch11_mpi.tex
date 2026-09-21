@@ -95,13 +95,13 @@ Jacobi/residual 的 interior tasks 只依赖本 rank owned values，可以在 ha
 
 如果 fine/coarse partition 保持嵌套，同一 rank 可以本地完成大部分 transfer；跨 rank 的 coarse ownership 变化则需要 redistribution。特别是在 coarse levels 减少活跃 ranks 时，restriction 不再只是数值 gather，还承担把 coarse right-hand side 迁移到新的 rank 集合。
 
-\subsection{Norm 与 Krylov Reduction}
+\subsection{范数与 Krylov 归约}
 
 本地 norm 先在 rank 内求 partial sum，再执行全局 collective：
 \begin{equation}
 \|r\|_2^2=\sum_p\sum_{i\in\Omega_p}r_i^2.
 \end{equation}
-collective 的关键路径涉及所有 ranks，因此无法像邻居 halo 那样只依赖局部拓扑。预条件 Krylov 方法中的 dot products 也具有相同结构；第\secref{sec:mg-preconditioner}节将从求解器角度回到这一问题。
+全局 collective 的关键路径涉及所有 ranks，因此无法像邻居 halo 那样只依赖局部拓扑。预条件 Krylov 方法中的点积也具有相同结构；其求解器角色见\secref{sec:mg-preconditioner}。
 
 \section{完整分布式 V-Cycle}
 

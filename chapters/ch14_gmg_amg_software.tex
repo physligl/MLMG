@@ -145,16 +145,16 @@ $C_g$ 回答“整个 hierarchy 一共保存多少未知量”；$C_o$ 则进一
 
 在软件实现中，\textbf{setup} 指构造 hierarchy、传递算子和粗网格算子的阶段；\textbf{solve} 指复用已建立 hierarchy 执行一个或多个多重网格循环。GMG 通常 setup 更轻、operator 更规则；AMG 更通用，但 setup 可能包含 graph coarsening、interpolation construction 与 RAP/SpGEMM。是否值得付出这些成本，取决于几何信息是否可用、矩阵是否重复求解以及目标硬件上的 setup/solve 比例。
 
-\section{Solver 与 Preconditioner 的软件组合}
+\section{求解器与预条件器的软件组合}
 
 数学上，\secref{sec:mg-preconditioner}已经把一次 multigrid apply 写成 $z=B_{MG}r$。软件接口通常也围绕同一边界组织：外层 solver 负责 residual、搜索空间和停止准则，preconditioner 只负责把输入 residual 映射成近似修正。
 
 因此一个可维护的求解器接口应至少区分：
 \begin{itemize}
-\item \textbf{setup}：构造 hierarchy、transfer、coarse operator、smoother 与 coarse solver；
-\item \textbf{apply}：给定 $r$，执行一次固定或受控的 multigrid cycle，返回 $z$；
-\item \textbf{outer solve}：CG/GMRES/FGMRES 等维护 Krylov 历史、dot products、norm 与停止准则；
-\item \textbf{update/rebuild}：当网格、系数或 sparsity pattern 改变时，决定哪些 setup 数据可复用。
+\item \textbf{setup（构建）}：构造 hierarchy、transfer、coarse operator、smoother 与 coarse solver；
+\item \textbf{apply（应用）}：给定 $r$，执行一次固定或受控的 multigrid cycle，返回 $z$；
+\item \textbf{outer solve（外层求解）}：CG/GMRES/FGMRES 等维护 Krylov 历史、点积、范数与停止准则；
+\item \textbf{update/rebuild（更新/重建）}：当网格、系数或稀疏模式改变时，决定哪些 setup 数据可复用。
 \end{itemize}
 
 这里最容易犯的错误是把“inner MG solve tolerance”设得极严，再把它称为 preconditioner。若外层 Krylov 只需要一个稳定的近似逆，过度求解 inner problem 可能浪费大量 work；反之，若每次 inner solve 的停止位置变化很大，则预条件器变成可变算子，外层算法也应相应选择 flexible 形式。
@@ -236,7 +236,7 @@ Embedded Boundary（EB）会让 stencil 系数、邻接关系和控制流变得�
 
 \subsection{hypre 与 BoomerAMG}
 
-hypre 同时覆盖 structured 与 algebraic 路线。其 BoomerAMG 是大规模并行 AMG 的代表，历史上就是为 distributed-memory HPC 设计\cite{falgout2002hypre}。当前 BoomerAMG GPU 路径支持 PMIS coarsening、多种 interpolation、Jacobi/$\ell_1$-Jacobi、two-stage GS、Chebyshev 等，并支持 CUDA/HIP/SYCL/device OpenMP 的 device memory model\cite{hypreBoomer2026}。
+hypre 同时覆盖结构网格与代数多重网格路线。其 BoomerAMG 是大规模并行 AMG 的代表，最初即面向分布式内存 HPC 设计\cite{falgout2002hypre}。当前 BoomerAMG 的 GPU 路径支持 PMIS 粗化、多种插值、Jacobi/$\ell_1$-Jacobi、two-stage GS、Chebyshev 等，并支持 CUDA/HIP/SYCL/device OpenMP 的设备内存模型\cite{hypreBoomer2026}。
 
 对 GPU，重点不是“把 CSR SpMV 放到 device”这么简单，而是 setup 阶段：
 \begin{equation}
@@ -258,15 +258,15 @@ MueLu 是 Trilinos 中的多重网格框架，可与 Tpetra、Belos、Ifpack2、
 
 \subsection{Ginkgo}
 
-Ginkgo 以 accelerator-oriented、platform-portable sparse linear algebra 为核心。其 multigrid 使用后端化 kernel 结构，可在 NVIDIA、AMD、Intel GPU 上执行，并成为 mixed/three-precision AMG 研究的重要载体\cite{tsai2023mixed,tsai2023three,ginkgoMG2026}。
+Ginkgo 以面向加速器、跨平台的稀疏线性代数为核心。其 multigrid 采用后端化 kernel 结构，可在 NVIDIA、AMD、Intel GPU 上执行，并成为混合精度/三精度 AMG 研究的重要载体\cite{tsai2023mixed,tsai2023three,ginkgoMG2026}。
 
-Ginkgo 的研究意义在于把“每一级采用不同 precision”做成 solver architecture 的一等概念：coarse levels 对数值精度的需求可能不同，而低精度能同时降低 memory traffic 与提高硬件吞吐。
+Ginkgo 的研究意义在于把“不同层级采用不同 precision”做成求解器架构的一等概念：粗层对数值精度的需求可能不同，而较低精度可以同时降低内存流量并提高硬件吞吐。
 
 \subsection{NVIDIA AmgX}
 
-AmgX 是 NVIDIA 面向 GPU 的 AMG/iterative solver library，支持 classical 与 aggregation-based AMG、各种 smoothers 和 Krylov 组合，并支持通过用户提供的 MPI 进行 distributed multi-GPU 求解\cite{naumov2015amgx,amgxRepo2026}。
+AmgX 是 NVIDIA 面向 GPU 的 AMG 与迭代求解器库，支持经典 AMG、聚合型 AMG、各种 smoother 与 Krylov 组合，并可通过用户提供的 MPI 进行分布式多 GPU 求解\cite{naumov2015amgx,amgxRepo2026}。
 
-它的经典论文展示了 GPU AMG 设计中 graph matching、coloring、smoother 与 distributed hierarchy 的结合\cite{naumov2015amgx}。作为 vendor-optimized baseline，AmgX 常用于判断“自研 CUDA sparse solver 与成熟 NVIDIA 路径之间还差多少”。
+它的经典论文展示了 GPU AMG 设计中图匹配、着色、smoother 与分布式层级的结合\cite{naumov2015amgx}。作为厂商优化基准，AmgX 常用于判断“自研 CUDA 稀疏求解器与成熟 NVIDIA 路径之间还差多少”。
 
 \section{软件体系比较}
 

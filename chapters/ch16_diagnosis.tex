@@ -11,7 +11,7 @@
 \begin{enumerate}
 \item 用\chapref{ch:benchmarking}定义过的固定 case 与计时边界复现问题；
 \item 先比较残差历史、cycle 数和最终误差，判断数值路径是否已经变化；
-\item 若数值行为一致，再把 wall time 定位到 fine/middle/coarse level 以及 smooth、transfer、halo、reduction、bottom solve 等具体阶段；
+\item 若数值行为一致，再把总时间定位到细层、中间层、粗层，以及 smooth、transfer、halo、reduction、bottom solve 等具体阶段；
 \item 对最可能的根因做一个能\textbf{证伪}它的实验，而不是继续堆更多计数器。
 \end{enumerate}
 
@@ -21,10 +21,10 @@
 症状 & 第一假设 & 优先验证量\\
 \midrule
 迭代数增加 & 数值算法/边界/粗算子改变 & residual history、convergence factor\\
-迭代数相同但总时间增加 & 执行或数据移动变慢 & phase timing、bandwidth、wait time\\
-细层快、粗层不再变快 & 固定开销或并行度不足 & launch/barrier/active work\\
-线程增加后性能变平 & bandwidth 或 NUMA 限制 & sustainable bandwidth、remote traffic\\
-MPI rank 增加后效率骤降 & latency / reduction 主导 & halo wait、Allreduce、local unknowns\\
+迭代数相同但总时间增加 & 执行或数据移动变慢 & 分阶段计时、带宽、等待时间\\
+细层快、粗层不再变快 & 固定开销或并行度不足 & 启动/同步开销、有效工作量\\
+线程增加后性能变平 & 带宽或 NUMA 限制 & 可持续带宽、远端访问量\\
+MPI rank 增加后效率骤降 & 通信延迟/全局归约主导 & halo 等待、Allreduce、每 rank 局部未知量\\
 \bottomrule
 \end{tabularx}
 \end{center}
