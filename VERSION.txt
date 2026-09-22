@@ -1,9 +1,9 @@
-MLMG v0.10.4
+MLMG v0.10.5
 Release date: 2026-09-22
-本版本系统重构并行计算与多重网格实现章节的心智模型，并以源码为依据强化具体软件实现讲解。
-第 7--13 章统一采用“数值语义 -> 状态版本 -> dependency DAG -> ownership -> placement -> scheduling -> machine cost”作为并行分析主线。
-第 8 章重构多重网格操作的并行结构，明确 Jacobi、Gauss--Seidel、restriction、prolongation、reduction、ghost readiness 与 coarse-level parallelism collapse 的真实依赖。
-第 9 章重构共享内存多重网格，补充 cache line、false sharing、NUMA、first-touch、memory-bandwidth saturation、barrier 与 coarse-level thread shrinking。
-第 11--13 章分别重构 MPI、多 GPU 与性能可移植性模型，明确 owned/ghost version、通信 overlap、rank consolidation、device residency 与异步 completion contract。
-第 14 章由软件概览改写为源码精读，固定 AMReX、hypre、PETSc 源码快照，直接追踪 hierarchy construction、level state、V-cycle driver、smoother、restriction/prolongation、RAP、bottom solve 与 coarse-process reduction。
-Release 流程调整为仅主动发布单个版本 PDF，不再额外生成 Actions artifact 或维护源码压缩产物。
+本版本系统强化第一部分的教学结构，并完成第一部分机械替换污染的回退重建。
+第 1--6 章按“具体对象 -> 图示 -> 公式链 -> 一般结构”的教学原则补充关键推导与 TikZ，重点强化局部离散到全局矩阵、误差与残差、Krylov 投影、网格间传递、多重网格循环复杂度和局部 Fourier 分析。
+第 2 章补充复合自由度选择/同步算子、粗细接口状态消元、ghost 消元、平均模态与细尺度模态分解，以及 regridding 状态转移算子，并保持原有 120 个标签和 9 张 TikZ 图的结构完整性。
+第 6 章重构为“Fourier 符号 -> 平滑器频率响应 -> 粗化与混叠 -> 一维完整两网格 LFA -> 2^d 多维谐波子空间 -> LFA 指导算法设计”的连续主线，并补充 Chebyshev 多项式极小极大推导和强各向异性困难模态分析。
+第 15--19 章进一步强化基准测试、性能诊断、求解器架构、现代多重网格方法与源码阅读方法，明确连续/离散制造解、源码性能观测边界、应用级状态所有权和固定源码快照的阅读流程。
+附录同步修正变系数扩散通量符号、Galerkin 适用边界、粗网格通信复杂度与进程收缩推导；全书标题统一为稳定的学科知识分类风格。
+本版本同时撤销会污染 LaTeX 命令、环境和正文词根的机械中文化修改，后续术语清理改为逐段、上下文感知方式，不再对源码做无边界全局替换。
