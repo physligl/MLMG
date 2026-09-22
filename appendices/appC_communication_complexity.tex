@@ -2,13 +2,14 @@
 \label{app:communication}
 
 \begin{keybox}
-\textbf{目的：}把 MPI 章节中的“coarsening 会恶化通信/计算比”从定性判断推导成显式尺度关系。只需要表面积/体积尺度和 $\alpha$--$\beta$ 消息模型。
+\textbf{目的：}把 MPI 章节中的“固定 rank 集上继续 coarsening 会恶化通信/计算比”推导成显式尺度关系，并进一步说明 rank consolidation 为什么能缓解这个趋势。推导采用立方子域、一层 face halo、每方向都有邻居、通信不与计算重叠等简化假设，因此它给出的是结构性尺度关系，而不是具体 MPI 实现的精确时间模型。
 \end{keybox}
 
 
-设三维全局网格每方向为 $N$，使用 $P$ 个 ranks，近似立方分解，因此每 rank 局部边长
+设三维全局网格每方向为 $N$，使用 $P$ 个 active ranks，并近似做立方分解。忽略整除误差时，每 rank 局部边长
 \begin{equation}
 n\approx \frac{N}{P^{1/3}}.
+\label{eq:appc-local-size}
 \end{equation}
 一次 stencil 的本地工作
 \begin{equation}
@@ -35,9 +36,61 @@ T_{halo}\sim6\alpha+6\beta g n^2s.
 \sim8^k
 \left(\frac{T_{latency}}{T_{comp}}\right)_0.
 \end{equation}
-这不是具体 MPI 实现的缺陷，而是几何表面积、体积与固定 latency 共同决定的结构性问题。agglomeration/consolidation/process reduction 的理论动机就在这里。
+这不是具体 MPI 实现的缺陷，而是固定 active-rank 集下，几何表面积、体积与固定 latency 共同决定的结构性问题。
+
+\section*{如果同时做 Rank Consolidation}
+
+上面的 $8^k$ 与 $2^k$ 放大隐含
+\begin{equation}
+P_k=P_0,
+\end{equation}
+即 coarse level 仍然保留全部 ranks。
+
+若三维每次 full coarsening 都把 active rank 数也缩小 8 倍：
+\begin{equation}
+N_{k+1}=\frac{N_k}{2},
+\qquad
+P_{k+1}=\frac{P_k}{8},
+\end{equation}
+则由式~\eqref{eq:appc-local-size}
+\begin{equation}
+n_{k+1}
+=
+\frac{N_k/2}{(P_k/8)^{1/3}}
+=
+\frac{N_k}{P_k^{1/3}}
+=
+n_k.
+\end{equation}
+
+也就是说，在理想立方重分区下，每 active rank 的局部线性尺寸可以近似保持不变，于是
+\begin{equation}
+\frac{T_{\mathrm{halo}}}{T_{\mathrm{comp}}}
+\end{equation}
+的局部几何尺度也可以保持近似稳定。
+
+但 consolidation 不是免费的。需要加入 ownership redistribution：
+\begin{equation}
+T_{\mathrm{coarse,total}}
+=
+T_{\mathrm{redistribute}}
++
+T_{\mathrm{compute/halo}}(P_{k+1}).
+\end{equation}
+因此实际触发条件应是
+\begin{equation}
+\boxed{
+T_{\mathrm{redistribute}}
++
+T_{\mathrm{coarse}}(P_{\mathrm{new}})
+<
+T_{\mathrm{coarse}}(P_{\mathrm{old}}).
+}
+\end{equation}
+
+这正是\chapref{ch:mpi}与\chapref{ch:software}中 AMReX consolidation、PETSc GAMG process reduction 等机制的尺度动机：它们不是消灭通信，而是在 coarse levels 主动恢复足够大的 local work。
 
 \section*{推导检查}
 \begin{checkpointbox}
-三维 full coarsening 后 $n\to n/2$。分别对 latency 项 $1/n^3$ 和 bandwidth 项 $1/n$ 代入，验证为何每层分别放大 8 倍和 2 倍。
+先保持 rank 数不变，令三维 full coarsening 后 $n\to n/2$，验证 latency/computation 与 bandwidth/computation 两项为何分别放大 8 倍和 2 倍。再令 active rank 数同步按 $P\to P/8$ 收缩，验证为什么局部 $n$ 可以保持不变。最后说明为什么这仍不能证明“每层都应立即 consolidation”。
 \end{checkpointbox}
