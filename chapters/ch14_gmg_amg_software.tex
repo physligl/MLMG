@@ -103,19 +103,22 @@ A_c=RAP.
 
 这一差别在源码里非常明显。AMReX 的主要复杂度集中在几何层级、BoxArray、DistributionMapping 与离散算子；BoomerAMG 的 setup 则直接出现 strength matrix、C/F splitting、interpolation builder 和 ParCSR RAP。
 
-AMG 的两个基础复杂度指标仍然值得保留：
+AMG 的两个基础复杂度指标仍然值得保留。网格复杂度定义为
 \begin{equation}
 C_g
 =
 \frac{\sum_{\ell=0}^{L}n_\ell}{n_0},
-\qquad
+\label{eq:grid-complexity}
+\end{equation}
+算子复杂度定义为
+\begin{equation}
 C_o
 =
 \frac{\sum_{\ell=0}^{L}\operatorname{nnz}(A_\ell)}
 {\operatorname{nnz}(A_0)}.
-\label{eq:software-complexities}
+\label{eq:operator-complexity}
 \end{equation}
-后面会看到，PETSc GAMG 甚至直接在 setup 源码中统计并打印 operator complexity。
+前者衡量整个 hierarchy 的未知量规模，后者进一步计入粗层矩阵的稠密化。后面会看到，PETSc GAMG 甚至直接在 setup 源码中统计并打印 operator complexity。
 
 \section{AMReX MLMG：Cycle Driver 与 Linear Operator 分离}
 \label{sec:software-amrex-source}
