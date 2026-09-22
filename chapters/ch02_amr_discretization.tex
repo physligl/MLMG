@@ -32,6 +32,24 @@
 
 本章以 cell-centered、block-structured AMR 作为具体几何模型，并在这一几何上同时追踪 FV 与守恒型 FD 两种构造。规则 Cartesian patch 上，若守恒型 FD 写成半点/面通量差分，并与 FV 使用同一个数值面通量，则两条路线可以得到同一个 cell-centered 复合算子；此时 coarse--fine flux matching 同时具有 FV 的控制体解释和 FD 的 flux-difference 解释。另一方面，节点型 FD 的自由度集合、边界 stencil 与跨层插值位置不同，不能直接套用 cell-centered 控制体公式。本章因此在推导中明确标记：哪些结论来自 cell-centered 几何，哪些来自共享离散通量，哪些只是 FV 积分解释，哪些同样适用于守恒型 FD。finite element AMR 与 embedded boundary 需要额外的自由度或几何语义，不在本章默认模型内。
 
+\paragraph{第一次阅读路径。}
+本章内容较密，第一次阅读不需要同时掌握所有代数结构。Core 路径是
+\begin{equation}
+\boxed{
+\text{valid/covered 自由度}
+\rightarrow
+\text{coarse--fine 数值通量}
+\rightarrow
+\text{Ghost Fill}
+\rightarrow
+\text{复合算子}
+\rightarrow
+\text{状态同步与 regridding}
+}
+\label{eq:amr-first-pass-path}
+\end{equation}
+对称性、加权自伴性、复合误差范数和详细结构检查用于回答“这个复合算子还保留了哪些线性代数性质”，可以在 Core 路径已经清楚以后再深入。它们不会改变 valid/covered、接口通量和 Ghost Fill 的基本几何语义。
+
 \section{局部细化、层级几何与复合离散空间}
 \label{sec:amr-hierarchy-space}
 
@@ -479,10 +497,25 @@ ML=K=K^T=L^TM,
 \end{equation}
 因而在体积加权内积
 \begin{equation}
+\boxed{
 \langle \bm u,\bm v\rangle_M
-=\bm u^TM\bm v
+:=\bm u^TM\bm v
+}
+\label{eq:amr-volume-weighted-inner-product}
 \end{equation}
-下仍然自伴。后文讨论求解器时，必须先明确所谓“对称”指的是哪一种离散表示，而不能只根据连续 PDE 的自伴性下结论。
+下仍然自伴。这里先给出最低可用定义：若线性算子 $L$ 满足
+\begin{equation}
+\langle L\bm u,\bm v\rangle_M
+=
+\langle \bm u,L\bm v\rangle_M
+\qquad
+\text{对任意 }\bm u,\bm v,
+\end{equation}
+就称 $L$ 关于这个 $M$-加权内积自伴；矩阵形式正是
+\begin{equation}
+ML=L^TM.
+\end{equation}
+因此“加权自伴”并不是新的离散方法，而是在说明：逐行按不同控制体体积归一化以后，普通 Euclidean 对称性可能消失，但与物理控制体测度相容的对称结构仍然存在。后文讨论求解器时，必须先明确所谓“对称”指的是哪一种离散表示，而不能只根据连续 PDE 的自伴性下结论。
 
 \begin{checkpointbox}
 \textbf{即时检查 2.2}
@@ -818,7 +851,7 @@ A_{\mathrm{comp}}=M^{-1}K
 \begin{equation}
 MA_{\mathrm{comp}}=K=K^T=A_{\mathrm{comp}}^TM,
 \end{equation}
-所以 $A_{\mathrm{comp}}$ 在 $M$-加权内积下仍然自伴。这里暂时只需知道：Krylov 方法会利用算子的对称性或自伴结构来构造迭代空间；\chapref{ch:linear-solvers}从\secref{sec:krylov-methods}开始正式介绍 Krylov 子空间、CG、GMRES 与预条件，\chapref{ch:mg-cycles}的\secref{sec:mg-preconditioner}再讨论这些外层方法与 multigrid 预条件器的组合。这个区分也会直接影响后续 Krylov 方法和多重网格平滑器对算子结构的判断。
+所以 $A_{\mathrm{comp}}$ 在式~\eqref{eq:amr-volume-weighted-inner-product}定义的 $M$-加权内积下仍然自伴。当前章节只需要掌握这个结论和它与 $K=K^T$ 的关系；Krylov 方法为什么关心对称/自伴结构，将在\chapref{ch:linear-solvers}正式展开，\chapref{ch:mg-cycles}的\secref{sec:mg-preconditioner}再讨论这种结构怎样约束 multigrid 预条件器。
 
 对一个采用成对 transmissibility 的纯扩散离散，若忽略边界项，可以把离散能量写成示意形式
 \begin{equation}
@@ -1458,7 +1491,7 @@ average-down 与 AMR interpolation 则描述同一物理状态在不同分辨率
 \item 实现本章的一维 two-level composite Poisson assembler，同时输出 cell-integrated $K$、volume matrix $M$ 和 $A=M^{-1}K$。数值检查 $\|K-K^T\|$、$\|MA-A^TM\|$ 与纯 Neumann 情况下的 $\|K\bm1\|$。
 \item 在同一个一维 two-level cell-centered hierarchy 上，分别以“控制体逐面收支”和“半点通量差分”实现 FV 与守恒型 FD。让两种实现读取同一组 coarse--fine interface flux coefficients，逐行比较生成的 composite operator；随后故意改变其中一路的 interface flux，观察两条离散路线从何处开始分离。
 \item 实现二维 $r=2$ coarse-face/fine-subface numerical flux matching。随机生成 interface states，验证 coarse flux 与 fine subface flux sum 在机器精度范围内一致；随后故意让 coarse 与 fine 两侧各自重算不同 flux，观察 global conservation defect。
-\item 实现一个 linear coarse-to-fine ghost extension，并通过常数场、线性场和二次场测试其 polynomial reproduction。将 ghost relation 显式消元后，与 无矩阵 Ghost Fill 与 stencil 算子应用 的结果逐项比较。
+\item 实现一个 linear coarse-to-fine ghost extension，并通过常数场、线性场和二次场测试其 polynomial reproduction。将 ghost relation 显式消元后，与无矩阵 Ghost Fill 与 stencil 算子应用 的结果逐项比较。
 \item 设计 manufactured-solution AMR convergence experiment。保持 refinement region 的物理位置与形状可比，对所有 level spacing 同时减半，报告 composite $L_2$、$L_\infty$ error 与式~\eqref{eq:amr-observed-order} 的 observed order；同时单独报告 interface-near error。
 \item 实现式~\eqref{eq:amr-regrid-piecewise-transfer} 的两层 regridding transfer。构造 $\mathcal R_{\mathrm{keep}}$、$\mathcal R_{\mathrm{refine}}$ 与 $\mathcal R_{\mathrm{derefine}}$，分别执行 overlap copy、AMR interpolation 与 average-down；检查 constant preservation、conserved integral 与 transfer error。
 \end{enumerate}
@@ -1466,7 +1499,7 @@ average-down 与 AMR interpolation 则描述同一物理状态在不同分辨率
 \subsection*{AMR 诊断与设计}
 \begin{enumerate}[label=\arabic*.]
 \item 给定 stencil depth $g$ 与每个 patch 方向的 cell count $n$，同时考虑式~\eqref{eq:amr-interface-fraction}、ghost storage 和 patch scheduling，分析为什么无限减小 patch size 不会单调提高 AMR 并行性能。区分几何上的 interface fraction 与具体机器上的性能结论。
-\item 比较显式 composite matrix 与 无矩阵 Ghost Fill/stencil 算子应用。说明在 fixed linear interpolation 下两者怎样表示同一个线性 operator；再讨论 nonlinear limiter 出现后为什么需要改变 operator abstraction。
+\item 比较显式 composite matrix 与无矩阵 Ghost Fill/stencil 算子应用。说明在 fixed linear interpolation 下两者怎样表示同一个线性 operator；再讨论 nonlinear limiter 出现后为什么需要改变 operator abstraction。
 \item 一个实现的 manufactured-solution error 看起来二阶，但 $\|K-K^T\|/\|K\|=10^{-3}$。提出至少三个可证伪的 interface hypotheses，并为每个 hypothesis 设计一个最小 diagnostic case。不要把“误差阶正确”当作对称性正确的证据。
 \item 比较 AMR interpolation/average-down 与后续 multigrid prolongation/restriction。按“作用空间、传递对象、发生时机、守恒要求、是否属于 solver iteration”五个维度建立对照，并给出一个混用后会改变数学问题的具体例子。
 \end{enumerate}

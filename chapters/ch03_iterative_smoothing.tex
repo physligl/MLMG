@@ -419,7 +419,7 @@ p_{m-1}(A)\bm r_0,
 
 \subsection{Krylov 方法与无矩阵算子}
 
-\chapref{ch:discretization}已经区分显式矩阵和 无矩阵 算子。Krylov 方法通常不需要任意访问 $A_{ij}$，其核心接口是
+\chapref{ch:discretization}已经区分显式矩阵和无矩阵算子。Krylov 方法通常不需要任意访问 $A_{ij}$，其核心接口是
 \begin{equation}
 \bm v
 \longmapsto
@@ -427,7 +427,7 @@ A\bm v,
 \end{equation}
 再配合向量加法、数乘、点积和范数。
 
-因此只要程序能稳定、正确地实现算子应用（operator apply），就可以在没有已装配稀疏矩阵的情况下运行许多 Krylov 方法。这也是 无矩阵 PDE 求解器与 Krylov 方法经常组合出现的根本原因。
+因此只要程序能稳定、正确地实现算子应用（operator apply），就可以在没有显式装配稀疏矩阵的情况下运行许多 Krylov 方法。这也是无矩阵 PDE 求解器与 Krylov 方法经常组合出现的根本原因。
 
 需要注意，式~\eqref{eq:krylov-space}中的幂向量并不会在实际代码里按定义式原样保存。若直接把
 \begin{equation}
@@ -743,7 +743,7 @@ CG 与 GMRES 都在 Krylov 子空间里寻找近似，但最优性不同。说�
 \item CG 为什么依赖 SPD，且为什么能用短递推；
 \item GMRES 为什么需要 Arnoldi 正交基；
 \item “GMRES 最小残差”为什么指整个 $\|\bm r\|_2$ 最小，而不是每个残差分量分别最小；
-\item 对一个 无矩阵 算子，实现 CG/GMRES 至少需要提供哪些基本操作。
+\item 对一个无矩阵算子，实现 CG/GMRES 至少需要提供哪些基本操作。
 \end{enumerate}
 \end{checkpointbox}
 
@@ -789,6 +789,73 @@ AM^{-1}\bm y
 \end{equation}
 
 预条件真正改变的是外层迭代所面对的算子几何。理想情况下，特征值更加聚集、条件数更小，或者原来难处理的误差方向被 $M^{-1}$ 重新缩放到更容易搜索的尺度。
+
+\paragraph{一个可完全检查的二维例子。}
+取
+\begin{equation}
+A=
+\begin{bmatrix}
+1&0\\
+0&100
+\end{bmatrix}.
+\end{equation}
+它是 SPD，但两个主方向的尺度相差 100 倍，因此
+\begin{equation}
+\kappa_2(A)=100.
+\end{equation}
+若选择一个容易求逆的 SPD 预条件矩阵
+\begin{equation}
+M=
+\begin{bmatrix}
+1&0\\
+0&25
+\end{bmatrix},
+\end{equation}
+则对称预条件后的算子为
+\begin{equation}
+\widehat A
+=
+M^{-1/2}AM^{-1/2}
+=
+\begin{bmatrix}
+1&0\\
+0&4
+\end{bmatrix},
+\end{equation}
+所以
+\begin{equation}
+\boxed{
+\kappa_2(\widehat A)=4
+\ll
+\kappa_2(A)=100.
+}
+\label{eq:preconditioning-two-dimensional-example}
+\end{equation}
+
+同一个例子还能说明“预条件器是近似逆”的含义。对
+\begin{equation}
+\bm r=
+\begin{bmatrix}1\\1\end{bmatrix},
+\end{equation}
+精确误差修正为
+\begin{equation}
+A^{-1}\bm r=
+\begin{bmatrix}
+1\\0.01
+\end{bmatrix},
+\end{equation}
+而预条件器返回
+\begin{equation}
+M^{-1}\bm r=
+\begin{bmatrix}
+1\\0.04
+\end{bmatrix}.
+\end{equation}
+它并没有精确求出 $A^{-1}\bm r$，但已经把第二个方向相对于第一个方向大幅缩放，使外层 Krylov 方法面对的两个尺度从 $1{:}100$ 改善到 $1{:}4$。这比把预条件简单记成“迭代次数会减少”更接近它的线性代数作用。
+
+\begin{checkpointbox}
+如果把上面的 $M$ 改成 $M=I$，$\widehat A$ 和条件数变成什么？如果进一步取 $M=A$，理论上会发生什么？为什么实际预条件器通常不能直接选择“精确的 $A$”并把问题一次解决？
+\end{checkpointbox}
 
 \subsection{预条件共轭梯度法}
 

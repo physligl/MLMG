@@ -5,6 +5,22 @@
 \textbf{本章回答四个问题：}两网格方法的粗问题仍然很大时怎样递归？什么条件保证多层循环的总工作量仍可接近 $\Oh(N)$？当 V-cycle 已经形成一个近似逆以后，它怎样既作为独立求解器，又作为 CG/GMRES 的预条件器？当最细求解空间本身就是 AMR 复合空间时，同一套粗空间校正怎样继续成立？
 \end{keybox}
 
+\paragraph{本章的 Core 与扩展路径。}
+第一次阅读应先完成
+\begin{equation}
+\boxed{
+\text{两网格递归}
+\rightarrow
+\text{V/W/FMG}
+\rightarrow
+\text{线性工作量}
+\rightarrow
+\text{MG 作为近似逆与预条件器}
+}
+\label{eq:mg-cycles-core-path}
+\end{equation}
+这条 Core 路径。最后一节“AMR 复合算子与多重网格求解层级”用于关闭\chapref{ch:amr-discretization}留下的跨章节接口：它说明当最细求解空间本身已经是复合 AMR 空间时，粗空间校正怎样继续成立。第一次只学习规则 GMG 的读者可以暂时跳过该节，不会影响对 V-cycle、复杂度和多重网格预条件器的理解。
+
 \section{多层递归与循环结构}
 
 \chapref{ch:two-grid}只要求存在细空间、粗空间以及连接两者的限制和延拓。进入多层以后，最重要的抽象不是“网格尺寸恰好每次减半”，而是一串求解空间
@@ -213,7 +229,7 @@ A^{-1}\bm r
 
 对于 nodal 离散，常见条件包括 限制/延拓的适当伴随关系、对称的预平滑/后平滑配对以及 SPD 粗层求解。对于 cell-centered FV 或守恒型 FD，相应伴随关系可能定义在体积加权内积下，而不是简单要求数组满足 $R=P^T$。
 
-例如只做单向 Gauss--Seidel 预平滑而没有匹配的反向后平滑，可能破坏整体预条件器需要的对称性。真正需要检查的是完整的 $B_{MG}$，而不是某一个局部平滑器 是否“看起来有效”。
+例如只做单向 Gauss--Seidel 预平滑而没有匹配的反向后平滑，可能破坏整体预条件器需要的对称性。真正需要检查的是完整的 $B_{MG}$，而不是某一个局部平滑器是否“看起来有效”。
 
 \subsection{可变多重网格与 FGMRES}
 
@@ -225,7 +241,7 @@ A^{-1}\bm r
 =
 B_k\bm r_k,
 \end{equation}
-并且 $B_k$ 会因为 内层容差、cycle 次数、粗层求解器、混合精度策略或非线性平滑器 而变化，那么外层已经面对一个可变预条件器。
+并且 $B_k$ 会因为内层容差、cycle 次数、粗层求解器、混合精度策略或非线性平滑器 而变化，那么外层已经面对一个可变预条件器。
 
 这正是\chapref{ch:linear-solvers}中 FGMRES 的适用场景。FGMRES 不假设所有修正都来自同一个固定 $M^{-1}$，而是显式保存每一步产生的预条件向量。
 
@@ -265,6 +281,11 @@ B_k\bm r_k,
 多重网格内部主要是 stencil、网格间传递和邻域通信；Krylov 外层还会增加 点积/范数产生的全局归约。因此“MG 本身扩展得很好”并不自动意味着“MG 预条件 Krylov 整体扩展得很好”。\chapref{ch:mg-parallel-operations}、\chapref{ch:mpi}和\chapref{ch:distributed-gpu}会继续分析这些不同通信模式。
 
 
+
+\begin{keybox}
+\textbf{扩展路径：AMR 与求解器层级。}
+下面不再引入新的 V-cycle 原理，而是把前面已经建立的粗空间校正应用到\chapref{ch:amr-discretization}的复合空间。阅读时只需持续区分：AMR level 改变物理解的空间分辨率；MG/FAC level 只改变误差校正的表示空间。
+\end{keybox}
 
 \section{AMR 复合算子与多重网格求解层级}
 \label{sec:amr-vs-mg-level}
@@ -518,7 +539,7 @@ M=\begin{bmatrix}4&0\\0&3\end{bmatrix},
 \item 说明 递归粗层求解 为什么仍然是在近似求解同一个 粗网格误差方程，而不是定义一个新的 PDE。
 \item 推导多重网格作为线性预条件器时，一次 V-cycle 对外层 Krylov 方法提供的算子形式，并说明固定 cycle 参数为什么有利于保持线性。
 \item 假设 $A$ 与 $M$ 都 SPD，证明 $M^{-1/2}AM^{-1/2}$ 仍 SPD，并解释为什么这允许把预条件后的问题放进 CG 的 SPD 理论框架。
-\item 说明一个 V-cycle 若每次根据当前 residual 自适应改变 内层容差，为什么一般不能再视为固定线性算子 $B_{MG}$；据此解释 FGMRES 的动机。
+\item 说明一个 V-cycle 若每次根据当前 residual 自适应改变内层容差，为什么一般不能再视为固定线性算子 $B_{MG}$；据此解释 FGMRES 的动机。
 \end{enumerate}
 
 \subsection*{求解实验}
