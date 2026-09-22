@@ -1,14 +1,25 @@
 \chapter*{结语}
 \addcontentsline{toc}{chapter}{结语}
 
-并行多重网格的性能不能用“线程越多越快”或“GPU 算力更高”解释。多重网格的每一层都在主动改变问题尺寸、误差频谱、数据依赖和通信比例。细层通常由内存带宽决定，中间层开始受 patch/box 粒度影响，粗层则越来越由同步、kernel launch、MPI latency、global reductions 和 bottom solver 决定。
+多重网格真正统一的对象不是某一种 V-cycle 伪代码，而是一条从数值语义到机器执行的连续链。数学上，smoother 负责压低局部/高频误差，粗空间负责表示它留下的慢模态；实现上，这些操作变成状态版本、dependency DAG、数据所有权、物理放置与调度；软件上，它们又落实为 hierarchy construction、level state、cycle driver、transfer、bottom solve 与 ownership redistribution。
 
-因此一个成熟的 MLMG 性能优化流程应始终保持三条线同时可见：
+因此性能问题也不能只用“线程越多越快”或“GPU 峰值更高”解释。Fine levels 往往暴露 bandwidth 与 locality，coarse levels 则逐渐暴露 task scarcity、launch/barrier、message latency、global reduction 和 active-resource 过剩。真正的优化对象是
 \begin{equation}
-\boxed{\text{数值收敛}}
-\qquad
-\boxed{\text{数据移动}}
-\qquad
-\boxed{\text{并行拓扑}}.
+\boxed{
+\text{convergence mechanism}
+\rightarrow
+\text{data movement}
+\rightarrow
+\text{dependency/coordination}
+\rightarrow
+\text{ownership topology}
+\rightarrow
+\text{time-to-solution}.
+}
 \end{equation}
-只优化其中一条，往往会把瓶颈推到另一条线上。真正可扩展的实现不是在单个 kernel 上追求极限，而是让从 fine grid 到 bottom solve 再返回 fine grid 的整个 V-cycle 都保持合理的工作粒度、数据局部性与同步密度。
+
+本书的软件部分进一步给出一个可复用的源码阅读原则：先问谁构造 hierarchy、谁拥有 level state、谁驱动 cycle，再追具体 kernel。AMReX MLMG、hypre BoomerAMG 与 PETSc PCMG/GAMG 虽然数据结构和控制流不同，但都可以映射回同一组数学对象。这样，profiling 才不会停在一个“大函数占比”，而能继续定位到 smoother、residual、transfer、communication、redistribution 或 bottom solve。
+
+Benchmark 与诊断则负责约束结论的证据强度。受控实现实验用于隔离后端，平台最优实验用于工程选择；连续 MMS 与离散 MMS 验证不同层面的正确性；高 wait time、低 occupancy 或高 cache miss 都只是症状，只有竞争假设经过单变量实验排除以后才能称为根因。
+
+最后，求解器架构不能脱离整个应用。粒子、场、反应、几何更新等 phase 可能拥有不同的自然并行粒度；一个局部最快的 Poisson solver 如果要求昂贵的 ownership conversion，也可能让完整 application step 变慢。成熟的并行多重网格设计因此不是选择某个“最佳框架”，而是在数值收敛、数据生命周期、资源拓扑与软件维护之间建立一套可验证、可复用、可随机器和问题变化而重新求解的工程模型。
