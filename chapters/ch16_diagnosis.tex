@@ -2,59 +2,156 @@
 \label{ch:diagnosis}
 
 \begin{keybox}
-\textbf{本章采用固定诊断链：症状 $\rightarrow$ 假设 $\rightarrow$ 可观测指标 $\rightarrow$ 验证实验。}性能剖析器不是为了收集尽可能多的计数器，而是为了区分互相竞争的根因。
+\textbf{本章采用固定诊断链：症状 $\rightarrow$ 竞争假设 $\rightarrow$ 可观测证据 $\rightarrow$ 单变量实验 $\rightarrow$ 结论。}性能剖析器不是为了收集尽可能多的计数器，而是为了缩小因果空间。任何一个高占比事件、低 occupancy、长 MPI wait 或高 barrier time 都首先只是\textbf{症状}；只有替代解释被排除以后，才能称为根因。
 \end{keybox}
 
 \section{性能诊断流程}
 \label{sec:diagnosis-flow}
-\chapref{ch:gpu}已经把 profiler 作为“采集 kernel 与硬件性能指标的工具”引入。本章进一步把它放进可证伪的诊断流程中。\textbf{性能剖析器（profiler）}用于记录程序不同区域的时间、硬件计数器或通信事件。“GPU 版本很慢”不是诊断结论。应该改写成更具体的问题，例如：fine-level kernel 已达到高带宽，但 coarse levels 的 kernel duration 不再随 unknowns 下降；或者 OpenMP 线程从 8 增到 32 后时间不变。只有把症状定位到某个层级和某类操作，后续指标才有解释力。诊断时先按四步走：
+\chapref{ch:gpu}已经把 profiler 作为“采集 kernel 与硬件性能指标的工具”引入。本章进一步把它放进可证伪的诊断流程中。\textbf{性能剖析器（profiler）}用于记录程序不同区域的时间、硬件计数器或通信事件。“GPU 版本很慢”不是诊断结论。应该改写成更具体的问题，例如：fine-level kernel 已达到高带宽，但 coarse levels 的 kernel duration 不再随 unknowns 下降；或者 OpenMP 线程从 8 增到 32 后时间不变。只有把症状定位到某个层级和某类操作，后续指标才有解释力。诊断时按五步走：
 \begin{enumerate}
-\item 用\chapref{ch:benchmarking}定义过的固定 case 与计时边界复现问题；
-\item 先比较残差历史、cycle 数和最终误差，判断数值路径是否已经变化；
-\item 若数值行为一致，再把总时间定位到细层、中间层、粗层，以及 smooth、transfer、halo、reduction、bottom solve 等具体阶段；
-\item 对最可能的根因做一个能\textbf{证伪}它的实验，而不是继续堆更多计数器。
+\item 用\chapref{ch:benchmarking}定义过的固定 case 与计时边界复现问题，并先声明这是受控实现实验还是平台最优实验；
+\item 比较残差历史、cycle 数和最终误差，先判断数值路径是否已经变化；
+\item 若数值行为一致，再把 wall time 映射到式~\eqref{eq:benchmark-semantic-bins}中的语义阶段；
+\item 对同一症状至少保留两个竞争假设，并为每个假设写出\textbf{若它为真应该同时出现什么证据}；
+\item 设计只改变一个关键变量的实验，让至少一个假设有机会被证伪。
 \end{enumerate}
 
 \begin{center}
-\begin{tabularx}{0.94\textwidth}{>{\bfseries}p{3.2cm}X X}
+\small
+\begin{tabularx}{0.98\textwidth}{>{\bfseries}p{2.8cm}p{4.0cm}X}
 \toprule
-症状 & 第一假设 & 优先验证量\\
+症状 & 至少保留的竞争假设 & 区分它们的证据\\
 \midrule
-迭代数增加 & 数值算法/边界/粗算子改变 & residual history、convergence factor\\
-迭代数相同但总时间增加 & 执行或数据移动变慢 & 分阶段计时、带宽、等待时间\\
-细层快、粗层不再变快 & 固定开销或并行度不足 & 启动/同步开销、有效工作量\\
-线程增加后性能变平 & 带宽或 NUMA 限制 & 可持续带宽、远端访问量\\
-MPI rank 增加后效率骤降 & 通信延迟/全局归约主导 & halo 等待、Allreduce、每 rank 局部未知量\\
+迭代数增加 &
+smoother/coarse operator 改变；boundary/ghost 错误；低精度扰动 &
+residual history、误差空间特征、连续/离散 MMS、逐层 residual\\
+总时间增加但迭代数相同 &
+局部 kernel 变慢；数据迁移增加；同步/调度增加 &
+语义阶段计时、bytes、copy、barrier/MPI wait、timeline\\
+粗层时间不再随 $N_\ell$ 下降 &
+launch/fork-join 固定成本；并行度耗尽；bottom solver 切换 &
+tasks/blocks/threads per level、空闲比例、固定成本微基准、bottom path\\
+线程扩展变平 &
+内存带宽饱和；NUMA；负载不均；barrier 频繁 &
+带宽、remote traffic、per-thread work/arrival time、barrier count\\
+MPI wait 上升 &
+网络 latency；late sender；load imbalance；progress 不足 &
+message timeline、sender compute completion、message size/count、progress experiment\\
+GPU occupancy 低 &
+问题太小；寄存器/shared-memory 限制；但也可能已 bandwidth-saturated &
+blocks/SM、register/shared memory、achieved bandwidth、eligible warps\\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-这张表不是诊断结论，而是“先看什么”的索引。真正结论必须由后续实验排除竞争解释。
+这张表刻意不给“唯一根因”。诊断的核心能力是从一个症状构造竞争解释，再设计观测把它们分开。
 
 
 \paragraph{一个完整的诊断例子。}
 假设某 GPU MLMG 的 fine-level stencil 已接近可持续显存带宽，但完整 solve 仍只比 CPU 快很少。先比较 residual history 与 cycle 数，确认数值路径没有改变；再按 level/phase 计时，若发现 fine level 很快而 $4096$、$512$ unknowns 的 coarse kernels 占比异常升高，就提出“粗层并行度与 launch 固定成本主导”这一假设。随后只改变 coarse-level execution strategy，例如减少 kernel 数或切换 bottom solve，同时保持数学路径不变。如果总时间下降而 fine-level bandwidth 基本不变，这个实验才真正支持原假设。这里的关键不是某个 profiler 指标本身，而是\textbf{每一步都在排除竞争解释}。
 
+\section{先从源码已有的 Profiling Boundary 开始}
+
+\chapref{ch:software}已经固定了 AMReX、hypre 与 PETSc 的源码快照。实际诊断时，应先利用框架已经放置的 instrumentation，再决定是否向更深层插桩，而不是一开始就在任意函数周围加计时器。
+
+\paragraph{AMReX MLMG.}
+在固定快照中，\texttt{AMReX\_MLMG.H} 已经在关键控制流放置
+\begin{verbatim}
+BL_PROFILE("MLMG::oneIter()");
+BL_PROFILE("MLMG::mgVcycle()");
+BL_PROFILE("MLMG::computeResidual()");
+BL_PROFILE("MLMG::actualBottomSolve()");
+\end{verbatim}
+因此一个“MLMG 很慢”的问题，第一步就可以先区分 outer iteration、cycle、residual 与 bottom solve。如果 \texttt{mgVcycle()} 占主导，再继续进入具体 \texttt{linop.smooth/restriction/interpolation}；如果 \texttt{actualBottomSolve()} 占主导，则继续追 hypre/PETSc/CG bottom path，而不是优化 fine-grid stencil。
+
+\paragraph{hypre BoomerAMG.}
+\texttt{par\_cycle.c} 在 cycle 入口使用
+\begin{verbatim}
+hypre_GpuProfilingPushRange("AMGCycle");
+\end{verbatim}
+并在 relaxation 阶段单独标记
+\begin{verbatim}
+hypre_GpuProfilingPushRange("Relaxation");
+\end{verbatim}
+GPU relax kernels 还可能出现更具体的 range，例如 \texttt{Relax7Jacobi}。因此应先判断时间在 cycle orchestration、relaxation、ParCSR Matvec 还是通信，再决定要不要进入具体 device kernel。
+
+\paragraph{PETSc PCMG/GAMG.}
+\texttt{PC\_MG\_Levels} 本身保存
+\begin{verbatim}
+eventsmoothsolve
+eventresidual
+eventinterprestrict
+\end{verbatim}
+并由 \texttt{PCMGMCycle\_Private()} 在对应阶段调用 \texttt{PetscLogEventBegin/End}。这意味着 \texttt{-log\_view} 的逐层事件可以直接映射到 smoother、residual 与 transfer，而不是只能看到一个总的 \texttt{PCApply}。
+
+这三个例子体现同一个原则：
+\begin{equation}
+\boxed{
+\text{先利用源码中的语义边界定位层级，}
+\quad
+\text{再进入硬件计数器或 kernel 级诊断。}
+}
+\label{eq:diagnosis-source-first}
+\end{equation}
+
 \section{典型瓶颈模式}
 
 \subsection{GPU 粗网格瓶颈}
 
-若 fine level achieved bandwidth 很高，但 coarse kernel 时间几乎不随 unknowns 下降，通常意味着固定成本主导：launch、sync、small-kernel underutilization。处理方向不是继续优化每 cell FLOP，而是：
+若 fine level achieved bandwidth 很高，但 coarse kernel 时间几乎不随 unknowns 下降，可以提出“固定成本或并行度耗尽”假设，但还不能立即下结论。应同时检查
+\begin{equation}
+\{N_\ell,\ \text{blocks}_\ell,\ \text{blocks/SM},\ T_{\mathrm{kernel},\ell},\ T_{\mathrm{launch/sync},\ell}\}.
+\end{equation}
+若 $N_\ell$ 和 block 数继续快速下降，而 kernel 时间逼近近似常数 floor，才支持 launch/sync 主导；若 block 数仍足够但 memory throughput 或 occupancy 异常，则应继续检查 layout、register/shared-memory pressure 或资源竞争。
+
+当证据支持固定成本/小 kernel 假设以后，处理方向才是
 \begin{equation}
 \text{larger launch granularity / fusion / agglomeration / bottom switch}.
 \end{equation}
 
 \subsection{MPI 扩展性退化}
 
-检查：
+MPI wait 上升以后不要先假设网络。先把一次 halo 展开成
+\begin{equation}
+\text{pack}
+\rightarrow
+\text{post}
+\rightarrow
+\text{sender/receiver progress}
+\rightarrow
+\text{arrival}
+\rightarrow
+\text{unpack}.
+\end{equation}
+再同时记录：
 \begin{itemize}
-\item halo wait time 是否上升；
 \item coarse levels 的 local cell count；
+\item message count 与 message size；
+\item pack/unpack 时间；
+\item sender 与 receiver 的 posting/completion timeline；
 \item Allreduce 次数与时间；
 \item 是否所有 ranks 一直活到最粗层；
 \item rank mapping 是否跨 NUMA/NIC 不合理。
 \end{itemize}
-若粗层 MPI latency 主导，优化 fine-grid stencil 通常没有意义。
+
+如果减少 local work 后 wait 上升，而网络消息本身没有明显变慢，可能只是 surface/volume 与 late-sender effect 变得更突出。只有在排除计算不均衡和 progress 问题以后，才应把瓶颈归因于网络 latency。
+
+\subsection{等待时间高：等待者通常不是根因}
+
+并行 profile 中最容易被误读的是 wait time。假设 \texttt{gomp\_barrier\_wait} 占 wall time 很高，这只说明很多线程较早到达 barrier，并不能直接推出“barrier 实现很慢”。
+
+至少有四种完全不同的机制会产生同一症状：
+
+\begin{enumerate}
+\item \textbf{barrier 本身太频繁}：每个阶段有很少 work，却反复全线程同步；
+\item \textbf{负载不均}：少数线程仍在工作，其余线程在 barrier 等最慢者；
+\item \textbf{coarse-level task scarcity}：线程数远多于有效 tasks，大量线程几乎立即到达 barrier；
+\item \textbf{NUMA/affinity 差异}：部分线程访问远端内存更慢，最终表现为其他线程 barrier wait。
+\end{enumerate}
+
+因此要额外观察每线程的\textbf{到达时间分布}和 barrier 之间的 useful work。如果所有线程几乎同时到达、但 barrier 数非常多，才更支持“同步频率”假设；如果少数线程显著晚到，则应优先找 load imbalance、NUMA 或不均匀 patch work。
+
+MPI 的 wait time 同理。接收 rank 在 \texttt{MPI\_Wait} 中停很久，既可能是网络慢，也可能只是发送 rank 的 pack/kernel 尚未完成。必须把 sender compute completion、message posting 和 receive completion 放进同一 timeline。
 
 \subsection{OpenMP 带宽饱和与 NUMA}
 
@@ -87,8 +184,35 @@ GPU 对小问题没有“必须更快”的理论保证。
 \end{itemize}
 在确认 residual history、cycle 数和达到同一容差时的最终误差都保持一致之前，不应把总时间差异简单归因于并行框架。若收敛因子本身已经变化，应先回到\chapref{ch:two-grid}的误差传播式~\eqref{eq:two_grid_error}和\chapref{ch:lfa}的频率分析检查数值路径。
 
+\section{诊断实验应该改变什么}
+
+一个有效的性能诊断实验应满足：
+\begin{equation}
+\boxed{
+\text{只改变被检验机制，}
+\qquad
+\text{其他数值语义和主要工作量尽量保持不变。}
+}
+\label{eq:diagnosis-single-variable}
+\end{equation}
+
+几个典型例子：
+
+\begin{itemize}
+\item 怀疑 launch-bound：保持 grid 与数学操作不变，只合并 coarse kernels，观察固定成本是否下降；
+\item 怀疑 barrier frequency：保持 smoother 数学更新不变，减少不必要的 level-wide barrier 或使用 persistent parallel region；
+\item 怀疑 NUMA：保持线程数与 tile mapping 不变，只改变 first-touch/affinity；
+\item 怀疑 MPI latency：保持总 local work 和数据量尽量不变，改变 message aggregation；
+\item 怀疑 coarse ownership：保持 coarse operator 不变，只改变 active ranks/threads，并把 redistribution 单独计时；
+\item 怀疑数值路径：保持执行后端不变，仅替换 coarse operator/smoother，再比较 residual history。
+\end{itemize}
+
+若一次实验同时改变 smoother、线程数、tile、precision 与 bottom solver，即使变快也很难知道为什么。这种实验适合最终工程优化，不适合因果诊断。
+
 \section{本章小结}
-本章不新增求解算法，而是建立诊断方法：把 wall time 拆成层级和算子，再用 bandwidth、cache/NUMA、occupancy、launch、halo wait、Allreduce 等指标验证假设。一个指标只有在能排除某个竞争解释时才有价值。
+本章建立的不是一张“症状到答案”的查表，而是一套因果诊断方法。先保证数值路径和 benchmark 边界清楚，再利用 AMReX、hypre、PETSc 已有的源码 instrumentation 把 wall time 映射到具体语义阶段；随后为同一症状保留竞争假设，用 bandwidth、cache/NUMA、occupancy、launch、halo、Allreduce、arrival skew 等证据缩小因果空间。
+
+最重要的警告是：wait time、低 occupancy、高 cache miss 或高某函数占比本身都不是根因。真正的诊断必须能够回答“如果我的解释是错的，什么实验会把它推翻？”
 
 \section*{习题}
 
@@ -106,7 +230,7 @@ GPU 对小问题没有“必须更快”的理论保证。
 
 \subsection*{证伪实验}
 \begin{enumerate}[label=\arabic*.]
-\item 给 solver 加分层计时：setup、每个 MG level、smoother、residual、transfer、communication、bottom solve。输出一棵可聚合的 timing tree。
+\item 先使用框架已有 instrumentation 构造 timing tree：AMReX 从 \texttt{oneIter/mgVcycle/computeResidual/actualBottomSolve} 开始，PETSc 从逐层 MG events 开始，hypre 从 \texttt{AMGCycle/Relaxation} 开始；只有缺少语义阶段时才添加新插桩。
 \item 人为制造一个 NUMA 错误放置版本和一个正确版本，用 profiler/硬件计数器区分 remote memory、bandwidth 与 barrier 行为。
 \item 人为把 coarse kernel 拆成很多小 launch，再合并回去，对比 timeline，验证 launch-bound 假设。
 \item 设计一个单变量 A/B 实验验证“迭代次数增加来自 coarse operator 不一致”这一假设。
@@ -115,6 +239,6 @@ GPU 对小问题没有“必须更快”的理论保证。
 \subsection*{综合诊断}
 \begin{enumerate}[label=\arabic*.]
 \item GPU fine level 已达到高带宽但 V-cycle 仍慢，提出三个 coarse-level 根因，并为每个根因指定一个能证伪它的观测。
-\item OpenMP 不再随线程数加速，给出区分 bandwidth saturation、NUMA、load imbalance、barrier 四种根因的诊断顺序。
+\item OpenMP 不再随线程数加速且 \texttt{gomp\_barrier\_wait} 很高，给出区分 bandwidth saturation、NUMA、load imbalance、task scarcity 与 barrier frequency 五种根因的诊断顺序，并明确为什么 barrier wait 不是根因证明。
 \item iteration count 突然增加时，写出“先数值、后性能”的诊断流程，并解释为什么反过来会浪费时间。
 \end{enumerate}
