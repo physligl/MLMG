@@ -2,7 +2,7 @@
 \label{ch:reading}
 
 \begin{keybox}
-\textbf{本章把前面的知识转化成阅读方法。}读论文时追踪“问题--算法--代价--证据”，读源码时追踪“一份数据在 V-cycle 中怎样移动”。不要从类名或 API 开始背诵。可以把全书前面的知识压缩成四条回查路径：数学机制回到\chapref{ch:linear-solvers}至\chapref{ch:lfa}；AMR 与复合离散回到\chapref{ch:amr-discretization}；并行数据路径回到\chapref{ch:shared-memory}至\chapref{ch:distributed-gpu}；软件 hierarchy 与 AMG setup 回到\chapref{ch:software}。读到陌生名词时先沿这些交叉引用回到它的心智模型，再继续读论文或源码。
+\textbf{本章把前面的知识转化成可复现的论文与源码阅读方法。}读论文时追踪“问题--算法--代价--证据”；读源码时追踪“入口--状态--控制流--数值操作--所有权变化--instrumentation”。任何源码结论都应绑定到具体 commit/tag，而不是只写“当前版本”。这样一年以后函数移动了，阅读笔记仍然可复现。
 \end{keybox}
 
 \section{论文阅读框架}
@@ -19,6 +19,37 @@
 \paragraph{先填一张假想论文的阅读卡。}
 设摘要只告诉我们：“作者为三维扩散问题设计 GPU multigrid，并报告多 GPU scaling。”不要立刻追 kernel 名称。第一遍只填四格：数学对象是三维扩散离散；多重网格对象至少要继续查 smoother、transfer 和 coarse solver；执行对象是 GPU + 分布式 halo；证据对象应同时寻找 convergence 与 scaling。若论文正文后来发现两种实现使用不同 smoother 或容差，阅读卡就会立刻暴露“性能数字不可直接归因于硬件”这一问题。这个 worked example 的目的不是替你读论文，而是展示四格框架怎样主动生成后续问题。
 
+\section{源码阅读卡：必须记录到函数与状态对象}
+
+对具体软件实现，建议固定填写下面七格，而不是只画一个类图：
+
+\begin{enumerate}
+\item \textbf{源码快照：}repository、commit/tag、关键文件；
+\item \textbf{public entry：}\texttt{solve/setup/apply} 从哪里进入；
+\item \textbf{level state：}$A_\ell,x_\ell,b_\ell,r_\ell,P_\ell,R_\ell$ 分别存成什么对象；
+\item \textbf{cycle owner：}谁真正决定 descend/bottom/ascend；
+\item \textbf{operation implementation：}smooth、residual、restriction、prolongation 最终落到什么函数/kernel；
+\item \textbf{ownership transition：}哪里发生 repartition、consolidation、device/host migration；
+\item \textbf{instrumentation：}已有 profiler event/marker 在哪里。
+\end{enumerate}
+
+\paragraph{AMReX MLMG 的一张实际源码卡。}
+以\chapref{ch:software}固定的 AMReX commit 为例：
+
+\begin{itemize}
+\item entry：\texttt{MLMGT<MF>::solve()}；
+\item cycle control：\texttt{oneIter()} $\rightarrow$ \texttt{miniCycle()} $\rightarrow$ \texttt{mgVcycle()}；
+\item numerical operations：\texttt{linop.smooth()}、\texttt{linop.restriction()}、\texttt{addInterpCorrection()}、\texttt{computeResOfCorrection()}；
+\item bottom：\texttt{bottomSolve()} $\rightarrow$ \texttt{actualBottomSolve()}；
+\item coarse ownership：\texttt{MLLinOpT::defineGrids()} 中的 agglomeration/consolidation 与 \texttt{BottomCommunicator()}；
+\item profiling：\texttt{BL\_PROFILE("MLMG::oneIter()")}、\texttt{mgVcycle()}、\texttt{computeResidual()}、\texttt{actualBottomSolve()}。
+\end{itemize}
+
+这张卡填完以后，才适合继续追某个具体 smoother 或 GPU kernel。否则很容易在局部函数里看得很深，却不知道它位于整个 solve 的哪条依赖路径上。
+
+\paragraph{hypre 与 PETSc 应怎样复用同一张卡。}
+BoomerAMG 的 cycle owner 是 \texttt{hypre\_BoomerAMGCycle()}，level state 是 \texttt{A/P/R/U/F} arrays；PETSc PCMG 的 cycle owner 是 \texttt{PCMGMCycle\_Private()}，level state 则集中在 \texttt{PC\_MG\_Levels} 的 Mat/Vec/KSP 成员。对象名字不同，但七格问题完全相同。
+
 \section{主题化阅读路线}
 
 \subsection{多重网格数学基础}
@@ -32,37 +63,53 @@
 
 \subsection{块结构几何多重网格}
 
-阅读 AMReX 的框架论文与 GPU/MLMG 文档\cite{zhang2019amrex,zhang2021amrex,amrexGPUdocs2026,amrexMLMGdocs2026}。重点不是类名，而是追踪一份数据：
+先用 AMReX 框架论文理解 MultiFab/BoxArray/DistributionMapping，再进入\chapref{ch:software}固定的源码快照\cite{zhang2019amrex,zhang2021amrex}。源码第一遍只追
 \begin{equation}
-\text{MultiFab}\rightarrow\text{Box}\rightarrow\text{MG coarsen}\rightarrow\text{halo}\rightarrow\text{kernel}.
+\boxed{
+\texttt{solve}
+\rightarrow
+\texttt{oneIter}
+\rightarrow
+\texttt{mgVcycle}
+\rightarrow
+\texttt{linop operations}
+\rightarrow
+\texttt{bottomSolve}.
+}
 \end{equation}
-然后追踪 coarse level 何时发生 agglomeration/consolidation。
+第二遍才进入 \texttt{MLLinOpT::defineGrids()}，观察 \texttt{BoxArray} 与 \texttt{DistributionMapping} 分别怎样被 agglomeration/consolidation 改写。官方 GPU/MLMG 文档适合补 API 与配置背景，但实现结论应以对应源码为准\cite{amrexGPUdocs2026,amrexMLMGdocs2026}。
 
 \subsection{分布式代数多重网格}
 
-用 hypre BoomerAMG 理解“没有规则几何时 hierarchy 如何建立”\cite{falgout2002hypre,hypreBoomer2026}。建议把 setup 拆为：
+BoomerAMG 的第一遍源码阅读直接从 \texttt{hypre\_BoomerAMGSetup()} 开始\cite{falgout2002hypre,hypreBoomer2026}，把真实调用链记录为
 \begin{equation}
-\text{strength graph}\rightarrow\text{coarsening}\rightarrow\text{interpolation}\rightarrow RAP.
+\texttt{CreateS}
+\rightarrow
+\texttt{Coarsen*}
+\rightarrow
+\texttt{Build*Interp}
+\rightarrow
+\texttt{BuildCoarseOperator/RAP}.
 \end{equation}
-再把求解过程拆为 smoother、SpMV、restriction、prolongation 和 coarse solve（粗层求解）。这样才能理解 AMG 与 GMG 在 GPU 上为什么有不同热点。
+第二遍进入 \texttt{hypre\_BoomerAMGCycle()}，确认 residual、restriction、prolongation 分别落到哪些 ParCSR Matvec/MatvecT，以及 \texttt{level/lev\_counter/cycle\_param} 怎样驱动状态机。只有做到这一步，才真正知道某个 AMG 参数改变的是 setup graph、transfer，还是 solve hot path。
 
 \subsection{性能可移植框架}
 
-MueLu/Kokkos 与 Ginkgo 代表两种很有价值的现代路径：一个强调大型 solver ecosystem 中的 performance portability，一个强调 accelerator-native backend 和可组合线性算子\cite{edwards2014kokkos,mueluDocs2026,tsai2023three}。
+阅读 MueLu/Kokkos 与 Ginkgo 时也不要停在“支持哪些 GPU”。对 MueLu，优先找 Hierarchy/Level/Factory：哪个 factory 构造 aggregate、prolongator 与 coarse matrix；对 Ginkgo，优先找 Executor/LinOp 与 multigrid level factory：同一个 operator 怎样绑定到不同 executor。文档用于找到入口，真正的实现比较仍应回到源码对象和调用链\cite{edwards2014kokkos,mueluDocs2026,ginkgo2022}。
 
 \subsection{现代研究主题}
 
 建议按问题而不是按年份读：
 \begin{itemize}
 \item \textbf{低精度层级：}mixed/three-precision AMG\cite{tsai2023mixed,tsai2023three,zong2024fp16}；
-\item \textbf{新硬件单元：}Tensor Core AMG\cite{lu2024amgt}；
+\item \textbf{新硬件单元：}Tensor Core AMG；论文读算法与评测，公开 AmgT/HYPRE fork 读 mBSR、SpGEMM 与 SpMV 的真实实现\cite{lu2024amgt,amgtRepo2026}；
 \item \textbf{数据布局与通信协同：}fine-grain blocking GMG\cite{antepara2024brick}；
-\item \textbf{无矩阵高算术强度：}GPU Stokes/high-order multigrid\cite{stokesgpu2025}；
+\item \textbf{无矩阵高算术强度：}GPU Stokes/high-order multigrid，以及 matrix-free algebraic $hp$-multigrid\cite{stokesgpu2025,ohm2026hpmg}；
 \item \textbf{大规模粗层通信：}non-Galerkin coarse grids 与 process reduction\cite{falgout2014nongalerkin}。
 \end{itemize}
 
 \section{本章小结}
-本章没有新的数学对象，目标是建立两种阅读路径：理论论文追踪误差空间与收敛机制；工程源码追踪数据所有权、内存位置、同步点和层级转换。遇到陌生术语时，应沿交叉引用回到首次建立该心智模型的章节，再带着已有定义阅读论文或源码中的具体实现。
+理论论文阅读应把结论拆成数学对象、multigrid 对象、执行对象与证据；源码阅读则必须进一步落到固定 commit、public entry、level state、cycle owner、operation implementation、ownership transition 与 profiler boundary。类名和 API 只是导航信息，真正可迁移的知识来自“谁拥有状态、谁驱动控制流、一次数学操作最终怎样执行”。
 
 \section*{习题}
 
@@ -81,7 +128,7 @@ MueLu/Kokkos 与 Ginkgo 代表两种很有价值的现代路径：一个强调�
 \subsection*{复现与阅读实践}
 \begin{enumerate}[label=\arabic*.]
 \item 任选一个开源 solver，成功构建并运行最小 Poisson case；记录 build 配置、问题规模、solver 参数和 residual history。
-\item 沿源码调用链追踪一次 V-cycle：从外层 solve 到 pre-smooth、residual、restriction、coarse solve、prolongation、post-smooth，画出调用图并标注数据结构。
+\item 任选 AMReX、hypre 或 PETSc，固定一个 commit/tag，按本章七格源码卡追踪一次 V-cycle：从 public entry 到 cycle driver，再到 pre-smooth、residual、restriction、coarse solve、prolongation、post-smooth，并标注 level state 与 ownership transition。
 \item 在不改变数学算法的前提下加入一个计时器或 profiler marker，验证你能从运行结果定位到某一个书中定义的阶段。
 \item 复现论文或官方文档中的一个小 benchmark；若无法复现绝对数字，至少比较趋势并分析硬件/版本差异。
 \end{enumerate}
