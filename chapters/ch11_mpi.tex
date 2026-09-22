@@ -2,175 +2,597 @@
 \label{ch:mpi}
 
 \begin{keybox}
-MPI 的根本变化不是“线程换成进程”，而是\textbf{全局向量不再存在于一个共享地址空间中}。每个 rank 只拥有自己的子域，并为 stencil 额外保存 ghost 数据。只有先建立 owned/ghost 数据模型，halo exchange、全局 reduction 和 coarse-grid redistribution 才会自然出现。
+MPI 的根本变化不是“线程变成进程”，而是\textbf{一个全局状态被拆成多个 rank-owned 状态，而跨所有权读取必须显式建立数据副本与版本一致性。}因此分布式多重网格的核心链条是
+\begin{equation}
+\boxed{
+\text{global state}
+\rightarrow
+\text{owned pieces}
+\rightarrow
+\text{ghost replicas}
+\rightarrow
+\text{message-driven readiness}
+\rightarrow
+\text{local stencil}.
+}
+\label{eq:mpi-mental-model}
+\end{equation}
+Halo exchange、global reduction 和 coarse-grid rank consolidation 都可以从这条链自然推出。
 \end{keybox}
 
-\section{全局向量与本地存储}
+\section{全局向量只是逻辑对象}
 
-设全局网格未知量概念上为 $u$，分区后
+设全局未知量概念上为 $u$。分区以后
 \begin{equation}
-\Omega=\bigcup_{p=0}^{P-1}\Omega_p^{owned},
+\Omega
+=
+\bigcup_{p=0}^{P-1}
+\Omega_p^{owned},
 \qquad
-\Omega_p^{owned}\cap\Omega_q^{owned}=\varnothing.
+\Omega_p^{owned}
+\cap
+\Omega_q^{owned}
+=
+\varnothing.
 \end{equation}
+
 rank $p$ 真正保存的是
 \begin{equation}
-u_p^{local}=\{u_p^{owned},u_p^{ghost}\}.
+u_p^{local}
+=
+\left\{
+u_p^{owned},
+u_p^{ghost}
+\right\}.
 \label{eq:mpi-local-state}
 \end{equation}
-全局向量只是这些 owned pieces 的逻辑并集，而不是某个 rank 上的一整块数组。
 
-对 stencil operator，本地算子语义可以写成
+全局向量 $u$ 是这些 owned pieces 的逻辑并集，而不是某个 rank 上实际存在的一整块数组。Ghost 则不是“额外未知量”，而是\textbf{其他 rank 所有状态的本地副本}。
+
+因此一个更准确的数据模型是：
 \begin{equation}
-A_p:u_p^{local}\longrightarrow r_p^{owned}.
+\boxed{
+\text{owned value}
+=
+\text{authoritative version},
+\qquad
+\text{ghost value}
+=
+\text{cached replica}.
+}
+\label{eq:mpi-owned-ghost-version}
+\end{equation}
+
+一旦 owner 更新了自己的 $u^{owned}$，其他 rank 上对应 ghost 就可能变旧。Halo exchange 的本质，就是把这些 replica 刷新到后继 stencil 所需的版本。
+
+对 stencil operator，本地算子可以写成
+\begin{equation}
+A_p:
+u_p^{local}
+\longrightarrow
+r_p^{owned}.
 \label{eq:mpi-local-operator}
 \end{equation}
-只有 ghost values 已经与邻居 owner 同步以后，这个本地 stencil 才与全局算子一致。
+只有当所需 ghost versions 已经与 owner 当前版本一致时，本地算子才与全局 stencil 对应。
 
+\section{Ghost Readiness 比“调用 MPI”更基础}
 
-本地数组通常把 owned region 与 ghost layers 放在同一个可索引容器中。这样热点 stencil 不需要知道邻居究竟来自本 rank 还是远端 rank：通信阶段先把 remote owner 的值复制到 ghost，随后 operator kernel 只执行普通本地索引。
+考虑 rank $p$ 边界附近的 residual task。它需要一个由 rank $q$ 拥有的邻居值 $u_j$。从\chapref{ch:mg-parallel-operations}的角度看，这仍然只是一个普通 stencil gather：
+\begin{equation}
+r_i
+=
+b_i-(Au)_i.
+\end{equation}
+
+真正新增的是一条跨地址空间数据边：
+\begin{equation}
+u_j^{owned,q}
+\longrightarrow
+u_j^{ghost,p}
+\longrightarrow
+r_i^{owned,p}.
+\label{eq:mpi-owner-ghost-dag}
+\end{equation}
+
+因此 MPI 通信并不是算法之外附加的一段“网络代码”，而是实现式~\eqref{eq:mpi-owner-ghost-dag}这条 producer--consumer 依赖的物理机制。
+
+这也说明：
+\begin{equation}
+\boxed{
+\text{message completion}
+\neq
+\text{整个 level 必须全局同步}.
+}
+\end{equation}
+只有真正依赖某个 ghost 的 boundary tasks 必须等待该消息；完全本地的 interior tasks 可以更早执行。
 
 \section{Halo 交换机制}
 \label{sec:mpi-halo}
 
-考虑 rank 子域最右侧的 owned cell。其 residual task 需要右邻居 $u_{i+1}$，但这个值由另一个 rank 拥有。于是通信不是“MPI 特有的附加步骤”，而是\chapref{ch:mg-parallel-operations}中跨所有权边界读取在分布式地址空间下的必然实现。
-
-一次 halo exchange 通常包括：
+一次典型 halo exchange 可以分解为：
 \begin{enumerate}
-\item pack 或直接选择 boundary send region；
-\item 启动邻居 send/receive；
-\item 等待或与 interior work 重叠；
-\item 收到数据后更新 ghost region；
-\item boundary stencil tasks 才能安全执行。
+\item 识别哪些 owned values 是远端 rank 的输入；
+\item pack 或建立可直接发送的数据视图；
+\item 发布 receive/send；
+\item 让通信向前推进；
+\item 收到数据后写入 ghost region；
+\item 标记依赖这些 ghost 的 boundary tasks 为 ready。
 \end{enumerate}
 
-二维子域主要交换四个边带，三维主要交换六个 face halos；若 stencil 还需要 edge/corner neighbors，则通信区域要扩展到棱角或通过多阶段 face exchange 传播。
+如果边界数据在内存中连续，send buffer 可以直接引用原数组的一段；若边界是 strided face、复杂 patch 或非连续索引，则可能需要 pack/unpack。于是通信时间不应只写成网络本身：
+\begin{equation}
+T_{\mathrm{halo}}
+\approx
+T_{\mathrm{pack}}
++
+T_{\mathrm{network}}
++
+T_{\mathrm{unpack}}
++
+T_{\mathrm{wait/unhidden}}.
+\label{eq:mpi-halo-cost}
+\end{equation}
 
-\section{表面积--体积比与通信量}
+在结构网格里，二维主要交换边带，三维主要交换 face halos。若 stencil 需要 edge/corner neighbors，可以直接交换更宽区域，也可以通过多阶段 face exchange 传播。选择哪种方式会改变 message count、message size 与 pack pattern。
 
-对每方向约 $n$ cells 的三维立方子域，一层 face halo 数据量约为
+\section{Interior/Boundary 分裂暴露通信重叠}
+
+把本地 residual tasks 分成
+\begin{equation}
+\mathcal T_p
+=
+\mathcal T_p^{interior}
+\cup
+\mathcal T_p^{boundary},
+\end{equation}
+其中 interior tasks 不依赖 remote ghost，boundary tasks 依赖通信完成。
+
+于是自然得到
+\begin{equation}
+\boxed{
+\text{post halo}
+\rightarrow
+\begin{cases}
+\text{network progress},\\
+\text{compute interior}
+\end{cases}
+\rightarrow
+\text{ghost ready}
+\rightarrow
+\text{compute boundary}.
+}
+\label{eq:mpi-overlap-pattern}
+\end{equation}
+
+这比“nonblocking MPI 可以 overlap”更准确。真正产生 overlap 至少需要三个条件：
+
+\begin{enumerate}
+\item 有足够的 interior work 与通信独立；
+\item MPI/runtime/NIC 确实能在这段时间推进通信；
+\item pack、同步或依赖关系没有把本来可并发的两条路径重新串起来。
+\end{enumerate}
+
+如果发布 nonblocking send/recv 后立刻 wait，或者 interior 太小，
+\begin{equation}
+T_{\mathrm{interior}}
+\ll
+T_{\mathrm{network}},
+\end{equation}
+那么异步 API 并不会自动减少 wall time。
+
+可以用一个理想化模型表示可隐藏部分：
+\begin{equation}
+T_{\mathrm{overlap}}
+\approx
+\max
+\left(
+T_{\mathrm{interior}},
+T_{\mathrm{network}}
+\right)
++
+T_{\mathrm{boundary}}
++
+T_{\mathrm{unhidden\ overhead}}.
+\end{equation}
+
+\section{Surface-to-Volume 决定 Strong Scaling 的几何极限}
+
+对边长约为 $n$ 的三维立方子域，一层六面 halo 约含
 \begin{equation}
 6n^2
 \end{equation}
-个 values，而本地 work 约为 $n^3$。因此
+个 values，而本地 unknown 数约为
 \begin{equation}
-\frac{\text{halo values}}{\text{owned cells}}\sim\frac6n.
+n^3.
+\end{equation}
+因此
+\begin{equation}
+\boxed{
+\frac{\text{halo values}}
+{\text{owned cells}}
+\sim
+\frac{6}{n}.
+}
 \label{eq:mpi-surface-volume-ratio}
 \end{equation}
-强缩放时全局问题固定、rank 数增加，本地 $n$ 下降，所以 surface/volume 比上升。即使网络完全不变，每个 rank 的通信相对工作也会自然变重。
 
-用\chapref{ch:parallel-model}的 $\alpha$--$\beta$ 模型，一个邻居消息成本约为
+固定全局问题做 strong scaling 时，rank 数增加会让每 rank 的局部 $n$ 下降，于是通信/计算比自然上升。这一结论与网络多快无关，是几何分解本身造成的。
+
+若每方向把局部长度减半，owned work 约减少到原来的 $1/8$，而 face halo 只减少到原来的 $1/4$。因此通信相对占比会继续增加。
+
+对 $d$ 维超立方子域，一般有
 \begin{equation}
-T_{msg}\approx\alpha+\beta m.
+\frac{\text{boundary measure}}
+{\text{volume}}
+=
+\Theta\left(\frac1n\right).
 \end{equation}
-粗层消息变小以后，$m$ 下降但 $\alpha$ 不变，因此 latency 占比不断增加。
+
+这也是\chapref{ch:benchmarking}中 strong-scaling efficiency 最终下降的一个基础原因。
+
+\section{消息个数与消息字节数必须分开}
+
+点到点消息常用
+\begin{equation}
+T_{\mathrm{msg}}
+\approx
+\alpha+\beta m
+\end{equation}
+描述。若一个阶段发送 $k$ 个不能完全重叠的小消息，总成本会更接近
+\begin{equation}
+k\alpha+\beta M,
+\qquad
+M=\sum_{j=1}^k m_j.
+\end{equation}
+
+因此下面两种 halo 即使总字节数相同，也可能有完全不同的时间：
+\begin{itemize}
+\item 少量大消息；
+\item 大量很小的 patch messages。
+\end{itemize}
+
+对 block-structured AMR，这一点尤其重要。把 level 切成更多小 boxes 可以改善负载平衡，却会增加邻居关系、message count 与 metadata。于是 box granularity 同时作用于
+\begin{equation}
+\boxed{
+\text{load balance}
+\quad\leftrightarrow\quad
+\text{message aggregation}.
+}
+\end{equation}
+
+\section{分区拓扑与物理网络拓扑是两层结构}
+
+数学上，rank 邻接图由空间分区决定：谁与谁共享 face/edge/corner。物理机器上，这些 ranks 又被映射到 node、socket、NIC 与 network topology。
+
+因此一个 halo edge
+\begin{equation}
+p\leftrightarrow q
+\end{equation}
+可能对应：
+\begin{itemize}
+\item 同节点共享内存 copy；
+\item 跨 socket 的本地通信；
+\item 同交换机下的网络通信；
+\item 更远的 network route。
+\end{itemize}
+
+逻辑通信图相同，不代表物理通信成本相同。大规模运行时 rank mapping、process placement 和 topology awareness 会影响实际 latency 与 bandwidth。
+
+本章先保留这个层次区分；具体系统配置仍以 profiling 与 benchmark 为准。
 
 \section{MPI 中的 MG 操作映射}
 
-\subsection{平滑器与残差}
+\subsection{Jacobi 与 Residual}
 
-Jacobi/residual 的 interior tasks 只依赖本 rank owned values，可以在 halo 尚未到达时先计算；靠近分区边界的 tasks 必须等待 ghost readiness。于是自然形成
-\begin{equation}
-\text{post nonblocking halo}
-\rightarrow\text{compute interior}
-\rightarrow\text{wait}
-\rightarrow\text{compute boundary}.
-\label{eq:mpi-overlap-pattern}
-\end{equation}
-是否值得 overlap 取决于 interior work 是否足以覆盖网络延迟。
+Jacobi/residual 的 local logical task 与单进程完全相同。区别只在于 boundary tasks 的输入 readiness。
 
-
-\begin{algorithm}[htbp]
-\caption{MPI residual with halo overlap}
-\begin{algorithmic}[1]
-\State 发布所有邻居 halo receive/send
-\State 计算不依赖 ghost 的 interior residual cells
-\State 等待 halo 完成并更新 ghost region
-\State 计算依赖 ghost 的 boundary residual cells
-\end{algorithmic}
-\end{algorithm}
-这四步清楚地区分了通信边界与物理边界：boundary residual cells 是“靠近 rank 分区边界”的 owned cells，它们仍然使用同一个 PDE stencil，而不是施加新的物理边界条件。
-
-\subsection{限制与延拓}
-
-如果 fine/coarse partition 保持嵌套，同一 rank 可以本地完成大部分 transfer；跨 rank 的 coarse ownership 变化则需要 redistribution。特别是在 coarse levels 减少活跃 ranks 时，restriction 不再只是数值 gather，还承担把 coarse right-hand side 迁移到新的 rank 集合。
-
-\subsection{范数与 Krylov 归约}
-
-本地 norm 先在 rank 内求 partial sum，再执行全局 collective：
-\begin{equation}
-\|r\|_2^2=\sum_p\sum_{i\in\Omega_p}r_i^2.
-\end{equation}
-全局 collective 的关键路径涉及所有 ranks，因此无法像邻居 halo 那样只依赖局部拓扑。预条件 Krylov 方法中的点积也具有相同结构；其求解器角色见\secref{sec:mg-preconditioner}。
-
-\section{完整分布式 V-Cycle}
-
-一个 level 上的典型 MPI 时间线是：
+典型流程为：
 \begin{enumerate}
-\item 为 smoother/operator 启动 halo；
+\item 发布当前状态版本的 halo；
 \item 计算 interior；
-\item 完成 halo 后计算 boundary；
-\item 得到 residual；
-\item restriction 到 coarse level；必要时进行 coarse redistribution；
-\item 在 coarse rank set 上递归；
-\item prolongation/correction；必要时把 coarse correction 分发回 fine rank set；
-\item post-smooth；需要检查时做 global reduction。
+\item 等待必需 ghost ready；
+\item 计算 boundary；
+\item 完成当前阶段的输出版本。
 \end{enumerate}
-这比“每个 level 做一次 halo”更接近真实执行：一个 V-cycle 内会重复多次 neighbor communication，并夹杂 coarse rank-set 变化和 global reductions。
 
-\section{粗网格进程收缩与重分布}
+若 smoother 连续执行多次 sweep，每次会产生新的状态版本，因此通常需要新的 halo readiness；不能把上一 sweep 的 ghost 当作自动仍然有效。
 
-保持所有 ranks 活跃到最粗层通常会导致每 rank 只有极少 cells。设希望每个活跃 rank 至少拥有 $n_{min}$ 个 unknowns，可以选择
+\subsection{Gauss--Seidel 与着色}
+
+RBGS 在 MPI 中同时拥有两类顺序：
 \begin{equation}
-P_\ell\le\frac{N_\ell}{n_{min}}.
+\text{red}
+\rightarrow
+\text{black}
 \end{equation}
-当 $P_\ell<P_{\ell-1}$ 时，需要把 coarse vector/operator 从旧 rank set 迁移到更少 ranks。这会产生一次性或每 solve 的 redistribution 成本，但后续 coarse smoothing、halo 和 bottom solve 的消息数可以大幅下降。
+的颜色依赖，以及跨 rank boundary 上的 ghost version 依赖。
 
-rank consolidation 的目标不是“通信越少越好”，而是权衡
+因此一个颜色阶段可能需要：
 \begin{equation}
-T_{redistribute}+T_{coarse\ solve\ on\ fewer\ ranks}
+\text{local color update}
+\rightarrow
+\text{halo refresh}
+\rightarrow
+\text{next color boundary update}.
 \end{equation}
-与保持原 rank set 的总成本。
 
-\section{物理边界、AMR 与 MPI 边界的区分}
+这解释了为什么同步频繁的 smoother 在 distributed memory 上可能比 Jacobi/Chebyshev 更难扩展：不是因为 MPI“不支持 GS”，而是算法 DAG 本身产生了更多跨所有权 RAW edges。
 
-一个 rank 子域边界不一定是物理边界。物理边界由\chapref{ch:discretization}的 Dirichlet/Neumann/Robin/DtN 关系闭合；rank partition boundary 只需要从邻居 rank 获取同一 PDE 的连续数据。AMR coarse--fine interface 又是第三种边界，它需要\chapref{ch:amr-discretization}的层间插值/通量匹配。
+\subsection{Restriction 与 Prolongation}
 
-高质量实现必须明确区分：
+如果 fine/coarse partition 保持嵌套，restriction/prolongation 可以主要在 rank 内完成。若 coarse ownership 改变，则会出现额外的 redistribution：
+\begin{equation}
+\text{fine owners}
+\rightarrow
+\text{coarse owners}.
+\end{equation}
+
+必须把两个成本分开：
 \begin{equation}
 \boxed{
-\text{physical boundary}\neq\text{MPI partition boundary}\neq\text{AMR coarse--fine interface}.
+T_{\mathrm{restriction}}
+\neq
+T_{\mathrm{redistribution}}.
 }
 \end{equation}
-三者都可能需要 ghost-like data，但数学来源完全不同。
+前者是数值 transfer kernel，后者是 ownership remapping。
+
+\subsection{Norm 与 Krylov Dot Product}
+
+本地先形成 partial sum
+\begin{equation}
+s_p
+=
+\sum_{i\in\Omega_p^{owned}}r_i^2,
+\end{equation}
+再通过 collective 得到
+\begin{equation}
+\|r\|_2^2
+=
+\sum_p s_p.
+\end{equation}
+
+邻居 halo 只依赖局部 rank graph；global reduction 则需要把所有 ranks 的贡献合并。它在依赖图中具有更广的 fan-in，因此更容易进入关键路径。
+
+需要精确理解一点：collective 不一定在实现上等同于“所有 rank 同时停在 barrier”，但\textbf{任何后继操作若需要最终归约结果，就必须等待这条全局数据依赖完成。}
+
+\section{Global Reduction 是另一类 Scaling 极限}
+
+如果一次 Krylov iteration 含多个 dot products，而每个 dot 都需要 global collective，那么即使 local stencil 已经高度优化，外层仍可能由 reduction latency 限制。
+
+一个非常粗略的树形 collective 心智模型是
+\begin{equation}
+T_{\mathrm{reduce}}
+\sim
+\alpha \log P
++
+\beta m \log P,
+\end{equation}
+实际算法可能使用不同拓扑、分段和硬件 offload，因此这不是通用性能公式；它只说明：\textbf{collective critical path 不会像 local work 那样随每 rank unknown 数下降。}
+
+这正是 strong scaling 后期常见的结构：
+\begin{equation}
+T_{\mathrm{local\ work}}
+\downarrow,
+\qquad
+T_{\mathrm{collective}}
+\not\downarrow\ \text{at the same rate}.
+\end{equation}
+
+因此减少不必要 residual norms、选择 communication-avoiding/pipelined Krylov 或合并可合并的 reductions，都是在修改外层 DAG，而不是单纯优化 MPI 函数调用。
+
+\section{完整分布式 V-Cycle 是通信与计算交织的 DAG}
+
+一个 level 上的典型时间线可以写成：
+
+\begin{enumerate}
+\item 为当前 smoother/operator state 发布 halo；
+\item interior work 与网络尽可能并行；
+\item ghost ready 后完成 boundary work；
+\item residual ready；
+\item restriction；
+\item 如 coarse ownership 改变则 redistribution；
+\item 在 coarse active rank set 上递归；
+\item coarse error 返回后 prolongation/correction；
+\item 必要时把 correction redistribution 回 fine owners；
+\item post-smooth；
+\item 只有算法需要时才做 global reduction。
+\end{enumerate}
+
+因此“每层一次 halo”不是正确的性能模型。一次 V-cycle 内可能有多次 smoother halos、operator halos、transfer redistribution 和全局 collectives。
+
+更好的表达是：
+\begin{equation}
+\boxed{
+T_{\mathrm{V}}
+=
+\text{local kernels}
++
+\text{neighbor communication}
++
+\text{global collectives}
++
+\text{ownership redistribution}
++
+\text{unhidden waits}.
+}
+\end{equation}
+
+这些项之间可能重叠，最终 wall time 由 DAG critical path 决定，而不是简单字节数相加。
+
+\section{粗化会同时恶化 Local Work 与 Rank Utilization}
+
+由\chapref{ch:mg-parallel-operations}，
+\begin{equation}
+N_{\ell+1}
+\approx
+\frac{N_\ell}{2^d}.
+\end{equation}
+如果一直保留全部 $P$ 个 ranks，
+\begin{equation}
+\frac{N_\ell}{P}
+\end{equation}
+会快速下降。
+
+当每 rank 只剩很少 unknowns 时，会同时出现：
+\begin{itemize}
+\item local kernel 太短；
+\item halo messages 变小，latency 比例上升；
+\item 每 rank box 数太少，load balance 粒度变差；
+\item collective 仍然涉及过多 ranks；
+\item bottom solver 需要处理大量几乎空闲的 participants。
+\end{itemize}
+
+这就是 coarse-grid rank parallelism collapse。
+
+\section{Rank Consolidation 本质是所有权重映射}
+
+设第 $\ell$ 层有 $N_\ell$ 个 unknowns，希望每个 active rank 至少拥有 $n_{\min}$ 个 unknowns，可以选择
+\begin{equation}
+P_\ell
+\le
+\min
+\left(
+P_{\ell-1},
+\frac{N_\ell}{n_{\min}}
+\right).
+\label{eq:mpi-active-ranks}
+\end{equation}
+
+当
+\begin{equation}
+P_\ell<P_{\ell-1},
+\end{equation}
+coarse state 需要从旧 owner set 迁移到新的更小 rank set。这个过程可以抽象为
+\begin{equation}
+\text{old ownership}
+\rightarrow
+\text{redistribution}
+\rightarrow
+\text{new ownership}.
+\end{equation}
+
+它不是“关闭一些 MPI 进程”，而是\textbf{让粗层计算只在更小的 active communicator / rank subset 上执行}。
+
+是否值得 consolidation，需要比较
+\begin{equation}
+\boxed{
+T_{\mathrm{redistribute}}
++
+T_{\mathrm{coarse}}(P_\ell)
+<
+T_{\mathrm{coarse}}(P_{\ell-1}).
+}
+\label{eq:mpi-consolidation-break-even}
+\end{equation}
+
+若 hierarchy/setup 可以复用多次 solve，一些 redistribution plan 与 metadata 可以摊销；若每次 solve 都重建，则 setup cost 也必须进入 break-even。
+
+\section{Strong Scaling 与 Weak Scaling 应分别理解}
+
+Strong scaling 固定全局问题。随着 rank 数增加：
+\begin{itemize}
+\item 每 rank local work 减少；
+\item surface/volume ratio 上升；
+\item small-message latency 相对变重；
+\item coarse levels 更早出现 rank scarcity；
+\item global reduction 占比通常上升。
+\end{itemize}
+
+Weak scaling 则保持每 rank local work 近似固定。此时 neighbor halo 的 surface/volume 可能近似稳定，但：
+\begin{itemize}
+\item global rank 数增加；
+\item collective critical path 仍可能增长；
+\item network contention 与 topology effects 可能增强；
+\item coarse-grid communicator 仍可能需要重新设计。
+\end{itemize}
+
+因此“weak scaling 好”并不意味着 distributed solver 已经没有通信问题；它只说明局部 workload 没有像 strong scaling 那样被持续切碎。
+
+\section{物理边界、分区边界与 AMR 接口必须分开}
+
+一个 rank 子域边界不等于 PDE 物理边界。三类接口是：
+
+\begin{equation}
+\boxed{
+\text{physical boundary}
+\neq
+\text{MPI partition boundary}
+\neq
+\text{AMR coarse--fine interface}.
+}
+\label{eq:mpi-boundary-classes}
+\end{equation}
+
+物理边界由\chapref{ch:discretization}中的 Dirichlet/Neumann/Robin/DtN 等关系闭合；partition boundary 只是同一 PDE 状态被不同 rank 所有；AMR coarse--fine interface 则需要层间插值、平均或通量匹配。
+
+三者都可能使用 ghost-like storage，但数学来源完全不同。实现若只用一个“boundary flag”把它们混在一起，会同时伤害正确性与可维护性。
+
+\section{MPI 性能诊断顺序}
+
+当 distributed V-cycle 扩展性变差时，建议按下面顺序定位：
+
+\begin{enumerate}
+\item \textbf{local work}：每 rank 当前还有多少 cells/tiles，kernel 是否已经太短；
+\item \textbf{surface/volume}：halo bytes 相对 local work 是否快速上升；
+\item \textbf{message count}：是否有大量小 patch messages，被 $\alpha$ 主导；
+\item \textbf{pack/unpack}：CPU memory copy 是否已成为 halo 的主要成本；
+\item \textbf{overlap}：interior work 是否真的覆盖了网络时间；
+\item \textbf{progress}：nonblocking communication 是否实际向前推进；
+\item \textbf{load balance}：最慢 rank 是否明显拖长阶段尾部；
+\item \textbf{collective}：Allreduce 等全局依赖占比多少；
+\item \textbf{coarse ownership}：是否仍让过多 ranks 活跃在极小 coarse levels；
+\item \textbf{topology}：逻辑邻居与物理网络放置是否严重错配。
+\end{enumerate}
+
+如果只看“MPI 时间占比高”，仍然无法判断真正该做的是合并消息、增大 local work、改善 pack、做 overlap、减少 collectives，还是直接收缩 coarse ranks。
 
 \section{本章小结}
 
-MPI 多重网格建立在 owned+ghost 的分布式数组模型上。Halo exchange 是 stencil 跨所有权边界读取的实现，global reduction 来自 norm/dot 的聚合依赖，coarse rank consolidation 则由 $N_\ell$ 下降导致的并行度不足驱动。真正的分布式 V-cycle 是邻居通信、局部 work、collective 和 rank-set redistribution 共同组成的 DAG。
+分布式内存多重网格的正确心智模型不是“每个 rank 算一块，然后互相通信”，而是\textbf{全局状态被拆成 owned versions，远端读取通过 ghost replicas 实现，message completion 负责建立版本 readiness}。
+
+Neighbor halo、global reduction 与 rank consolidation 分别对应三类不同的数据依赖：局部跨所有权读取、全局聚合、层级所有权重映射。Strong scaling 过程中 local work 下降得比 latency、collective 和固定成本更快，因此 coarse levels 最终必须改变 active rank set，而不是机械保留 finest-level 分区。
 
 \section*{习题}
-\subsection*{通信量与正确性推导}
-\begin{enumerate}[label=\arabic*.]
-\item 三维全局 $512^3$ 网格按 $8\times8\times8$ ranks 均分。计算每 rank owned 尺寸、一层六面 halo values 和 halo/owned 比。
-\item 对同一全局问题改成 $16^3$ ranks，重复计算并比较 strong-scaling 下 surface/volume 变化。
-\item 取 $\alpha=1.5\,\mu s$、网络带宽 25 GB/s，计算发送一个 $64^2$ double face 与 $16^2$ double face 的消息时间。
-\item 给定每 rank 最少 20000 unknowns，计算 $256^3\rightarrow128^3\rightarrow64^3\rightarrow32^3$ hierarchy 上允许的最大活跃 rank 数。
 
-\item 推导式~\eqref{eq:mpi-surface-volume-ratio}，并推广到 $d$ 维超立方子域。
-\item 证明 ghost 更新完成后，本地算子式~\eqref{eq:mpi-local-operator}与相应全局 stencil 行等价。
-\item 分析为什么 global reduction 的依赖范围与 nearest-neighbor halo 不同。
-\item 建立 rank consolidation 的 break-even 不等式。
-\end{enumerate}
-\subsection*{MPI 实验}
+\subsection*{Owned/Ghost 与 Halo 推导}
 \begin{enumerate}[label=\arabic*.]
-\item 实现三维 halo exchange 与 local residual，验证多 rank 结果与单 rank 一致。
-\item 使用 nonblocking communication 实现式~\eqref{eq:mpi-overlap-pattern}，比较 overlap 前后时间线。
-\item 实现 residual norm 的 local reduction + allreduce，测量不同 rank 数下 collective 成本。
-\item 构造两级 rank consolidation 原型，记录 redistribution 与 coarse solve 时间。
+\item 给定一维三点 stencil，把 rank $p$ 最右侧 owned cell 的 residual 写成 owner--ghost--consumer DAG，标出 authoritative value 与 replica。
+\item 证明 ghost 更新完成后，本地算子式~\eqref{eq:mpi-local-operator}与对应全局 stencil 行一致。
+\item 三维全局 $512^3$ 网格按 $8\times8\times8$ ranks 均分。计算每 rank owned 尺寸、一层六面 halo values 和式~\eqref{eq:mpi-surface-volume-ratio}。
+\item 对同一全局问题改为 $16^3$ ranks，重复计算并比较 strong scaling 下 surface/volume 的变化。
+\item 推导 $d$ 维超立方子域的 boundary/volume 数量级。
 \end{enumerate}
-\subsection*{扩展性与拓扑诊断}
+
+\subsection*{通信成本与 Overlap}
 \begin{enumerate}[label=\arabic*.]
-\item 设计一个结构，使代码能区分 physical ghost、MPI ghost 与 AMR coarse--fine ghost。
-\item 对 strong scaling 失速案例，区分 surface/volume、latency、load imbalance 与 global reduction 四种原因。
-\item 为一个 V-cycle 画出 MPI trace，标记可与通信重叠的 interior kernels。
+\item 取 $\alpha=1.5\,\mu s$、带宽 $25\,\mathrm{GB/s}$，分别计算发送一个 $64^2$ double face 与 $16^2$ double face 的理想消息时间。
+\item 比较“一个 1 MB 消息”和“1024 个总量为 1 MB 的消息”的 $\alpha$--$\beta$ 模型时间。
+\item 假设 pack 为 $5\,\mu s$、network 为 $20\,\mu s$、unpack 为 $4\,\mu s$、interior work 为 $15\,\mu s$。估算理想 overlap 后的阶段时间，并指出还剩多少网络时间无法隐藏。
+\item 使用 nonblocking communication 实现式~\eqref{eq:mpi-overlap-pattern}，用 timeline 证明通信是否真的与 interior work 重叠。
+\item 构造一个 nonblocking MPI 几乎没有加速的案例，并区分“没有独立 work”和“没有通信 progress”两种根因。
+\end{enumerate}
+
+\subsection*{Collective 与 Krylov}
+\begin{enumerate}[label=\arabic*.]
+\item 解释为什么 neighbor halo 的依赖范围与 Allreduce 不同，即使二者传输总字节数相近。
+\item 对一个每 iteration 含 3 次 global reductions 的 Krylov solver，记录 rank 数增加时 local SpMV、halo 与 Allreduce 的时间变化。
+\item 比较“每层都计算 residual norm”的 V-cycle 与固定 cycle，统计额外 global reductions。
+\item 说明 collective 并不必然是显式 barrier，但为什么需要 reduction 结果的后继 task 仍然受全局关键路径限制。
+\end{enumerate}
+
+\subsection*{Coarse Rank Consolidation}
+\begin{enumerate}[label=\arabic*.]
+\item 给定 $256^3\rightarrow128^3\rightarrow64^3\rightarrow32^3$ hierarchy，每 active rank 至少要求 20000 unknowns，计算式~\eqref{eq:mpi-active-ranks}给出的最大 rank 数。
+\item 设 redistribution 代价为 $0.8$ ms，保留 128 ranks 的 coarse solve 为 $2.4$ ms，收缩到 16 ranks 后 coarse solve 为 $0.9$ ms。判断是否满足式~\eqref{eq:mpi-consolidation-break-even}。
+\item 设计两级 active communicator，并记录 restriction redistribution 与 prolongation return path 的 owner mapping。
+\item 讨论为什么 coarse rank consolidation 与 finest-level domain decomposition 不是同一个优化问题。
+\end{enumerate}
+
+\subsection*{端到端扩展性诊断}
+\begin{enumerate}[label=\arabic*.]
+\item 对一个 strong-scaling 失速案例，分别用 local work、surface/volume、message count、pack/unpack、load imbalance、Allreduce 与 coarse ranks 七个指标建立诊断表。
+\item 为一个 V-cycle 画出 MPI trace，标记 interior compute、halo、collective 和 redistribution，并指出 critical path。
+\item 设计一个数据结构，显式区分 physical ghost、MPI ghost 与 AMR coarse--fine ghost。
+\item 比较纯 MPI 与较少 ranks + rank 内线程两种布局时，哪些成本会减少，哪些新成本会出现；不要只比较 rank 数。
 \end{enumerate}
