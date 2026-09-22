@@ -113,41 +113,107 @@ compatible relaxation、energy-minimizing interpolation、aggressive coarsening 
 \end{equation}
 然后在 restriction/prolongation 时做 precision conversion。Tsai、Beams 与 Anzt 的 three-precision AMG 在 AMD、Intel、NVIDIA GPU 上研究了不同层级采用 double/single/half 的组合，说明 half precision 可以在保持最终精度的条件下用于部分 multigrid 层级\cite{tsai2023three}。
 
-数学上，低精度相当于让实际迭代算子变为
+若把一个\textbf{固定线性、固定精度配置}的 V-cycle 近似看作平稳迭代，低精度执行可以示意为
 \begin{equation}
-\widehat E=E+\Delta E,
+\widehat E=E+\Delta E.
 \end{equation}
-只要舍入扰动没有把有效收敛因子推到 $\rho(\widehat E)\ge1$，外层高精度 residual correction 或 Krylov 方法仍可能恢复目标精度。Krylov 子空间、CG/GMRES/FGMRES 与预条件的基础见\chapref{ch:linear-solvers}，它们与 multigrid 预条件器的组合见\chapref{ch:mg-cycles}的\secref{sec:mg-preconditioner}；这里关注的不是 Krylov 推导，而是低精度 multigrid 如何作为内层求解/预条件组件。
+在这种简化模型下，$\rho(\widehat E)<1$ 是误差传播保持收缩的自然判据。但这不是 mixed-precision multigrid 的普适定理：实际舍入误差依赖状态，scale/recover 操作可能非线性，inner tolerance 或 level precision 若随迭代变化，预条件器也可能成为 variable operator。
+
+因此工程验证至少要同时看：
+\begin{equation}
+\boxed{
+\text{residual history}
++
+\text{iteration count}
++
+\text{final high-precision residual/error}
++
+\text{overflow/underflow behavior}.
+}
+\label{eq:modern-mixed-precision-validation}
+\end{equation}
+外层高精度 residual correction 或 flexible Krylov 可以容忍一定程度的低精度 inner solve，但前提应由实际收敛证据而不是单一谱半径近似判断。Krylov 子空间、CG/GMRES/FGMRES 与预条件的基础见\chapref{ch:linear-solvers}，它们与 multigrid 预条件器的组合见\chapref{ch:mg-cycles}的\secref{sec:mg-preconditioner}。
 
 \subsection{FP16 结构化多重网格}
 
-2024 年的 structured multigrid 研究进一步把 FP16 用于真实应用预条件器，核心不是“所有量都强制 half”，而是分析哪些网格层、哪些向量和算子对量化误差更容忍\cite{zong2024fp16}。
+2024 年 Zong 等人的 structured multigrid preconditioner 工作并不是简单把整个 V-cycle 改成 FP16，而是针对 FP16 的数值范围和精度限制加入 scaling、setup-then-scale、运行时 recover/rescale，以及相应的数据格式/SIMD 实现\cite{zong2024fp16}。论文在其测试问题上报告了 preconditioner 与端到端流程的加速，但这些数字属于特定 CPU、矩阵和 workflow，不能直接作为 GPU 或其他应用的普适收益。
 
-对工程实现，可把误差预算写成
+这项工作的可迁移机制是：低精度设计必须同时处理
+\begin{equation}
+\boxed{
+\text{range}
++
+\text{roundoff}
++
+\text{conversion cost}
++
+\text{memory format}.
+}
+\end{equation}
+
+对工程实现，可把总误差做一个示意性预算：
 \begin{equation}
 \|e_{total}\|
 \lesssim
-\|e_{disc}\|+
-\|e_{iter}\|+
-\|e_{round}\|.
+C_d\|e_{disc}\|+
+C_i\|e_{iter}\|+
+C_r\|e_{round}\|.
+\label{eq:modern-error-budget}
 \end{equation}
-如果 coarse-level roundoff 远低于离散误差与当前迭代误差，就没有必要坚持 FP64。
+这里 $C_d,C_i,C_r$ 依赖问题和所用范数，式~\eqref{eq:modern-error-budget}只是设计检查表，不是无条件误差定理。真正能否降低 coarse-level precision，应由式~\eqref{eq:modern-mixed-precision-validation}中的数值证据确认。
 
-\section{Tensor Core 多重网格}
+\section{Tensor Core 多重网格：从论文回到源码}
 
-\textbf{Tensor Core} 是 NVIDIA GPU 中面向小块矩阵乘加的专用计算单元，尤其适合规则的 dense matrix multiply；传统 sparse SpMV 与这种硬件结构并不天然匹配。AmgT 在 2024 年探索通过新的 sparse/block storage，把 AMG setup 中的 SpGEMM 与 solve 中的 SpMV 映射到 Tensor Core，并将实现整合到 hypre 路径中；论文报告在 A100/H100 上相对 GPU hypre baseline 的平均加速\cite{lu2024amgt}。
+\textbf{Tensor Core} 面向规则小块矩阵乘加；传统 CSR SpMV/SpGEMM 的不规则稀疏结构并不能直接高效映射过去。AmgT 的核心因此不是“把原来的 CSR kernel 换成 Tensor Core 指令”，而是先改变稀疏表示，再改变 setup/solve kernel\cite{lu2024amgt}。
 
-这类工作的关键不是“Tensor Core 峰值很高”，而是\textbf{是否能把稀疏结构重排成足够规则的小块，同时不让 padding、格式转换和额外 memory traffic 抵消收益}。
+作者公开的 AmgT 源码把实现直接嵌入一个 HYPRE fork\cite{amgtRepo2026}。仓库给出的三处关键路径是：
+\begin{itemize}
+\item \texttt{AmgT\_HYPRE/src/seq\_mv/seq\_mv.h}：mBSR 数据结构；
+\item \texttt{AmgT\_HYPRE/src/seq\_mv/csr\_spgemm\_device.c}：setup 阶段 SpGEMM；
+\item \texttt{AmgT\_HYPRE/src/seq\_mv/csr\_matvec\_device.c}：solve 阶段 SpMV。
+\end{itemize}
+
+因此源码层的心智模型是
+\begin{equation}
+\boxed{
+\text{CSR/AMG hierarchy}
+\rightarrow
+\text{Tensor-Core-friendly sparse/block representation}
+\rightarrow
+\begin{cases}
+\text{SpGEMM in setup},\\
+\text{SpMV in solve}.
+\end{cases}
+}
+\label{eq:modern-amgt-path}
+\end{equation}
+
+这项工作给出的可迁移问题不是“Tensor Core 是否比 CUDA core 快”，而是：
+\begin{equation}
+\boxed{
+\text{格式转换 + padding + extra bytes}
+<
+\text{规则块计算带来的收益？}
+}
+\end{equation}
+这个不等式必须把 setup 与 solve 一起测量；如果 hierarchy 只使用一次，格式转换成本尤其不能忽略。
 
 \section{细粒度数据分块与性能可移植性}
 
-2024 年 SC workshop 的 BrickLib GMG 工作研究了 NVIDIA、AMD、Intel GPU 上统一的 fine-grain data blocking，把 stencil、inter-level transfer 和通信布局共同纳入数据组织设计，并报告了跨多种 GPU 的性能可移植性与多 GPU weak scaling\cite{antepara2024brick}。
+2024 年 SC Workshop 的 BrickLib GMG 工作在 NVIDIA、AMD、Intel GPU 系统上使用统一的 fine-grain brick data blocking，并把这种布局贯穿 stencil、inter-level transfer 与通信\cite{antepara2024brick}。论文在其三套测试系统上报告了 73\% 的 peak performance-portability metric，以及扩展到 512 GPUs 时约 87\% 的 weak-scaling parallel efficiency；这些数字是该实验矩阵中的结果，不应解释成 BrickLib 在任意机器上的固定效率。
 
-这揭示一个比“kernel tuning”更高层的方向：
+更值得保留的是实现机制：BrickLib 不只优化单个 stencil 的局部访问顺序，还让 bricks 的物理排序服务通信，从而减少 on-node packing。也就是说，同一个 layout 同时影响
 \begin{equation}
-\boxed{\text{数据布局应同时服务计算、缓存复用和 MPI packing。}}
+\boxed{
+\text{stencil locality}
++
+\text{transfer locality}
++
+\text{MPI packing/communication}.
+}
+\label{eq:modern-brick-layout}
 \end{equation}
-如果数组布局让 stencil 很快但通信必须重新 pack/unpack，大规模运行仍可能受限。
+这与\chapref{ch:architecture}的应用级所有权观点一致：数据布局若只服务计算 kernel，却让 phase boundary 付出昂贵转换，端到端性能仍可能变差。
 
 \section{高阶离散的最小模型}
 \label{sec:modern-high-order-minimal-model}
@@ -193,15 +259,44 @@ sum factorization 的作用可以在这个最小模型上理解：若高维基�
 
 \section{无矩阵高阶多重网格}
 
-在\secref{sec:modern-high-order-minimal-model}的高阶离散中，显式矩阵会产生大量内存流量，无矩阵算子 能用更多局部 FLOP 换更少 bytes。2025 年 GPU Stokes multigrid 工作使用无矩阵、局部 patch smoother、shared-memory access 优化与 mixed precision，代表了“提高 arithmetic intensity 来适应 GPU”的另一条路线\cite{stokesgpu2025}。
+在\secref{sec:modern-high-order-minimal-model}的高阶离散中，显式矩阵会产生大量内存流量，无矩阵算子可以用更多局部 FLOP 换更少 bytes。Cui 与 Kanschat 的 2025 年 GPU Stokes multigrid 是一个具体实现例子：离散采用 $H(\mathrm{div})$-conforming DG，smoother 是 multiplicative Schwarz 的 vertex-patch 局部问题，局部求解结合 Schur complement 与 fast diagonalization，operator apply 则采用 matrix-free 与 conflict-free shared-memory access；论文还测试 mixed precision\cite{stokesgpu2025}。
 
-对于低阶七点 Poisson，这种思路的发挥空间有限；但对高阶算子，sum factorization、fast diagonalization 和 element-local kernels 可以把算法从 bandwidth-bound 推向更高算术强度区间。
+这里可以直接看到数学结构与 GPU kernel 的对应：
+\begin{equation}
+\boxed{
+\text{vertex-patch subspace}
+\rightarrow
+\text{local tensor-product solve}
+\rightarrow
+\text{fast diagonalization}
+\rightarrow
+\text{shared-memory kernel}.
+}
+\label{eq:modern-stokes-source-model}
+\end{equation}
+
+对于低阶七点 Poisson，增加局部 FLOP 的收益空间通常更小；对高阶 tensor-product operator，sum factorization、fast diagonalization 和 element-local reconstruction 则可能显著提高 arithmetic intensity。是否真正跨过 Roofline ridge point，仍需测实际 bytes 与 FLOPs。
 
 \subsection{无矩阵代数 $hp$-多重网格}
 
-2026 年 Ohm、Harper 与 Jansson 在 Neko 中进一步研究了无矩阵代数 $hp$-多重网格：先通过 $p$-coarsening 从高阶谱元离散降到低阶，再仅利用 mesh adjacency 构造代数空间粗化，从而避免依赖显式矩阵条目或几何 rediscretization\cite{ohm2026hpmg}。其重要性在于，它把两个通常分开的方向结合起来：一方面利用无矩阵保持 GPU 上较高的算术强度和较低存储压力；另一方面又保留 algebraic hierarchy 对复杂网格/离散的适应性。
+2026 年 Ohm、Harper 与 Jansson 在 Neko 中研究了无矩阵代数 $hp$-多重网格：先通过 $p$-coarsening 从高阶谱元离散降到低阶，再仅利用 mesh adjacency 构造空间 aggregation，从而不依赖显式矩阵条目或几何 rediscretization\cite{ohm2026hpmg}。
 
-该工作在不同层级采用 Chebyshev 类 smoother，也体现出一个不断强化的趋势：当硬件并行度越来越高时，\textbf{规则的多项式平滑器、无矩阵算子 与层级重分布}往往比强顺序依赖的经典平滑器更容易获得稳定的跨节点性能。对 MLMG 工程而言，这意味着“粗层怎么构造”和“细层 kernel 怎么写”正在逐渐变成同一个性能问题。
+论文实现给出了比“使用 Chebyshev smoother”更具体的层级策略：$p$-multigrid levels 使用二阶 Jacobi-accelerated Chebyshev，而 algebraic levels 使用三阶 Chebyshev；其目的之一是避免在完全 matrix-free 的 AMG levels 保存额外局部矩阵/对角信息。它还用 power iteration 估计 Chebyshev 所需谱区间。这里的关键不是这些阶数本身，而是\textbf{smoother 选择受到可获得 operator metadata 的直接约束}。
+
+这项工作说明了一种可迁移设计：
+\begin{equation}
+\boxed{
+\text{high-order matrix-free}
+\rightarrow
+p\text{-coarsening}
+\rightarrow
+\text{low-order adjacency}
+\rightarrow
+\text{matrix-free algebraic }h\text{-coarsening}.
+}
+\label{eq:modern-hpmg-path}
+\end{equation}
+它不能单独证明“Chebyshev 总比 Gauss--Seidel 更适合 GPU”，但确实展示了在 matrix-free hierarchy 中，规则多项式 smoother 可以避免依赖显式 sparse matrix entries。
 
 \section{Exascale 粗网格通信与同步}
 
@@ -218,7 +313,9 @@ sum factorization 的作用可以在这个最小模型上理解：若高维基�
 这也解释了为什么“单 GPU kernel 已达到很高带宽”并不代表 distributed MLMG 已经解决。
 
 \section{本章小结}
-现代多重网格并不只有“把经典 V-cycle 搬到新硬件”这一条路线。FAS 改变了非线性问题的粗层方程，子空间校正把点、线、patch 与 coarse correction 放进统一框架，现代 AMG 继续追问 smoother 留下的慢模态怎样进入粗空间；高阶 $hp$ 方法又增加了 $p$-粗化这一维度。与此同时，mixed precision、Tensor Core、data blocking、无矩阵与 exascale communication 则重新分配字节搬运、算术强度、同步和粗层通信成本。判断现代方法时，应同时检查收敛机制和 time-to-solution，而不是只看某个新硬件特性或算法名称。
+现代多重网格可以沿“数学空间”和“执行表示”两条轴理解。FAS 改变非线性粗层方程，子空间校正统一 point/line/patch/coarse correction，现代 AMG 与 $hp$ 方法重新设计粗空间；mixed precision、AmgT、BrickLib、matrix-free high-order kernels 与 distributed coarse strategies 则改变数据表示和机器成本。
+
+本章更重要的阅读方法是区分三层证据：\textbf{论文在特定实验上的结果}、\textbf{源码中真正采用的数据结构/算法路径}、以及\textbf{可以迁移到其他求解器的机制}。例如 AmgT 可迁移的是“先重构 sparse representation 再利用矩阵专用硬件”，而不是某个固定加速比；Neko hpMG 可迁移的是“matrix-free metadata 会反过来约束 smoother 与 coarse-space construction”，而不是某个固定 Chebyshev 阶数。
 
 \section*{习题}
 
