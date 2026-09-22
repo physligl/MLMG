@@ -259,7 +259,7 @@ sum factorization 的作用可以在这个最小模型上理解：若高维基�
 
 \section{无矩阵高阶多重网格}
 
-在\secref{sec:modern-high-order-minimal-model}的高阶离散中，显式矩阵会产生大量内存流量，无矩阵算子可以用更多局部 FLOP 换更少 bytes。Cui 与 Kanschat 的 2025 年 GPU Stokes multigrid 是一个具体实现例子：离散采用 $H(\mathrm{div})$-conforming DG，smoother 是 multiplicative Schwarz 的 vertex-patch 局部问题，局部求解结合 Schur complement 与 fast diagonalization，operator apply 则采用 matrix-free 与 conflict-free shared-memory access；论文还测试 mixed precision\cite{stokesgpu2025}。
+在\secref{sec:modern-high-order-minimal-model}的高阶离散中，显式矩阵会产生大量内存流量，无矩阵算子可以用更多局部 FLOP 换更少 bytes。Cui 与 Kanschat 的 2025 年 GPU Stokes multigrid 是一个具体实现例子：离散采用 $H(\mathrm{div})$-conforming DG，smoother 是 multiplicative Schwarz 的 vertex-patch 局部问题，局部求解结合 Schur complement 与 fast diagonalization，operator apply 则采用无矩阵计算与 conflict-free shared-memory access；论文还测试 mixed precision\cite{stokesgpu2025}。
 
 这里可以直接看到数学结构与 GPU kernel 的对应：
 \begin{equation}
@@ -281,22 +281,22 @@ sum factorization 的作用可以在这个最小模型上理解：若高维基�
 
 2026 年 Ohm、Harper 与 Jansson 在 Neko 中研究了无矩阵代数 $hp$-多重网格：先通过 $p$-coarsening 从高阶谱元离散降到低阶，再仅利用 mesh adjacency 构造空间 aggregation，从而不依赖显式矩阵条目或几何 rediscretization\cite{ohm2026hpmg}。
 
-论文实现给出了比“使用 Chebyshev smoother”更具体的层级策略：$p$-multigrid levels 使用二阶 Jacobi-accelerated Chebyshev，而 algebraic levels 使用三阶 Chebyshev；其目的之一是避免在完全 matrix-free 的 AMG levels 保存额外局部矩阵/对角信息。它还用 power iteration 估计 Chebyshev 所需谱区间。这里的关键不是这些阶数本身，而是\textbf{smoother 选择受到可获得 operator metadata 的直接约束}。
+论文实现给出了比“使用 Chebyshev smoother”更具体的层级策略：$p$-multigrid levels 使用二阶 Jacobi-accelerated Chebyshev，而 algebraic levels 使用三阶 Chebyshev；其目的之一是避免在完全无矩阵的 AMG levels 保存额外局部矩阵/对角信息。它还用 power iteration 估计 Chebyshev 所需谱区间。这里的关键不是这些阶数本身，而是\textbf{smoother 选择受到可获得 operator metadata 的直接约束}。
 
 这项工作说明了一种可迁移设计：
 \begin{equation}
 \boxed{
-\text{high-order matrix-free}
+\text{高阶无矩阵}
 \rightarrow
 p\text{-coarsening}
 \rightarrow
 \text{low-order adjacency}
 \rightarrow
-\text{matrix-free algebraic }h\text{-coarsening}.
+\text{无矩阵代数 }h\text{-粗化}.
 }
 \label{eq:modern-hpmg-path}
 \end{equation}
-它不能单独证明“Chebyshev 总比 Gauss--Seidel 更适合 GPU”，但确实展示了在 matrix-free hierarchy 中，规则多项式 smoother 可以避免依赖显式 sparse matrix entries。
+它不能单独证明“Chebyshev 总比 Gauss--Seidel 更适合 GPU”，但确实展示了在无矩阵 hierarchy 中，规则多项式 smoother 可以避免依赖显式 sparse matrix entries。
 
 \section{Exascale 粗网格通信与同步}
 
@@ -313,9 +313,9 @@ p\text{-coarsening}
 这也解释了为什么“单 GPU kernel 已达到很高带宽”并不代表 distributed MLMG 已经解决。
 
 \section{本章小结}
-现代多重网格可以沿“数学空间”和“执行表示”两条轴理解。FAS 改变非线性粗层方程，子空间校正统一 point/line/patch/coarse correction，现代 AMG 与 $hp$ 方法重新设计粗空间；mixed precision、AmgT、BrickLib、matrix-free high-order kernels 与 distributed coarse strategies 则改变数据表示和机器成本。
+现代多重网格可以沿“数学空间”和“执行表示”两条轴理解。FAS 改变非线性粗层方程，子空间校正统一 point/line/patch/coarse correction，现代 AMG 与 $hp$ 方法重新设计粗空间；mixed precision、AmgT、BrickLib、高阶无矩阵 kernels 与 distributed coarse strategies 则改变数据表示和机器成本。
 
-本章更重要的阅读方法是区分三层证据：\textbf{论文在特定实验上的结果}、\textbf{源码中真正采用的数据结构/算法路径}、以及\textbf{可以迁移到其他求解器的机制}。例如 AmgT 可迁移的是“先重构 sparse representation 再利用矩阵专用硬件”，而不是某个固定加速比；Neko hpMG 可迁移的是“matrix-free metadata 会反过来约束 smoother 与 coarse-space construction”，而不是某个固定 Chebyshev 阶数。
+本章更重要的阅读方法是区分三层证据：\textbf{论文在特定实验上的结果}、\textbf{源码中真正采用的数据结构/算法路径}、以及\textbf{可以迁移到其他求解器的机制}。例如 AmgT 可迁移的是“先重构 sparse representation 再利用矩阵专用硬件”，而不是某个固定加速比；Neko hpMG 可迁移的是“无矩阵表示可提供的 metadata 会反过来约束 smoother 与 coarse-space construction”，而不是某个固定 Chebyshev 阶数。
 
 \section*{习题}
 
