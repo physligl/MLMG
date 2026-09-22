@@ -100,7 +100,7 @@ A=LL^T.
 \end{equation}
 它利用了对称性与正定性，通常比通用 LU 更节省存储与计算。
 
-直接法的关键工程问题不是“原矩阵是否稀疏”，而是消元以后因子是否仍然稀疏。稀疏矩阵分解时，原先为零的位置可能产生新的非零元，这称为\textbf{填充（fill-in）}。因此七点 stencil 产生的稀疏矩阵并不意味着它的 $L/U$ 因子仍只有七点结构。
+直接法的关键工程问题不是“原矩阵是否稀疏”，而是消元以后因子是否仍然稀疏。稀疏矩阵分解时，原先为零的位置可能产生新的非零元，这称为\textbf{填充（fill-in）}。因此七点 模板 产生的稀疏矩阵并不意味着它的 $L/U$ 因子仍只有七点结构。
 
 这解释了直接法的典型定位：中小规模系统、最粗多重网格层、需要高鲁棒性的基准计算，以及矩阵固定而右端多次变化、因子可以复用的场景。对于超大规模三维 PDE，填充带来的内存和分解成本往往使迭代法更有吸引力。
 
@@ -127,6 +127,85 @@ A=LL^T.
 }
 \label{eq:linear-solvers-residual-error}
 \end{equation}
+
+式~\eqref{eq:linear-solvers-residual-error}不只是一个代数恒等式，它说明残差是误差经过算子 $A$ 重新加权后的结果。对 SPD 系统，设
+\begin{equation}
+A\bm q_i=\lambda_i\bm q_i,
+\qquad
+0<\lambda_1\le\cdots\le\lambda_n,
+\end{equation}
+并把误差展开成
+\begin{equation}
+\bm e
+=
+\sum_{i=1}^{n}c_i\bm q_i.
+\end{equation}
+则
+\begin{equation}
+\boxed{
+\bm r
+=
+A\bm e
+=
+\sum_{i=1}^{n}\lambda_i c_i\bm q_i.
+}
+\label{eq:linear-solvers-residual-eigenbasis}
+\end{equation}
+因此不同误差方向在残差中会被不同特征值放大。相应地，
+\begin{equation}
+\boxed{
+\lambda_{\min}\|\bm e\|_2
+\le
+\|\bm r\|_2
+\le
+\lambda_{\max}\|\bm e\|_2.
+}
+\label{eq:linear-solvers-residual-error-spd-bounds}
+\end{equation}
+
+取最小的二维例子
+\begin{equation}
+A=
+\begin{bmatrix}
+1&0\\
+0&8
+\end{bmatrix},
+\qquad
+\bm e=
+\begin{bmatrix}
+1\\1
+\end{bmatrix},
+\end{equation}
+则
+\begin{equation}
+\bm r=
+\begin{bmatrix}
+1\\8
+\end{bmatrix}.
+\end{equation}
+误差在两个特征方向上的分量同样大，但残差几乎完全被第二个方向支配。反过来，若误差主要落在很小的特征值方向上，残差可能已经很小，而误差仍不可忽略。这正是“残差小”与“误差小”之间需要条件数桥梁的原因。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.85cm,y=0.62cm,>=Stealth,font=\small]
+  \draw[->] (-0.2,0)--(4.2,0) node[right] {$q_1$};
+  \draw[->] (0,-0.2)--(0,4.2) node[above] {$q_2$};
+  \draw[->,thick] (0,0)--(2.2,2.2) node[above right] {$\bm e=(1,1)$};
+  \node at (2.0,-0.7) {误差坐标};
+
+  \draw[->] (6.0,0)--(10.2,0) node[right] {$q_1$};
+  \draw[->] (6.2,-0.2)--(6.2,4.2) node[above] {$q_2$};
+  \draw[->,thick] (6.2,0)--(7.0,3.8) node[above right] {$\bm r=(1,8)$};
+  \node at (8.0,-0.7) {残差坐标};
+
+  \draw[->,line width=0.8pt] (4.45,1.8)--(5.7,1.8);
+  \node[above] at (5.1,1.8) {$A$};
+  \node[align=center,font=\scriptsize] at (5.1,0.8)
+  {$q_i$ 方向\\乘以 $\lambda_i$};
+\end{tikzpicture}
+\caption{SPD 系统中误差到残差的谱加权。算子 $A$ 在每个特征方向上把误差分量乘以对应特征值，因此残差并不是误差的等比例复制。}
+\label{fig:linear-solvers-error-residual-spectrum}
+\end{figure}
 
 这三个量在迭代算法中扮演不同角色。误差 $\bm e^{(k)}$ 是真正关心的对象，但通常不可直接计算，因为真解未知；残差 $\bm r^{(k)}$ 可以直接从当前近似计算，因此是算法可观测的反馈信号；矩阵 $A$ 决定残差如何对应到误差。
 
@@ -218,6 +297,44 @@ M\bm z=\bm r,
 =
 \left(I-M^{-1}A\right)\bm e^{(k)}.
 \end{equation}
+从“修正方程”的角度，同一轮迭代还可以拆成
+\begin{align}
+\bm r^{(k)}
+&=\bm b-A\bm u^{(k)},\\
+M\bm \delta u^{(k)}
+&=\bm r^{(k)},\\
+\bm u^{(k+1)}
+&=\bm u^{(k)}+\bm\delta u^{(k)}.
+\label{eq:linear-solvers-stationary-correction-form}
+\end{align}
+如果 $M=A$，第二步就精确给出真实误差
+\begin{equation}
+\bm\delta u^{(k)}
+=A^{-1}\bm r^{(k)}
+=\bm e^{(k)},
+\end{equation}
+一次修正即可到达真解。实际迭代之所以需要反复进行，是因为我们选择了更容易求解、但只近似 $A$ 的 $M$。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[>=Stealth,node distance=9mm and 13mm,font=\small]
+\tikzset{
+  b/.style={draw=black!65,rounded corners=2pt,minimum width=2.9cm,minimum height=0.95cm,align=center,fill=black!2},
+  a/.style={->,line width=0.8pt}
+}
+\node[b] (u) {$\bm u^{(k)}$};
+\node[b,right=of u] (r) {计算残差\\$\bm r^{(k)}=\bm b-A\bm u^{(k)}$};
+\node[b,right=of r] (m) {近似解误差方程\\$M\bm\delta u^{(k)}=\bm r^{(k)}$};
+\node[b,below=of r] (un) {更新近似\\$\bm u^{(k+1)}=\bm u^{(k)}+\bm\delta u^{(k)}$};
+\draw[a] (u)--(r);
+\draw[a] (r)--(m);
+\draw[a] (m) |- (un);
+\draw[a] (un)-|(u);
+\end{tikzpicture}
+\caption{平稳迭代的残差修正循环。不同方法的核心区别可以理解为：如何选择一个易于求解的 $M$，把可计算残差转成对真实误差的近似修正。}
+\label{fig:linear-solvers-stationary-correction}
+\end{figure}
+
 定义
 \begin{equation}
 S
@@ -237,7 +354,7 @@ I-M^{-1}A
 }
 \label{eq:linear-solvers-stationary-convergence}
 \end{equation}
-若 $S$ 非正规（non-normal），某些范数下可能出现短暂增长，因此 $\rho(S)<1$ 不表示“每一轮误差范数都严格缩小”；它控制的是最终的渐近行为。
+若 $S$ 非正规（非正规），某些范数下可能出现短暂增长，因此 $\rho(S)<1$ 不表示“每一轮误差范数都严格缩小”；它控制的是最终的渐近行为。
 
 \subsection{Jacobi 与 Gauss--Seidel}
 
@@ -378,6 +495,67 @@ Krylov 方法寻找的近似具有
 \end{equation}
 也就是说，新的近似不是在整个 $n$ 维空间里任意搜索，而是在由当前残差和反复算子作用生成的 $m$ 维方向集合中选择修正。
 
+为了把 CG、GMRES 放进同一个框架，再引入一个“搜索空间 + 检验条件”的最小模型。设 $V_m$ 的列向量构成 $\mathcal K_m(A,\bm r_0)$ 的一组基，则
+\begin{equation}
+\bm u_m
+=
+\bm u_0+V_m\bm y_m,
+\label{eq:krylov-basis-correction}
+\end{equation}
+对应残差为
+\begin{equation}
+\bm r_m
+=
+\bm r_0-AV_m\bm y_m.
+\label{eq:krylov-residual-in-basis}
+\end{equation}
+仅仅规定 $\bm u_m$ 位于这个仿射空间里，还不能唯一确定 $\bm y_m$；还需要 $m$ 个独立条件。一般投影方法选择一个 $m$ 维检验空间 $\mathcal L_m$，并要求
+\begin{equation}
+\boxed{
+\bm r_m\perp\mathcal L_m.
+}
+\label{eq:krylov-petrov-galerkin}
+\end{equation}
+若 $W_m$ 的列构成 $\mathcal L_m$ 的基，则式~\eqref{eq:krylov-petrov-galerkin}变成一个小型 $m\times m$ 系统
+\begin{equation}
+\boxed{
+W_m^TAV_m\bm y_m
+=
+W_m^T\bm r_0.
+}
+\label{eq:krylov-projected-small-system}
+\end{equation}
+所以 Krylov 方法并不是直接求原来的 $n\times n$ 系统，而是在逐步扩张的子空间上构造和求解一个低维投影问题\cite{saad2003}。
+
+这个统一框架随后分化成不同方法。对 SPD 系统，CG 使用与 Krylov 空间相容的 Galerkin 条件，并等价地得到能量范数最优性；GMRES 则直接在同一仿射搜索空间中最小化欧氏残差范数，其一阶最优条件可写成
+\begin{equation}
+\bm r_m\perp A\mathcal K_m(A,\bm r_0).
+\label{eq:gmres-residual-orthogonality-preview}
+\end{equation}
+这两个方法的搜索空间相同，真正不同的是“用什么准则从空间中选出当前最好近似”。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[>=Stealth,node distance=10mm and 12mm,font=\small]
+\tikzset{
+  b/.style={draw=black!65,rounded corners=2pt,minimum width=3.1cm,minimum height=0.95cm,align=center,fill=black!2},
+  a/.style={->,line width=0.8pt}
+}
+\node[b] (r0) {初始残差\\$\bm r_0$};
+\node[b,right=of r0] (gen) {反复算子作用\\$\bm r_0,A\bm r_0,\ldots$};
+\node[b,right=of gen] (k) {搜索空间\\$\mathcal K_m$};
+\node[b,below=of gen] (test) {检验条件\\$\bm r_m\perp\mathcal L_m$};
+\node[b,right=of test] (u) {当前近似\\$\bm u_m=\bm u_0+V_m\bm y_m$};
+\draw[a] (r0)--(gen);
+\draw[a] (gen)--(k);
+\draw[a] (k)--(u);
+\draw[a] (test)--(u);
+\draw[a] (k)--(test);
+\end{tikzpicture}
+\caption{Krylov 投影方法的统一结构。算子作用生成搜索空间，检验空间给出额外的最优性或正交条件，两者共同确定当前近似。}
+\label{fig:krylov-projection-framework}
+\end{figure}
+
 一个二维例子可以把这个过程完全看清。取
 \begin{equation}
 A=
@@ -427,7 +605,7 @@ A\bm v,
 \end{equation}
 再配合向量加法、数乘、点积和范数。
 
-因此只要程序能稳定、正确地实现算子应用（operator apply），就可以在没有显式装配稀疏矩阵的情况下运行许多 Krylov 方法。这也是无矩阵 PDE 求解器与 Krylov 方法经常组合出现的根本原因。
+因此只要程序能稳定、正确地实现算子应用（算子应用），就可以在没有显式装配稀疏矩阵的情况下运行许多 Krylov 方法。这也是无矩阵 PDE 求解器与 Krylov 方法经常组合出现的根本原因。
 
 需要注意，式~\eqref{eq:krylov-space}中的幂向量并不会在实际代码里按定义式原样保存。若直接把
 \begin{equation}
@@ -788,7 +966,7 @@ AM^{-1}\bm y
 \label{eq:preconditioning-right}
 \end{equation}
 
-预条件真正改变的是外层迭代所面对的算子几何。理想情况下，特征值更加聚集、条件数更小，或者原来难处理的误差方向被 $M^{-1}$ 重新缩放到更容易搜索的尺度。
+预条件真正改变的是外层迭代所面对的算子几何。理想情况下，特征值更加聚集、条件数更小，或者原来难处理的误差方向被 $M^{-1}$ 重新缩放到更容易搜索的尺度。这种“先改变问题几何，再让 Krylov 方法搜索”的视角也是经典稀疏迭代方法教材组织预条件理论的主线之一\cite{saad2003}。
 
 \paragraph{一个可完全检查的二维例子。}
 取
@@ -859,7 +1037,7 @@ M^{-1}\bm r=
 
 \subsection{预条件共轭梯度法}
 
-若 $A$ 为 SPD，且预条件矩阵 $M$ 也是 SPD，可以构造预条件共轭梯度法（Preconditioned CG, PCG）。每轮先求
+若 $A$ 为 SPD，且预条件矩阵 $M$ 也是 SPD，可以构造预条件共轭梯度法（预条件共轭梯度法，PCG）。每轮先求
 \begin{equation}
 \bm z_k=M^{-1}\bm r_k,
 \end{equation}
@@ -975,7 +1153,7 @@ V_{m+1}\bar H_m.
 
 第二步看预条件器是否固定。固定线性预条件器可以直接与 PCG/GMRES 组合；若预条件器会逐步变化或具有非线性，则 FGMRES 更自然。
 
-第三步看规模和代价。小型系统或最粗层问题可能直接使用稀疏直接法；大型 PDE 系统则必须同时比较 operator apply、预条件器 apply、点积/全局归约、存储以及总迭代数，而不能只比较某个单独 kernel。
+第三步看规模和代价。小型系统或最粗层问题可能直接使用稀疏直接法；大型 PDE 系统则必须同时比较 算子应用、预条件器 apply、点积/全局归约、存储以及总迭代数，而不能只比较某个单独 kernel。
 
 Jacobi/Gauss--Seidel 进入多重网格主线，不是因为它们是最强的独立求解器，而是因为它们对误差频率具有特殊的选择性。\chapref{ch:two-grid}接下来就从这个问题开始：为什么一个作为独立求解器越来越慢的 Jacobi，反而可以成为有效的多重网格平滑器？
 
