@@ -173,7 +173,7 @@ A^{-1}\bm r.
 
 \subsection{独立多重网格迭代}
 
-若直接反复执行
+若 $B_{MG}$ 表示一个\textbf{固定且线性的} multigrid cycle，并直接反复执行
 \begin{equation}
 \bm u^{(k+1)}
 =
@@ -185,7 +185,7 @@ B_{MG}
 \right),
 \label{eq:preconditioner-mg-stationary-iteration}
 \end{equation}
-那么 多重网格本身就是一个平稳型迭代求解器，其误差传播算子为
+那么多重网格本身可以写成一个固定点/平稳型迭代，其误差传播算子为
 \begin{equation}
 E_{MG}
 =
