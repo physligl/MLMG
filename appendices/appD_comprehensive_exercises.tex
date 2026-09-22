@@ -21,9 +21,9 @@
 
 \section*{编程与上机题}
 \begin{enumerate}
-\item 从零实现一个最小 2D geometric multigrid：Poisson 显式装配/无矩阵算子应用、加权 Jacobi、限制、延拓、V-cycle。用 manufactured solution 同时验证离散二阶精度和 mesh-independent convergence。
+\item 从零实现一个最小 2D geometric multigrid：Poisson 显式装配/无矩阵算子应用、加权 Jacobi、限制、延拓、V-cycle。先用\textbf{连续 MMS}验证离散二阶精度，再用固定离散问题/离散 manufactured state 验证 solver 的 mesh-independent convergence；说明为什么不能用同一个测试逻辑混淆这两个结论。
 \item 给上一题加入 OpenMP，再选择 CUDA 或 MPI 中一个并行后端。要求保持完全相同的离散和停止准则，报告每 cycle 时间、iteration/cycle count、time-to-solution 和逐 level profile。
-\item 任选一个成熟多重网格库，与自己的最小 solver 解同一个 case。记录 setup、hierarchy、transfer、smoother、bottom solver 与总时间，把库中的每个关键阶段映射回本书数学对象。
+\item 任选 AMReX、hypre、PETSc、MueLu、Ginkgo 或 AmgX，与自己的最小 solver 解同一个 case。固定库版本/commit，记录 setup、hierarchy、transfer、smoother、bottom solver 与总时间，并把源码中的 public entry、cycle driver、level state 和 profiler event 映射回本书数学对象。
 \end{enumerate}
 
 \section*{工程与综合题}
