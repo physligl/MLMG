@@ -2,7 +2,7 @@
 \label{app:galerkin}
 
 \begin{keybox}
-\textbf{目的：}把\chapref{ch:two-grid}的式~\eqref{eq:galerkin}展开成可逐行检查的一维计算，验证本书 nodal FD 代表例中的标准 linear prolongation/full-weighting 下，Galerkin coarse operator 确实回到标准 $2h$ Poisson 离散。cell-centered transfer 的几何位置与权重不同，不由本附录这一套 nodal 公式代表。建议先复习\chapref{ch:two-grid}的 $R$、$P$ 定义。
+\textbf{目的：}把\chapref{ch:two-grid}的式~\eqref{eq:galerkin}展开成可逐行检查的一维\textbf{内部网格}计算，验证本书 nodal FD 代表例中的标准 linear prolongation/full-weighting 下，Galerkin coarse operator 的 interior stencil 确实回到标准 $2h$ Poisson 离散。边界行仍取决于 Dirichlet/Neumann/periodic 的离散闭合，不能由这段内部推导自动推出；cell-centered transfer 的几何位置与权重也不同，不由本附录这一套 nodal 公式代表。
 \end{keybox}
 
 
@@ -53,9 +53,9 @@ full-weighting restriction 为 $R=\frac12P^T$：
 \boxed{A_H=RA_hP
 =\frac{1}{H^2}\operatorname{tridiag}(-1,2,-1)}.
 \end{equation}
-也就是说，在这个经典组合下，Galerkin 粗算子恰好等于直接在 $2h$ 网格上重新离散的 Poisson 算子。
+也就是说，对内部三点 stencil，在这个经典组合下 Galerkin 粗算子恰好等于直接在 $2h$ 网格上重新离散得到的内部 Poisson stencil。
 
-这段推导非常重要，因为它把“Galerkin 是抽象矩阵乘法”和“几何粗网格还是同一个 PDE”连接起来。复杂系数、复杂边界或 AMG 中，这种完美一致性通常不再成立。
+这段推导把“Galerkin 是抽象矩阵乘法”和“几何粗网格仍表示同一个低频 PDE 结构”连接起来，但不要把结论外推过头。边界行、变系数、非均匀网格、cell-centered transfer 或 AMG 中，$RA_hP$ 与直接 rediscretization 的逐项一致性都需要单独检查。
 
 \section*{推导检查}
 \begin{checkpointbox}
