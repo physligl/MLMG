@@ -16,7 +16,7 @@
 因此共享地址空间只消除了“必须通过网络取得远端字节”这一层问题，并没有消除 cache、NUMA、同步、false sharing、调度和带宽瓶颈。
 \end{keybox}
 
-\section{共享地址空间不等于统一代价}
+\section{共享地址空间与访问代价}
 
 设一个 level 上有
 \begin{equation}
@@ -44,7 +44,7 @@ u[p],\quad b[p],\quad r[p],
 
 一个正确但很慢的共享内存程序，经常不是所有权错了，而是后两者错位了：线程在 socket 1 上执行，却不断读取 first-touch 到 socket 0 的页面。
 
-\section{正确性的第一原则仍然是 Unique Writer}
+\section{Unique Writer 与内存可见性}
 
 对 Jacobi、residual、restriction、prolongation 等 gather 型 kernel，最简单可靠的规则仍然是
 \begin{equation}
@@ -64,7 +64,7 @@ r_i=b_i-(Au)_i.
 
 共享内存实现还必须考虑\textbf{可见性}。例如 RBGS 的 black phase 必须读取 red phase 已完成的新值；这里不仅逻辑上有 RAW 依赖，还需要实际执行机制保证 red 写入在 black 读取前已经完成并对其可见。OpenMP barrier、task dependency 或其他同步原语承担的正是这个职责。
 
-\section{Logical Task 与线程调度粒度必须分开}
+\section{逻辑任务与线程调度粒度}
 
 在\chapref{ch:mg-parallel-operations}中，一个 residual logical task 可以只负责一个 cell。但真实 CPU 不会为每个 cell 创建一个独立重量级线程任务。通常会把大量 point tasks 聚合成 tile、chunk 或 box：
 \begin{equation}
@@ -140,7 +140,7 @@ $\eta_{\mathrm{ws}}$ 不是“实际 DRAM 流量一定增加这么多倍”，�
 }
 \end{equation}
 
-\section{False Sharing：没有数据 Race 也可能很慢}
+\section{False Sharing 与 Cache Coherence}
 
 共享内存中一个很典型的反直觉现象是：两个线程写\textbf{不同变量}，程序完全正确，却仍然互相拖慢。
 
@@ -163,7 +163,7 @@ s_0,s_1,\ldots,s_{P-1},
 
 前者是正确性问题；后者是 cache-line 粒度的数据放置问题。对 thread-private counters、reduction buffers 和边界 metadata，padding 或分块布局有时比继续优化算术指令更重要。
 
-\section{静态与动态调度对应不同代价模型}
+\section{静态调度与动态调度}
 
 对规则均匀网格，一个 tile 的 work 往往近似一致，静态调度通常具有明显优势：
 \begin{itemize}
@@ -229,7 +229,7 @@ u_h(i)
 \end{equation}
 共享内存上的主要收益通常不是减少“线程数”，而是少物化一个 $e_h$ 数组、少一次完整 fine-grid memory pass。是否值得融合应通过 memory traffic 与后继数据生命周期判断。
 
-\section{Gauss--Seidel 把同步直接放进热路径}
+\section{Gauss--Seidel 的同步结构}
 \label{sec:shared-rbgs}
 
 Lexicographic GS 的依赖链不适合普通 parallel-for。对于标准五点/七点 stencil，RBGS 把一个 sweep 组织成
@@ -262,7 +262,7 @@ T_{\mathrm{barrier}}
 \end{equation}
 一个单 sweep 较慢但显著减少 V-cycle 数的 smoother 仍可能具有更小的 time-to-solution。
 
-\section{Reduction 既有同步成本也有数值语义}
+\section{Reduction 的同步与数值语义}
 
 残差范数可以先做线程私有局部和
 \begin{equation}
@@ -289,7 +289,7 @@ s_p
 
 如果 residual norm 只用于诊断，而不是算法控制条件，则它还是一个可选同步点。对固定-cycle multigrid，减少不必要 norm 往往比优化 norm kernel 本身更有效。
 
-\section{NUMA：共享虚拟地址背后的物理分布}
+\section{NUMA 与数据放置}
 
 在多 socket 系统中，程序看到统一虚拟地址空间，但物理页面通常归属于某个 NUMA node。一个常见策略是 first-touch：页面第一次被某个线程写入时，操作系统倾向于把它放在该线程所在 node 的本地内存。
 
@@ -315,7 +315,7 @@ u,b,r,e,\text{coefficients}
 
 对多重网格尤其要注意：每个 level 都有自己的数组。只给 finest level 做并行 first-touch，而 coarse levels 仍由单线程初始化，会把 NUMA 问题藏到 V-cycle 后半段。
 
-\section{内存带宽决定线程扩展何时饱和}
+\section{内存带宽与线程扩展性}
 
 Poisson 类 stencil 往往具有较低算术强度。随着线程数增加，性能最初可能近似线性提升，直到 socket/NUMA node 的可持续 memory bandwidth 接近饱和。
 
@@ -342,7 +342,7 @@ I B_{\mathrm{socket}}(P)
 
 判断两者的方法也不同：并行度不足应看 task 数、$W/S$ 和 worker idle；带宽饱和则应看 memory bandwidth、LLC miss、bytes/s 与 Roofline。
 
-\section{Parallel Region 与 Barrier 也是固定成本}
+\section{Parallel Region 与 Barrier 开销}
 
 若每个小 kernel 都反复创建/销毁线程团队，或者频繁进入独立 parallel region，fork/join 与 runtime bookkeeping 可能在 coarse levels 上占明显比例。
 
@@ -358,7 +358,7 @@ I B_{\mathrm{socket}}(P)
 \end{equation}
 真正能删除的只是比 DAG 要求更强的全局同步。
 
-\section{共享内存 V-Cycle 的执行结构}
+\section{共享内存 V-Cycle}
 
 把式~\eqref{eq:mg-parallel-vcycle-dag}映射到线程后，一个典型 level 可以理解为：
 
@@ -376,7 +376,7 @@ I B_{\mathrm{socket}}(P)
 
 如果 runtime 支持细粒度 task dependency，不同 patch 可以在局部数据 ready 后继续推进；如果 runtime overhead 大于可获得的 overlap，则 level-wide worksharing + 少量 barrier 反而更高效。选择取决于 task 粒度与实际 critical path，而不是“异步越多越先进”。
 
-\section{粗网格上的线程收缩}
+\section{粗网格线程收缩}
 
 由式~\eqref{eq:mg-useful-workers}，粗化后有意义的 worker 数会快速下降。共享内存中可以写成
 \begin{equation}
@@ -409,7 +409,7 @@ P_{\max},
 
 最粗层还可能切换为单线程、小线程组或直接法。这个切换点应通过 benchmark 决定，而不是固定写成某个 unknown 常数。
 
-\section{共享内存性能诊断顺序}
+\section{共享内存性能诊断}
 
 当一个 OpenMP/线程版 V-cycle scaling 不理想时，建议按以下顺序排查：
 

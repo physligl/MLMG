@@ -1,4 +1,4 @@
-\chapter{并行架构选择与求解器设计}
+\chapter{并行架构与求解器设计}
 \label{ch:architecture}
 
 \begin{keybox}
@@ -15,7 +15,7 @@
 前面各执行模型章节提供机制，本章只负责把机制组合成决策流程；最终选择必须用\chapref{ch:benchmarking}的公平基准和\chapref{ch:diagnosis}的诊断流程验证。
 \end{keybox}
 
-\section{先画应用阶段图，而不是先选并行 API}
+\section{应用阶段图与并行分解}
 
 很多求解器设计失败并不是因为某个 kernel 慢，而是因为\textbf{整个应用的阶段并行结构不一致}。例如一个 particle--field 程序可能同时包含
 \begin{equation}
@@ -53,7 +53,7 @@ T_{\mathrm{application}}
 
 这与\chapref{ch:distributed-gpu}中 coarse redistribution 的逻辑相同，只是现在发生在不同物理/数值 phase 之间。
 
-\section{数据所有权与执行资源是两个不同决策}
+\section{数据所有权与执行资源}
 
 一个常见错误是把“rank 数”直接当成“数据怎么存”。更稳定的软件架构应显式区分：
 
@@ -103,7 +103,7 @@ T_{\mathrm{application}}
 \paragraph{一个不做“架构排名”的选型例子。}
 设某规则三维 Poisson 问题需要反复求解同一 hierarchy，单节点内存足够容纳全部数据。这个信息只能把候选范围缩小到“单节点 CPU shared memory”与“单 GPU/多 GPU 中能够完整驻留数据的方案”，还不能直接选出赢家。接下来分别检查：CPU 端是否已接近内存带宽上限；GPU 端最粗层是否出现严重 small-kernel；setup 是否可复用；数据是否需要频繁往返 host/device。最后用\chapref{ch:benchmarking}的相同数学路径做规模扫描，再用\chapref{ch:diagnosis}解释 crossover。这个例子体现本章的原则：\textbf{架构选择是约束逐步筛选，不是先验打分。}
 
-\section{Solver 生命周期必须成为架构的一等对象}
+\section{Solver 生命周期}
 
 从\chapref{ch:software}的源码可以看到，成熟库都会把 setup state 和 apply state 分开。应用层也应明确 solver 生命周期：
 
@@ -135,7 +135,7 @@ T_{\mathrm{application}}
 
 真正需要每次 solve 刷新的通常只是 RHS、initial guess、部分 coefficients 和 convergence state。哪些对象可复用必须由数值依赖决定，而不是由“函数写起来方便”决定。
 
-\section{复制状态还是分布状态}
+\section{状态复制与分布式状态}
 
 某些耦合应用会遇到一个重要选项：field/mesh 状态是否在多个 workers/ranks 上复制。
 
@@ -171,7 +171,7 @@ M_{\mathrm{metadata}},
 
 场规模相对小、读请求极多且更新频率低时，复制可能有工程吸引力；场规模巨大或更新频繁时，分布式 ownership 更自然。这个判断必须放在整个应用的 phase 图中做，而不能只看 Poisson solver 本身。
 
-\section{候选架构路径}
+\section{候选架构}
 
 \subsection{单节点 CPU}
 
@@ -237,7 +237,7 @@ MPI+OpenMP 可以减少 rank 数和网络 endpoints，但需要处理 NUMA、thr
 
 对于 memory-bound stencil，一个 socket 上 32 threads 未必比 8--16 threads 更快；最佳组合必须同时测量 bandwidth saturation、barrier、NUMA 与每 level 的 useful worker 数。
 
-\section{把架构选择写成约束求解，而不是偏好}
+\section{架构约束模型}
 
 候选架构可以先经过四个硬约束过滤：
 
@@ -282,7 +282,7 @@ N_{\mathrm{reuse}}T_{\mathrm{solve}}
 
 通过硬约束以后，剩余候选再进入\chapref{ch:benchmarking}的受控实验与平台最优实验，最后用\chapref{ch:diagnosis}解释差异。
 
-\section{一个典型的跨阶段冲突：粒子与场求解}
+\section{粒子--场耦合的架构案例}
 
 考虑一个抽象 particle--field 应用。若 field solve 使用 $P$ 个空间分区 MPI ranks，而 particle transport 的自然并行方式是大量共享只读 field 的 workers，就可能出现三种架构：
 

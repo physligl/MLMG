@@ -5,11 +5,11 @@
 \textbf{本章先回答“怎样比较才算公平”。}并行求解器基准测试的第一步不是计时，而是确认两种实现实际上求解了同一个离散问题、使用了可比的算法参数，并且达到相同的数值精度。
 \end{keybox}
 
-\section{先明确 Benchmark 在回答什么问题}
+\section{基准测试的目标与类型}
 
 “公平”不是一个单一规则。对求解器性能，至少有两类实验，必须在开始计时以前先声明。
 
-\subsection{受控实现实验：隔离执行后端}
+\subsection{受控实现实验}
 
 如果问题是“同一个数值算法放到 CPU 与 GPU 后，执行后端本身带来多少差异”，就应该尽量冻结数学路径：
 \begin{itemize}
@@ -31,7 +31,7 @@
 \end{equation}
 如果两端残差历史或 $N_{cycle}$ 已经不同，就应先定位数值路径差异。
 
-\subsection{平台最优实验：比较真实 Time-to-Solution}
+\subsection{平台最优实验}
 
 另一类问题是“在相同物理问题和精度要求下，CPU/GPU/不同库各自经过合理调优后，谁能更快得到合格答案”。这时不应强迫所有平台使用完全相同的 smoother、tile、coarse strategy 或 backend policy。
 
@@ -206,7 +206,7 @@ T_{total}=T_{setup}+N_{reuse}T_{solve}.
 \end{equation}
 当同一矩阵重复求解很多次，昂贵 setup 可以摊薄；若每个时间步矩阵结构都改变，setup 性能可能比 solve 更重要。
 
-\section{把抽象阶段映射到真实源码}
+\section{源码阶段与计时语义}
 
 \chapref{ch:software}已经说明不同软件把相同数学阶段放在不同对象中。Benchmark 若只记录一个笼统的 \texttt{solve()} 时间，就无法解释库间差异。下面把本章的 phase accounting 映射到第 14 章固定源码快照中的真实入口。
 

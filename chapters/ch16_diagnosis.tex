@@ -50,7 +50,7 @@ blocks/SM、register/shared memory、achieved bandwidth、eligible warps\\
 \paragraph{一个完整的诊断例子。}
 假设某 GPU MLMG 的 fine-level stencil 已接近可持续显存带宽，但完整 solve 仍只比 CPU 快很少。先比较 residual history 与 cycle 数，确认数值路径没有改变；再按 level/phase 计时，若发现 fine level 很快而 $4096$、$512$ unknowns 的 coarse kernels 占比异常升高，就提出“粗层并行度与 launch 固定成本主导”这一假设。随后只改变 coarse-level execution strategy，例如减少 kernel 数或切换 bottom solve，同时保持数学路径不变。如果总时间下降而 fine-level bandwidth 基本不变，这个实验才真正支持原假设。这里的关键不是某个 profiler 指标本身，而是\textbf{每一步都在排除竞争解释}。
 
-\section{先从源码已有的 Profiling Boundary 开始}
+\section{源码中的性能观测边界}
 
 \chapref{ch:software}已经固定了 AMReX、hypre 与 PETSc 的源码快照。实际诊断时，应先利用框架已经放置的 instrumentation，再决定是否向更深层插桩，而不是一开始就在任意函数周围加计时器。
 
@@ -136,7 +136,7 @@ MPI wait 上升以后不要先假设网络。先把一次 halo 展开成
 
 如果减少 local work 后 wait 上升，而网络消息本身没有明显变慢，可能只是 surface/volume 与 late-sender effect 变得更突出。只有在排除计算不均衡和 progress 问题以后，才应把瓶颈归因于网络 latency。
 
-\subsection{等待时间高：等待者通常不是根因}
+\subsection{等待时间与负载不均}
 
 并行 profile 中最容易被误读的是 wait time。假设 \texttt{gomp\_barrier\_wait} 占 wall time 很高，这只说明很多线程较早到达 barrier，并不能直接推出“barrier 实现很慢”。
 
@@ -153,13 +153,13 @@ MPI wait 上升以后不要先假设网络。先把一次 halo 展开成
 
 MPI 的 wait time 同理。接收 rank 在 \texttt{MPI\_Wait} 中停很久，既可能是网络慢，也可能只是发送 rank 的 pack/kernel 尚未完成。必须把 sender compute completion、message posting 和 receive completion 放进同一 timeline。
 
-\subsection{OpenMP 带宽饱和与 NUMA}
+\subsection{OpenMP 带宽与 NUMA}
 
 典型可能性：内存带宽已饱和。验证方法是同时测 STREAM-like sustainable bandwidth 与 solver stencil bandwidth；这里 STREAM-like 指用规则连续数组读写估计平台可持续主存带宽的简单带宽基准，而不是求解器本身。若达到接近平台可持续带宽，再增加线程只能争用 memory controller。
 
 另一个可能性是 NUMA 页面集中。若 remote memory traffic 高，应先修 first-touch/affinity，再讨论算法。
 
-\subsection{GPU 加速比限制因素}
+\subsection{GPU 端到端加速限制}
 
 先问四个问题：
 \begin{enumerate}
@@ -184,7 +184,7 @@ GPU 对小问题没有“必须更快”的理论保证。
 \end{itemize}
 在确认 residual history、cycle 数和达到同一容差时的最终误差都保持一致之前，不应把总时间差异简单归因于并行框架。若收敛因子本身已经变化，应先回到\chapref{ch:two-grid}的误差传播式~\eqref{eq:two_grid_error}和\chapref{ch:lfa}的频率分析检查数值路径。
 
-\section{诊断实验应该改变什么}
+\section{单变量诊断实验}
 
 一个有效的性能诊断实验应满足：
 \begin{equation}

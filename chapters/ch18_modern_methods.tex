@@ -1,4 +1,4 @@
-\chapter{现代多重网格方法与研究进展}
+\chapter{现代多重网格方法}
 \label{ch:modern}
 
 \begin{keybox}
@@ -7,7 +7,7 @@
 阅读每一种方法时都回答四个问题：它放宽了前文哪一个假设？改变了粗空间、平滑器还是执行成本？引入了什么新的数值风险？应当用什么验证量确认收益？这样现代方法就能挂回前文已经建立的对象，而不会变成术语目录。带宽与算术强度见\chapref{ch:parallel-model}、\chapref{ch:mg-parallel-operations}和\chapref{ch:gpu}，AMG 层级与稀疏复杂度见\chapref{ch:software}，分布式粗层通信见\chapref{ch:mpi}和\chapref{ch:distributed-gpu}。
 \end{keybox}
 
-\section{现代多重网格方法的主要扩展}
+\section{现代多重网格的扩展方向}
 
 前六章建立的经典路线可以概括为：线性离散系统、几何或代数层级、平滑器、粗网格校正以及递归 V-cycle。现代方法通常不是把这条链完全推翻，而是改变其中某一环：非线性问题需要改变“校正方程”的形式；复杂算子需要更自适应的粗空间；高阶离散改变算子的存储与应用方式；异构和极大规模机器则改变每一级操作的资源成本。
 
@@ -25,7 +25,7 @@
 本章只补足理解现代方法所需的最小模型，不试图替代非线性求解、有限元或 AMG 专著。凡是出现新的抽象，都要求读者至少能回答“未知量住在哪里、粗化改变什么、一次算子应用做什么”；论文级算法细节仍应回到专门文献。
 \end{warningbox}
 
-\section{非线性校正与 FAS}
+\section{非线性多重网格与 FAS}
 \label{sec:modern-fas}
 
 前文的 correction scheme 建立在线性系统
@@ -74,7 +74,7 @@ e_H=u_H-I_h^H u_h,
 \end{equation}
 代入粗层方程即可重新得到熟悉的 coarse-grid correction。因此 FAS 不是另一套无关算法，而是把前文线性 correction scheme 推广到“粗层也表示完整近似”的形式。
 
-\section{子空间校正视角}
+\section{子空间校正}
 \label{sec:modern-subspace-correction}
 
 前文把 smoother 和 coarse-grid correction 分开介绍，但两者可以放进同一个框架。设离散空间被若干子空间覆盖
@@ -87,7 +87,7 @@ V=V_0+V_1+\cdots+V_m,
 
 若所有子空间校正并行计算后相加，得到的是 additive 结构；若前一个子空间的更新立即影响后一个子空间，则是 multiplicative 结构。现代并行实现经常在这两者之间做折中：数学上希望较强耦合，硬件上又希望减少顺序依赖。这与\chapref{ch:linear-solvers}中 Jacobi/Gauss--Seidel 的并行差异以及\chapref{ch:gpu}中的 patch/line kernel 设计是同一个矛盾在更一般空间中的表现。
 
-\section{代数粗空间的现代扩展}
+\section{代数粗空间}
 \label{sec:modern-amg-coarse-space}
 
 几何多重网格利用坐标和规则粗化直接给出 $V_H$；AMG 则必须从离散算子本身判断哪些自由度应保留、哪些误差模式必须进入粗空间。经典 strength-of-connection 只是这一问题的一种答案。更一般地，现代 AMG 设计常围绕三个问题组织：
@@ -162,7 +162,7 @@ C_r\|e_{round}\|.
 \end{equation}
 这里 $C_d,C_i,C_r$ 依赖问题和所用范数，式~\eqref{eq:modern-error-budget}只是设计检查表，不是无条件误差定理。真正能否降低 coarse-level precision，应由式~\eqref{eq:modern-mixed-precision-validation}中的数值证据确认。
 
-\section{Tensor Core 多重网格：从论文回到源码}
+\section{Tensor Core 与代数多重网格}
 
 \textbf{Tensor Core} 面向规则小块矩阵乘加；传统 CSR SpMV/SpGEMM 的不规则稀疏结构并不能直接高效映射过去。AmgT 的核心因此不是“把原来的 CSR kernel 换成 Tensor Core 指令”，而是先改变稀疏表示，再改变 setup/solve kernel\cite{lu2024amgt}。
 
@@ -198,7 +198,7 @@ C_r\|e_{round}\|.
 \end{equation}
 这个不等式必须把 setup 与 solve 一起测量；如果 hierarchy 只使用一次，格式转换成本尤其不能忽略。
 
-\section{细粒度数据分块与性能可移植性}
+\section{细粒度数据分块}
 
 2024 年 SC Workshop 的 BrickLib GMG 工作在 NVIDIA、AMD、Intel GPU 系统上使用统一的 fine-grain brick data blocking，并把这种布局贯穿 stencil、inter-level transfer 与通信\cite{antepara2024brick}。论文在其三套测试系统上报告了 73\% 的 peak performance-portability metric，以及扩展到 512 GPUs 时约 87\% 的 weak-scaling parallel efficiency；这些数字是该实验矩阵中的结果，不应解释成 BrickLib 在任意机器上的固定效率。
 
@@ -215,7 +215,7 @@ C_r\|e_{round}\|.
 \end{equation}
 这与\chapref{ch:architecture}的应用级所有权观点一致：数据布局若只服务计算 kernel，却让 phase boundary 付出昂贵转换，端到端性能仍可能变差。
 
-\section{高阶离散的最小模型}
+\section{高阶离散与 $hp$ 粗化}
 \label{sec:modern-high-order-minimal-model}
 
 前文的七点 stencil 可以把每个未知量想成一个节点值或 cell 值；高阶有限元和 DG 的数据组织不同。一个网格单元 $K$ 内通常有多个局部自由度，它们描述某个次数为 $p$ 的多项式近似。算子应用不再只是读取固定几个几何邻居，而是对每个单元执行
@@ -298,7 +298,7 @@ p\text{-coarsening}
 \end{equation}
 它不能单独证明“Chebyshev 总比 Gauss--Seidel 更适合 GPU”，但确实展示了在无矩阵 hierarchy 中，规则多项式 smoother 可以避免依赖显式 sparse matrix entries。
 
-\section{Exascale 粗网格通信与同步}
+\section{Exascale 粗网格通信}
 
 \textbf{Exascale} 通常指面向 $10^{18}$ FLOP/s 量级超级计算系统的算法与软件环境。在这一尺度上，单个 GPU 越快，网络延迟和全局同步的相对成本越显眼。多重网格优化很大一部分并不是继续优化 fine-grid stencil，而是：
 \begin{itemize}

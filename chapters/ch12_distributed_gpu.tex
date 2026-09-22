@@ -58,7 +58,7 @@ u_p^{ghost}
 \end{equation}
 这一层真正影响写入责任的映射。
 
-\section{Rank--Device 映射首先是资源拓扑问题}
+\section{Rank--Device 映射与资源拓扑}
 
 一 rank 一 GPU 的优点是 owner、device context 与执行队列关系清楚。实际系统仍要保证：
 \begin{itemize}
@@ -70,7 +70,7 @@ u_p^{ghost}
 
 因此“rank $p$ 使用 GPU $p$”只是逻辑编号规则，不自动保证物理 affinity 正确。多 GPU 性能问题必须同时看进程放置、GPU 拓扑和 NIC 路径。
 
-\section{GPU-Aware 通信改变路径，不改变 Halo 语义}
+\section{GPU-Aware 通信}
 \label{sec:gpu-aware-path}
 
 \chapref{ch:mpi}已经把 halo 定义为
@@ -117,7 +117,7 @@ D.
 \end{equation}
 它不会减少 halo 数学需求，也不会自动减少 message count。
 
-\section{Pack--Network--Unpack 是一条跨资源数据边}
+\section{Pack--Network--Unpack 数据路径}
 
 结构网格的 face/edge 数据在实际布局中未必总是连续发送区。典型 halo 路径可能包含：
 \begin{equation}
@@ -148,7 +148,7 @@ T_{\mathrm{unhidden\ sync}}.
 
 这里不应只测“MPI call time”。一个看似网络慢的 halo，实际瓶颈可能是 device pack kernel、host staging、stream synchronization 或 unpack 后的 readiness wait。
 
-\section{多 GPU V-Cycle 只有一张统一 DAG}
+\section{多 GPU V-Cycle 的依赖图}
 
 常见描述会说“device kernel DAG”和“MPI communication DAG”。更准确的模型是：\textbf{整个 V-cycle 只有一张跨资源依赖图，其中不同节点分别由 GPU、CPU runtime、MPI/NIC 执行。}
 
@@ -190,7 +190,7 @@ T_{\mathrm{unhidden\ sync}}.
 \end{equation}
 若通信不能推进、interior work 太短、pack 占满同一 GPU 资源，或存在隐式 device synchronization，理论上的并行分支仍可能在实际时间线上串行。
 
-\section{四 GPU V-Cycle 的状态轨迹}
+\section{四 GPU V-Cycle 示例}
 \label{sec:distributed-gpu-trace}
 
 考虑一个 $256^3$ 三维问题，采用 $2\times2\times1$ 空间分区，每个 rank 绑定一块 GPU。细层每个 rank/GPU 约拥有
@@ -245,7 +245,7 @@ T_{\mathrm{unhidden\ sync}}.
 \item 全局上继续保留全部 ranks/GPUs 的意义也快速下降。
 \end{itemize}
 
-\section{Device 并行度与 Rank 并行度是两个不同阈值}
+\section{Device 并行度与 Rank 并行度}
 
 单 GPU 是否饱和，主要取决于该层有多少 blocks/warps 与每 task work；多 GPU 是否值得全部活跃，则取决于每 device work、message latency、redistribution 与 collective 成本。
 
@@ -278,7 +278,7 @@ P_{\ell-1},
 \end{equation}
 不能解决单 GPU 内部已经没有足够 block 的问题。
 
-\section{Coarse Redistribution 是所有权变换}
+\section{Coarse Redistribution 与所有权变换}
 
 若 active GPU/rank 数由
 \begin{equation}
@@ -318,7 +318,7 @@ T_{\mathrm{coarse}}(P_{\mathrm{old}}).
 \label{eq:distributed-gpu-consolidation-break-even}
 \end{equation}
 
-\section{粗网格存在双重并行度塌缩}
+\section{粗网格的双重并行度衰减}
 
 粗层的典型症状是：
 \begin{equation}
@@ -395,7 +395,7 @@ T_{vector}^{\mathrm{excl}}.
 
 这也说明“单 GPU kernel 快了 2 倍但多 GPU solve 只快 8\%”完全可能：真正的 critical path 可能主要由 network、global reduction 或 coarse redistribution 组成。
 
-\section{Pack、Network、Kernel 的资源竞争会破坏理想 Overlap}
+\section{通信与计算的资源竞争}
 
 即使 DAG 允许 pack/network 与 interior compute 并发，也还要问它们是否竞争同一硬件资源。
 
@@ -415,7 +415,7 @@ T
 \end{equation}
 只是上界目标。真实 overlap 必须从 timeline 验证，而不是从 API 名称推断。
 
-\section{多 GPU V-Cycle 的诊断顺序}
+\section{多 GPU V-Cycle 性能诊断}
 
 建议按以下层次定位：
 

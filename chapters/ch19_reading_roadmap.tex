@@ -5,7 +5,7 @@
 \textbf{本章把前面的知识转化成可复现的论文与源码阅读方法。}读论文时追踪“问题--算法--代价--证据”；读源码时追踪“入口--状态--控制流--数值操作--所有权变化--instrumentation”。任何源码结论都应绑定到具体 commit/tag，而不是只写“当前版本”。这样一年以后函数移动了，阅读笔记仍然可复现。
 \end{keybox}
 
-\section{论文阅读框架}
+\section{论文阅读方法}
 面对一篇 multigrid/HPC 论文，先写四行：求解什么 PDE/线性系统；采用什么 hierarchy、smoother 与 coarse solver；主要优化 compute、memory、sync 还是 communication；证据来自 convergence、time-to-solution、bandwidth 还是 scaling。四行写不出来，说明还没有抓住论文主问题。可以把这四行固定成一张阅读卡：
 \begin{enumerate}
 \item \textbf{数学对象：}PDE、离散、边界条件、矩阵性质是什么？
@@ -19,7 +19,7 @@
 \paragraph{先填一张假想论文的阅读卡。}
 设摘要只告诉我们：“作者为三维扩散问题设计 GPU multigrid，并报告多 GPU scaling。”不要立刻追 kernel 名称。第一遍只填四格：数学对象是三维扩散离散；多重网格对象至少要继续查 smoother、transfer 和 coarse solver；执行对象是 GPU + 分布式 halo；证据对象应同时寻找 convergence 与 scaling。若论文正文后来发现两种实现使用不同 smoother 或容差，阅读卡就会立刻暴露“性能数字不可直接归因于硬件”这一问题。这个 worked example 的目的不是替你读论文，而是展示四格框架怎样主动生成后续问题。
 
-\section{源码阅读卡：必须记录到函数与状态对象}
+\section{源码阅读方法}
 
 对具体软件实现，建议固定填写下面七格，而不是只画一个类图：
 
@@ -50,7 +50,7 @@
 \paragraph{hypre 与 PETSc 应怎样复用同一张卡。}
 BoomerAMG 的 cycle owner 是 \texttt{hypre\_BoomerAMGCycle()}，level state 是 \texttt{A/P/R/U/F} arrays；PETSc PCMG 的 cycle owner 是 \texttt{PCMGMCycle\_Private()}，level state 则集中在 \texttt{PC\_MG\_Levels} 的 Mat/Vec/KSP 成员。对象名字不同，但七格问题完全相同。
 
-\section{主题化阅读路线}
+\section{主题阅读路线}
 
 \subsection{多重网格数学基础}
 

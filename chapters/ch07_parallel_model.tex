@@ -22,7 +22,7 @@
 逐层分析。前两层决定算法本身允许多少并行，数据层决定哪些读取会跨越所有权或地址空间边界，最后才轮到线程、warp、rank、cache、NUMA 与网络。本章的目标不是记忆并行 API，而是形成一种可以迁移到任意数值 kernel 的诊断方法。
 \end{keybox}
 
-\section{从数值语义到依赖图}
+\section{数值语义与依赖图}
 
 并行分析的第一步不是把串行代码逐行分给不同执行单元，而是先问：\textbf{每个输出由哪些输入决定，哪些先后关系是数学上必须保留的？}
 
@@ -54,7 +54,7 @@ x_i\leftarrow x_{i-1}-2x_i+x_{i+1},
 
 把逻辑任务作为节点，把必须保留的先后关系作为有向边，就得到依赖 DAG。需要特别强调：\textbf{DAG 不是从源码中唯一“读出来”的对象。}它同时取决于算法写法、任务粒度和存储组织。同一个数学问题可以存在多种合法 DAG，而高性能并行算法往往正是通过重新组织 DAG 获得更短的关键路径。
 
-\section{通过改写依赖图获得并行性}
+\section{依赖图重构与并行性}
 
 最容易形成的错误心智模型是：先有一个固定算法，再把它尽量分给更多处理器。真正的并行算法设计往往更进一步：\textbf{保持数学输出不变，同时改变中间计算结构。}
 
@@ -86,7 +86,7 @@ S=\Theta(\log N).
 \end{equation}
 有时新的 DAG 会增加少量 work、额外存储甚至重复计算，却显著减少 span、同步或通信。因而“FLOPs 更少”与“并行时间更短”不是同一个优化目标。
 
-\section{Work、Span 与处理器数量}
+\section{Work、Span 与并行度}
 
 设一个确定的计算 DAG 中所有任务代价之和为 work，记为
 \begin{equation}
@@ -139,7 +139,7 @@ Amdahl 定律是固定问题规模下的一个粗化模型。若基准运行时�
 \end{equation}
 从而 $P\rightarrow\infty$ 时上限为 $1/s$。需要正确理解它的地位：$s$ 不是算法不可改变的自然常数。更换算法、合并同步、改变 problem size、减少 coarse-level work 或把串行阶段移出热路径，都可能改变这个比例。Amdahl 更适合提醒我们\textbf{固定工作量的强缩放最终一定会饱和}，而不是用来宣告某段程序“天生只能加速到某个倍数”。
 
-\section{任务粒度、数据分解与所有权}
+\section{任务粒度与数据所有权}
 
 依赖 DAG 说明“哪些事情可以并发”，但它并没有规定“一个执行单元一次拿多少事情做”。这里必须区分\textbf{逻辑任务}与\textbf{调度单元}。
 
@@ -164,7 +164,7 @@ Amdahl 定律是固定问题规模下的一个粗化模型。若基准运行时�
 \end{equation}
 这条规则会在共享内存中表现为写区间划分，在 GPU 中表现为 thread/block 到输出的映射，在分布式内存中表现为 owned/ghost 数据模型。
 
-\section{常见数据流模式}
+\section{基本数据流模式}
 
 与其从具体 API 记忆并行写法，不如先识别 kernel 属于哪种数据流模式。
 
@@ -212,7 +212,7 @@ Reduction 把许多局部值聚合为少量输出，例如
 
 Scan 可以理解为“保留所有前缀结果的结构化 reduction”。它说明同一种数学聚合既可以拥有串行链式 DAG，也可以通过树结构获得对数 span。
 
-\section{依赖如何转化为同步与通信}
+\section{同步与通信}
 
 依赖 DAG 只规定先后关系，并没有指定用哪种机制实现它。把 DAG 映射到具体机器以后，一条依赖边才会变成 barrier、atomic、event、message completion 或 collective。
 
@@ -240,7 +240,7 @@ k\alpha+\beta M.
 }
 \end{equation}
 
-\section{从算法成本到机器时间}
+\section{并行计算的机器成本模型}
 
 Work/span 回答“算法最多能提供多少并行”；它不回答一个 task 在真实机器上执行得有多快。到了机器层，至少还要考虑计算吞吐、内存流量、同步/通信固定成本、调度粒度与负载均衡。
 
@@ -286,7 +286,7 @@ T_{\mathrm{dependency}}
 \end{itemize}
 任何一个模型都只覆盖其中一层，不能互相替代。
 
-\section{抽象模型到硬件执行的映射}
+\section{并行模型的硬件映射}
 
 到这里仍没有要求使用某一种并行 API。前面的逻辑对象可以映射到不同硬件：
 \begin{center}
@@ -310,7 +310,7 @@ reduction & thread/tree reduction & block + device reduction & local reduction +
 
 \chapref{ch:mg-parallel-operations}将把本章模型具体应用到 smoother、residual、restriction、prolongation、norm、ghost fill 和完整 V-cycle；随后\chapref{ch:shared-memory}、\chapref{ch:gpu}与\chapref{ch:mpi}再分别讨论这些对象怎样落到 CPU、GPU 与分布式内存机器上。
 
-\section{可重复的并行分析流程}
+\section{并行分析方法}
 
 面对一个新的数值 kernel，可以按下面顺序分析，而不是先选择编程接口：
 \begin{enumerate}

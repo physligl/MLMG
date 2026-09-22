@@ -22,7 +22,7 @@
 本章仍不选择 OpenMP、CUDA 或 MPI。目标是先回答一个更基础的问题：\textbf{V-cycle 中究竟哪些依赖是数学上必须存在的，哪些依赖只是某种存储或执行方式引入的，以及粗化为什么会系统性地耗尽并行度。}
 \end{keybox}
 
-\section{一个 MG Level 上究竟有哪些状态}
+\section{MG Level 的状态表示}
 
 对线性多重网格的第 $\ell$ 层，最基本的逻辑对象可以写成
 \begin{equation}
@@ -67,7 +67,7 @@ p(i,j,k)=i+n_x\bigl[(j-1)+n_y(k-1)\bigr].
 \end{equation}
 布局本身不改变数学 DAG，却决定 task 聚合以后是否具有良好的 cache line、SIMD 或 coalesced memory access。
 
-\section{把第七章模型落到 MG 操作}
+\section{多重网格操作的并行分析框架}
 
 对后面的每一个操作，不再重新发明一套问题，而是直接使用\chapref{ch:parallel-model}的分析流程。最核心的六步可以压缩为：
 
@@ -82,9 +82,9 @@ p(i,j,k)=i+n_x\bigl[(j-1)+n_y(k-1)\bigr].
 
 这样分析以后，OpenMP barrier、GPU kernel boundary、MPI halo 或 collective 都只是同一条依赖边在不同机器上的物理实现，而不是彼此无关的“特殊技巧”。
 
-\section{平滑器首先改变依赖图}
+\section{平滑器的依赖结构}
 
-\subsection{Jacobi 的并行性来自状态分离}
+\subsection{Jacobi 的状态分离}
 
 Weighted Jacobi 的完整更新是
 \begin{equation}
@@ -130,7 +130,7 @@ u^{(k+1)}\ \text{唯一写入}.
 \end{equation}
 double buffering 把原本可能由原地复用产生的 WAR/WAW 去掉了。
 
-\subsection{Gauss--Seidel 的并行障碍来自新值立即可见}
+\subsection{Gauss--Seidel 的顺序依赖}
 
 Lexicographic Gauss--Seidel 在更新 $u_i$ 时会读取本 sweep 已经产生的某些 $u_j^{(k+1)}$。因此其依赖不是存储偶然造成的，而是更新规则本身要求“新值立即进入后续计算”。在最直接排序下，DAG 会出现沿网格传播的长链。
 
@@ -151,7 +151,7 @@ Lexicographic Gauss--Seidel 在更新 $u_i$ 时会读取本 sweep 已经产生�
 
 需要保留这个条件的边界：\textbf{“两色即可”来自 stencil 耦合图的二分性，而不是 Gauss--Seidel 的普遍性质。}若离散产生对角耦合、非结构邻接或 block coupling，可能需要更多颜色，或者改用 block/line smoother。颜色数增加会同时增加并行阶段数和同步次数。
 
-\subsection{Line 与 Block Smoother 改变的是 task 粒度}
+\subsection{Line Smoother 与 Block Smoother}
 
 各向异性问题常使用 line smoother 或 block smoother。此时一个 logical task 不再是单点，而可能是“一条线上的小线性系统”或“一个 block 内的局部求解”。
 
@@ -171,7 +171,7 @@ Lexicographic Gauss--Seidel 在更新 $u_i$ 时会读取本 sweep 已经产生�
 \end{equation}
 算法收敛性与并行粒度在 smoother 上第一次直接耦合起来。
 
-\section{算子应用与残差是典型 Stencil Gather}
+\section{算子应用与残差}
 
 残差定义为
 \begin{equation}
@@ -207,9 +207,9 @@ W_i=\{r_i\}.
 }
 \end{equation}
 
-\section{Restriction 与 Prolongation 的关键是输出所有权}
+\section{限制与延拓}
 
-\subsection{Restriction 作为 Coarse-Output Gather}
+\subsection{限制的 Coarse-Output Gather}
 
 设 restriction 写成
 \begin{equation}
@@ -229,7 +229,7 @@ W_I=\{b_H(I)\},
 
 如果 fine/coarse ownership 跨 rank 改变，restriction 还会附带 redistribution，但这是\textbf{输出所有权变化}引起的数据移动，不应与局部 restriction 数值公式混成一个概念。
 
-\subsection{Prolongation 优先采用 Fine-Output Gather}
+\subsection{延拓的 Fine-Output Gather}
 
 若按 coarse point 向多个 fine points scatter，
 \begin{equation}
@@ -253,7 +253,7 @@ u_h\leftarrow u_h+Pe_H,
 \end{equation}
 并且独立的 $e_h$ 不会再被后继操作读取，则可以把式~\eqref{eq:mg-prolongation-gather}直接融合进 correction，避免物化整个 fine correction 向量。这正是\chapref{ch:parallel-model}所说的“保持语义、改写 DAG 与存储”的例子。
 
-\section{Correction、Reduction 与 Ghost Readiness}
+\section{校正、归约与 Ghost 数据就绪}
 
 Correction
 \begin{equation}
@@ -284,7 +284,7 @@ Ghost fill 应理解为一个\textbf{readiness 操作}，而不是某种固定�
 \end{itemize}
 因此“ghost cell”是存储概念，“ghost readiness”才是 DAG 概念。
 
-\section{V-Cycle 是一个嵌套 DAG}
+\section{V-Cycle 的嵌套依赖图}
 
 把一次 V-cycle 简化成一条阶段链是有用的第一近似：
 \begin{equation}
@@ -326,7 +326,7 @@ Ghost fill 应理解为一个\textbf{readiness 操作}，而不是某种固定�
 
 另一方面，式~\eqref{eq:mg-parallel-vcycle-dag}也不意味着每个阶段都必须有全局 barrier。若两个 patch 的依赖是局部的，某个 patch 的 residual/transfer 可以在它所需数据就绪后继续，而不必等待整个 level 所有 patch 完成。是否值得采用这种更细 DAG，要由 runtime 开销、实现复杂度与可重叠 work 决定。
 
-\section{粗化怎样系统性耗尽并行度}
+\section{粗化与并行度衰减}
 
 $d$ 维 full coarsening 下，未知量数近似满足
 \begin{equation}
@@ -386,7 +386,7 @@ T_{\ell,\mathrm{useful}}
 
 后面的共享内存线程收缩、GPU coarse-kernel 合并、MPI rank consolidation、agglomeration 与 bottom solver 切换，本质上都是在处理式~\eqref{eq:mg-useful-workers}导致的同一个算法事实。
 
-\section{数据生命周期决定 Fusion 与 Buffer Reuse}
+\section{数据生命周期、Kernel Fusion 与 Buffer Reuse}
 
 MG 会产生多个临时状态，但“数学对象存在”不等于“整个 solve 期间都必须独占一块数组”。可以把每个向量看成具有
 \begin{equation}
@@ -416,7 +416,7 @@ Buffer reuse 的正确判定不是“这个数组现在看起来不用了”，�
 
 Kernel fusion 也遵循同一规则。例如 residual 后立即 restriction 可以在某些局部算法中尝试 producer--consumer fusion，但只有在 coarse output ownership、fine residual 的其他用途和边界数据 readiness 都允许时才成立。\textbf{Fusion 是 DAG 重写，不是简单把两个 for-loop 拼在一起。}
 
-\section{预条件 Krylov 中存在两层同步结构}
+\section{Krylov 预条件中的同步结构}
 
 若固定 V-cycle 被用作近似逆
 \begin{equation}
@@ -445,7 +445,7 @@ z=B_{MG}r,
 
 如果 $B_{MG}$ 每次 apply 都执行固定 cycle、固定 smoother 和固定粗层策略，可以把它看成固定线性算子。若 inner tolerance、cycle 数或粗层策略随迭代变化，则 preconditioner apply 本身可能变化，需要\secref{sec:mg-preconditioner}中的 flexible Krylov 视角。
 
-\section{维数、边界与分区改变的是成本结构}
+\section{维数、边界与分区的成本结构}
 
 对边长约为 $n$ 的 $d$ 维规则子域，内部 work 与体积成正比，
 \begin{equation}
@@ -482,7 +482,7 @@ Q_{\mathrm{boundary}}\sim n^{d-1}.
 \end{equation}
 物理边界改变离散算子；partition boundary 不改变 PDE，只改变输入数据的取得方式；AMR coarse--fine interface 则需要层间插值、平均或通量匹配。三者都可能使用 ghost-like storage，却来自完全不同的数学语义。
 
-\section{MG 操作的统一并行画像}
+\section{多重网格操作的并行特征}
 
 \begin{center}
 \small
@@ -505,7 +505,7 @@ coarse solve & 依算法而定 & coarse RHS ready & 并行度塌缩、固定开�
 
 这张表不是实现菜单，而是后续硬件章节的共同语义接口。任何 OpenMP、CUDA、MPI 或混合实现都应该能说明自己如何实现这些状态依赖和所有权规则。
 
-\section{从一个新 MG Kernel 到可执行设计}
+\section{多重网格 Kernel 的并行设计}
 
 遇到新的 MG 操作或优化方案，可以按以下顺序判断：
 

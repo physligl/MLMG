@@ -20,7 +20,7 @@ MPI 的根本变化不是“线程变成进程”，而是\textbf{一个全局�
 Halo exchange、global reduction 和 coarse-grid rank consolidation 都可以从这条链自然推出。
 \end{keybox}
 
-\section{全局向量只是逻辑对象}
+\section{全局状态与本地状态}
 
 设全局未知量概念上为 $u$。分区以后
 \begin{equation}
@@ -75,7 +75,7 @@ r_p^{owned}.
 \end{equation}
 只有当所需 ghost versions 已经与 owner 当前版本一致时，本地算子才与全局 stencil 对应。
 
-\section{Ghost Readiness 比“调用 MPI”更基础}
+\section{Ghost 数据与版本一致性}
 
 考虑 rank $p$ 边界附近的 residual task。它需要一个由 rank $q$ 拥有的邻居值 $u_j$。从\chapref{ch:mg-parallel-operations}的角度看，这仍然只是一个普通 stencil gather：
 \begin{equation}
@@ -106,7 +106,7 @@ r_i^{owned,p}.
 \end{equation}
 只有真正依赖某个 ghost 的 boundary tasks 必须等待该消息；完全本地的 interior tasks 可以更早执行。
 
-\section{Halo 交换机制}
+\section{Halo 交换}
 \label{sec:mpi-halo}
 
 一次典型 halo exchange 可以分解为：
@@ -135,7 +135,7 @@ T_{\mathrm{wait/unhidden}}.
 
 在结构网格里，二维主要交换边带，三维主要交换 face halos。若 stencil 需要 edge/corner neighbors，可以直接交换更宽区域，也可以通过多阶段 face exchange 传播。选择哪种方式会改变 message count、message size 与 pack pattern。
 
-\section{Interior/Boundary 分裂暴露通信重叠}
+\section{Interior/Boundary 分解与通信重叠}
 
 把本地 residual tasks 分成
 \begin{equation}
@@ -195,7 +195,7 @@ T_{\mathrm{boundary}}
 T_{\mathrm{unhidden\ overhead}}.
 \end{equation}
 
-\section{Surface-to-Volume 决定 Strong Scaling 的几何极限}
+\section{Surface-to-Volume 与 Strong Scaling}
 
 对边长约为 $n$ 的三维立方子域，一层六面 halo 约含
 \begin{equation}
@@ -230,7 +230,7 @@ n^3.
 
 这也是\chapref{ch:benchmarking}中 strong-scaling efficiency 最终下降的一个基础原因。
 
-\section{消息个数与消息字节数必须分开}
+\section{消息数量与消息体积}
 
 点到点消息常用
 \begin{equation}
@@ -260,7 +260,7 @@ M=\sum_{j=1}^k m_j.
 }
 \end{equation}
 
-\section{分区拓扑与物理网络拓扑是两层结构}
+\section{分区拓扑与网络拓扑}
 
 数学上，rank 邻接图由空间分区决定：谁与谁共享 face/edge/corner。物理机器上，这些 ranks 又被映射到 node、socket、NIC 与 network topology。
 
@@ -280,7 +280,7 @@ p\leftrightarrow q
 
 本章先保留这个层次区分；具体系统配置仍以 profiling 与 benchmark 为准。
 
-\section{MPI 中的 MG 操作映射}
+\section{MPI 多重网格操作}
 
 \subsection{Jacobi 与 Residual}
 
@@ -356,7 +356,7 @@ s_p
 
 需要精确理解一点：collective 不一定在实现上等同于“所有 rank 同时停在 barrier”，但\textbf{任何后继操作若需要最终归约结果，就必须等待这条全局数据依赖完成。}
 
-\section{Global Reduction 是另一类 Scaling 极限}
+\section{Global Reduction 与扩展性}
 
 如果一次 Krylov iteration 含多个 dot products，而每个 dot 都需要 global collective，那么即使 local stencil 已经高度优化，外层仍可能由 reduction latency 限制。
 
@@ -381,7 +381,7 @@ T_{\mathrm{collective}}
 
 因此减少不必要 residual norms、选择 communication-avoiding/pipelined Krylov 或合并可合并的 reductions，都是在修改外层 DAG，而不是单纯优化 MPI 函数调用。
 
-\section{完整分布式 V-Cycle 是通信与计算交织的 DAG}
+\section{分布式 V-Cycle 的依赖结构}
 
 一个 level 上的典型时间线可以写成：
 
@@ -420,7 +420,7 @@ T_{\mathrm{V}}
 
 这些项之间可能重叠，最终 wall time 由 DAG critical path 决定，而不是简单字节数相加。
 
-\section{粗化会同时恶化 Local Work 与 Rank Utilization}
+\section{粗化与 Rank 并行度衰减}
 
 由\chapref{ch:mg-parallel-operations}，
 \begin{equation}
@@ -445,7 +445,7 @@ N_{\ell+1}
 
 这就是 coarse-grid rank parallelism collapse。
 
-\section{Rank Consolidation 本质是所有权重映射}
+\section{Rank Consolidation 与所有权重映射}
 
 设第 $\ell$ 层有 $N_\ell$ 个 unknowns，希望每个 active rank 至少拥有 $n_{\min}$ 个 unknowns，可以选择
 \begin{equation}
@@ -488,7 +488,7 @@ T_{\mathrm{coarse}}(P_{\ell-1}).
 
 若 hierarchy/setup 可以复用多次 solve，一些 redistribution plan 与 metadata 可以摊销；若每次 solve 都重建，则 setup cost 也必须进入 break-even。
 
-\section{Strong Scaling 与 Weak Scaling 应分别理解}
+\section{Strong Scaling 与 Weak Scaling}
 
 Strong scaling 固定全局问题。随着 rank 数增加：
 \begin{itemize}
@@ -509,7 +509,7 @@ Weak scaling 则保持每 rank local work 近似固定。此时 neighbor halo �
 
 因此“weak scaling 好”并不意味着 distributed solver 已经没有通信问题；它只说明局部 workload 没有像 strong scaling 那样被持续切碎。
 
-\section{物理边界、分区边界与 AMR 接口必须分开}
+\section{物理边界、分区边界与 AMR 接口}
 
 一个 rank 子域边界不等于 PDE 物理边界。三类接口是：
 
@@ -528,7 +528,7 @@ Weak scaling 则保持每 rank local work 近似固定。此时 neighbor halo �
 
 三者都可能使用 ghost-like storage，但数学来源完全不同。实现若只用一个“boundary flag”把它们混在一起，会同时伤害正确性与可维护性。
 
-\section{MPI 性能诊断顺序}
+\section{MPI 性能诊断}
 
 当 distributed V-cycle 扩展性变差时，建议按下面顺序定位：
 
