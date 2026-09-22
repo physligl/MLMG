@@ -2,160 +2,382 @@
 \label{ch:distributed-gpu}
 
 \begin{keybox}
-分布式 GPU 同时存在两层所有权：\textbf{MPI rank 拥有全局子域，GPU device 承载该 rank 的计算与数据}。因此优化必须同时处理 rank 间通信路径和 device 内 kernel/data locality。把单 GPU 与 MPI 两章简单叠加并不够；关键是让 owned/ghost、host/device residency 与 coarse rank-set 变化彼此一致。
+分布式 GPU 不是“MPI + CUDA 两章相加”。它把三种原本分开的概念同时放进一个执行图：
+\begin{equation}
+\boxed{
+\text{rank-level logical ownership}
+\quad+\quad
+\text{device residency}
+\quad+\quad
+\text{CPU/GPU/NIC execution dependencies}.
+}
+\label{eq:distributed-gpu-three-layers}
+\end{equation}
+对常见的一 rank 一 GPU 配置，\textbf{rank 决定哪些全局 unknowns 属于本进程，GPU 决定这些本地数据主要驻留在哪里、由谁执行 kernel}。只有在一 rank 驱动多个 GPUs 时，才需要进一步把 rank-local state 划分成 device-local ownership。这个区分是理解 GPU-aware halo、coarse redistribution 和多 GPU V-cycle 的起点。
 \end{keybox}
 
-\section{Rank--Device 映射与两层数据所有权}
+\section{逻辑所有权、数据驻留与执行位置}
 
-最常见的配置是一 rank 一 GPU。rank $p$ 的逻辑状态仍是
+在\chapref{ch:mpi}中，rank $p$ 的逻辑状态为
 \begin{equation}
-u_p^{local}=\{u_p^{owned},u_p^{ghost}\},
+u_p^{local}
+=
+\left\{
+u_p^{owned},
+u_p^{ghost}
+\right\}.
 \end{equation}
-但这些数组主要驻留在 device memory。于是所有权关系分成两层：
+这一 owned/ghost 关系仍然是分布式算法的权威语义。
+
+若采用一 rank 一 GPU，常见实现让这两个数组主要驻留在该 rank 绑定的 device memory 中：
 \begin{equation}
 \text{global cell}
-\rightarrow\text{MPI owner rank}
-\rightarrow\text{device-resident local index}.
+\rightarrow
+\text{owner rank}
+\rightarrow
+\text{rank-local index}
+\rightarrow
+\text{device-resident storage}.
+\label{eq:distributed-gpu-address-chain}
 \end{equation}
 
-如果一个 rank 驱动多个 GPUs，还要再做 rank 内 device partition；如果多个 ranks 共享一个 GPU，则必须考虑 device context 与资源竞争。教材后面默认一 rank 一 GPU，因为它最清楚地展示通信与计算关系。
+最后一条箭头描述的是\textbf{placement}，不是新的数学所有权。换句话说：
+\begin{equation}
+\boxed{
+\text{MPI ownership}
+\neq
+\text{GPU residency}.
+}
+\end{equation}
 
-\section{GPU-Aware 通信路径}
+这个区别非常重要。若某个 buffer 暂时被拷到 host，并不会改变它所对应 unknown 的 owner rank；如果一个 rank 同时驱动两块 GPUs，才需要再增加
+\begin{equation}
+\text{rank-local region}
+\rightarrow
+\text{device 0/device 1 partition}
+\end{equation}
+这一层真正影响写入责任的映射。
+
+\section{Rank--Device 映射首先是资源拓扑问题}
+
+一 rank 一 GPU 的优点是 owner、device context 与执行队列关系清楚。实际系统仍要保证：
+\begin{itemize}
+\item rank 与正确 GPU 建立稳定绑定；
+\item host thread 尽量位于靠近该 GPU/NIC 的 CPU/NUMA domain；
+\item device allocation、pinned host buffer 和 MPI endpoint 的物理位置不要无意跨越远端 socket；
+\item 多 rank 共享一 GPU 时明确资源竞争和上下文策略。
+\end{itemize}
+
+因此“rank $p$ 使用 GPU $p$”只是逻辑编号规则，不自动保证物理 affinity 正确。多 GPU 性能问题必须同时看进程放置、GPU 拓扑和 NIC 路径。
+
+\section{GPU-Aware 通信改变路径，不改变 Halo 语义}
 \label{sec:gpu-aware-path}
 
-传统 staged 路径把 device halo 拷到 host buffer，再由 MPI 发送；接收后再拷回 device：
+\chapref{ch:mpi}已经把 halo 定义为
 \begin{equation}
-D\rightarrow H\rightarrow\text{network}\rightarrow H\rightarrow D.
+u^{owned,q}
+\rightarrow
+u^{ghost,p}
 \end{equation}
-GPU-aware MPI 或等价能力允许 MPI 直接接受 device pointer，使逻辑路径接近
+的版本刷新。分布式 GPU 只是在这个数据边上增加了 memory-space 问题。
+
+传统 staged 路径可以抽象为
 \begin{equation}
-D\rightarrow\text{network}\rightarrow D.
+D
+\rightarrow
+H
+\rightarrow
+\text{network}
+\rightarrow
+H
+\rightarrow
+D,
+\label{eq:distributed-gpu-staged-path}
 \end{equation}
-是否真正走 GPUDirect/RDMA 仍取决于系统栈，但算法层可以明确区分“必须 host staging”与“device buffer 可直接参与通信”。
+其中 $D/H$ 分别表示 device/host memory。
 
-重要的是，GPU-aware 并没有消除 halo exchange；它只改变了\chapref{ch:mpi}同一个 owned-to-ghost 数据流经过哪些内存层次。
-
-\section{Halo 打包、通信与边界内核}
-
-如果 halo 在内存中不是连续区域，通常需要一个打包内核（pack kernel）把边界数据写入连续发送缓冲区。典型时间线为
+若通信栈允许直接使用 device buffer，算法层路径可近似写成
 \begin{equation}
-\text{打包}
-\rightarrow\text{MPI 发送/接收}
-\rightarrow\text{解包}
-\rightarrow\text{边界 stencil}.
+D
+\rightarrow
+\text{network}
+\rightarrow
+D.
+\label{eq:distributed-gpu-direct-path}
 \end{equation}
-在通信期间可以执行不依赖 ghost 的内部内核（interior kernel）。于是通信重叠（overlap）需要同时满足：
-\begin{enumerate}
-\item 通信真正异步推进；
-\item interior work 足够长；
-\item 打包/解包与计算的 stream 及依赖关系安排正确；
-\item 不因额外同步把重叠重新串行化。
-\end{enumerate}
+底层是否进一步使用特定 direct-memory/RDMA 机制属于系统实现问题，不能从“MPI 接受 device pointer”这一事实自动推出。
 
-三维分区中面 halo 最大，棱/角 halo 较小但消息更碎。宽 stencil 或高阶 transfer 会增加 halo 厚度，也可能扩大打包区域。
-
-\section{多 GPU V-Cycle 的双层 DAG}
-
-每个 level 同时具有 device kernel DAG 与 MPI communication DAG。以 residual 为例：
+因此 GPU-aware communication 的正确心智模型是：
 \begin{equation}
+\boxed{
+\text{同一 owned-to-ghost 语义}
+\quad
+\text{采用更短的数据路径}.
+}
+\end{equation}
+它不会减少 halo 数学需求，也不会自动减少 message count。
+
+\section{Pack--Network--Unpack 是一条跨资源数据边}
+
+结构网格的 face/edge 数据在实际布局中未必总是连续发送区。典型 halo 路径可能包含：
+\begin{equation}
+\text{device pack}
+\rightarrow
+\text{network transfer}
+\rightarrow
+\text{device unpack}
+\rightarrow
+\text{ghost ready}.
+\label{eq:distributed-gpu-halo-chain}
+\end{equation}
+
+于是 halo 成本至少包含：
+\begin{equation}
+T_{\mathrm{halo}}
+\approx
+T_{\mathrm{pack}}
++
+T_{\mathrm{network}}
++
+T_{\mathrm{unpack}}
++
+T_{\mathrm{unhidden\ sync}}.
+\end{equation}
+
+如果采用 staged host buffer，还要加入 D2H/H2D 数据搬运。若通信 buffer 可以直接参与网络传输，则这些 host staging 项可以消失或显著改变。
+
+这里不应只测“MPI call time”。一个看似网络慢的 halo，实际瓶颈可能是 device pack kernel、host staging、stream synchronization 或 unpack 后的 readiness wait。
+
+\section{多 GPU V-Cycle 只有一张统一 DAG}
+
+常见描述会说“device kernel DAG”和“MPI communication DAG”。更准确的模型是：\textbf{整个 V-cycle 只有一张跨资源依赖图，其中不同节点分别由 GPU、CPU runtime、MPI/NIC 执行。}
+
+以 residual 为例：
+\begin{equation}
+\boxed{
 \begin{aligned}
-&\text{device pack halo}\rightarrow\text{network communication}\rightarrow\text{device unpack},\\
-&\text{interior residual}\quad\parallel\quad\text{communication},\\
-&\text{ghost ready}\rightarrow\text{boundary residual}.
+&\text{device pack}
+\rightarrow
+\text{network}
+\rightarrow
+\text{device unpack}
+\rightarrow
+\text{boundary residual},
+\\
+&\text{interior residual}
+\quad\parallel\quad
+\text{network path},
+\\
+&\text{interior ready}
++
+\text{boundary ready}
+\rightarrow
+\text{restriction}.
 \end{aligned}
+}
+\label{eq:distributed-gpu-residual-dag}
 \end{equation}
-Restriction、prolongation、coarse redistribution 也需要同时考虑 device data movement 与 rank ownership changes。因此“GPU kernel 很快”并不能保证多 GPU V-cycle 快；如果 kernel 被网络或全局 reduction 的关键路径串住，单 kernel 优化收益会被削弱。
 
+这里的并发不是因为“用了两个 streams”或“用了 nonblocking MPI”，而是因为 interior residual 与远端 halo 在数据依赖上独立。Stream、event、MPI request 只是把这张 DAG 映射到具体 runtime。
 
-\section{四 GPU V-Cycle 执行轨迹}
+因此：
+\begin{equation}
+\boxed{
+\text{asynchronous API}
+\neq
+\text{automatic overlap}.
+}
+\end{equation}
+若通信不能推进、interior work 太短、pack 占满同一 GPU 资源，或存在隐式 device synchronization，理论上的并行分支仍可能在实际时间线上串行。
+
+\section{四 GPU V-Cycle 的状态轨迹}
 \label{sec:distributed-gpu-trace}
 
-前面的所有机制可以压缩到一个可追踪例子中。考虑一个 $256^3$ 的规则三维问题，采用 $2\times2\times1$ 空间分区，每个 MPI rank 绑定一块 GPU。于是细层每块 GPU 约拥有
+考虑一个 $256^3$ 三维问题，采用 $2\times2\times1$ 空间分区，每个 rank 绑定一块 GPU。细层每个 rank/GPU 约拥有
 \begin{equation}
-\frac{256^3}{4}=4{,}194{,}304
+\frac{256^3}{4}
+=
+4{,}194{,}304
 \end{equation}
-个内部未知量。以下只跟踪一次预平滑之后的 residual、restriction 和随后的粗层收缩；具体数值仅用于暴露依赖关系，不代表通用调优阈值。
+个 unknowns。
 
-\begin{figure}[htbp]
-\centering
-\begin{tikzpicture}[>=Latex,node distance=5mm and 7mm, every node/.style={font=\small}]
-  \node[draw,rounded corners,align=center] (pack) {GPU 打包\\halo};
-  \node[draw,rounded corners,align=center,right=of pack] (mpi) {非阻塞 MPI\\交换};
-  \node[draw,rounded corners,align=center,right=of mpi] (unpack) {GPU 解包\\ghost ready};
-  \node[draw,rounded corners,align=center,right=of unpack] (bdry) {边界 residual};
-  \node[draw,rounded corners,align=center,below=of mpi] (interior) {内部 residual};
-  \node[draw,rounded corners,align=center,right=of bdry] (restrict) {restriction};
-  \draw[->] (pack)--(mpi);
-  \draw[->] (mpi)--(unpack);
-  \draw[->] (unpack)--(bdry);
-  \draw[->] (bdry)--(restrict);
-  \draw[->] (interior)--(restrict);
-  \node[align=center,below=2mm of interior] {通信在途时执行不依赖 ghost 的内部工作};
-\end{tikzpicture}
-\caption{一次分布式 GPU residual/restriction 的依赖轨迹。关键不是把通信“藏起来”，而是让内部计算位于通信的独立分支上，并在 restriction 前重新汇合。}
-\label{fig:distributed-gpu-residual-trace}
-\end{figure}
+一次 residual/restriction 可以按以下逻辑推进：
 
-每个 rank 为通信打包自己拥有的边界数据并发起非阻塞 halo 交换；与此同时，只读取 owned 区且不依赖 ghost 的内部 residual 可以沿独立执行分支启动。收到邻居数据后，GPU 解包 ghost 并计算边界 residual。只有内部 residual 与边界 residual 都完成以后，restriction 才能启动。这里要区分\textbf{依赖关系}与\textbf{一种具体调度顺序}：图中的 pack 与 interior residual 没有数据依赖，实际运行时可以先后启动，也可以在不同 stream 或执行队列上并发。所谓“通信重叠”不是把若干 API 并排调用，而是让独立工作真正离开通信关键路径。
+\begin{enumerate}
+\item 每个 rank 在 GPU 上 pack 当前 owned halo；
+\item 发布 device-buffer halo communication；
+\item 同时启动不依赖 ghost 的 interior residual；
+\item ghost 到达并 unpack 后执行 boundary residual；
+\item interior/boundary residual 都 ready 后，restriction 才能消费完整 fine residual。
+\end{enumerate}
 
-继续按三个方向各粗化 2 倍，则全局未知量依次为
+关键点是 restriction 依赖\textbf{完整 residual 状态}，而 pack 与 interior residual 本身没有直接数据依赖。是否用同一 stream、不同 stream 或其他队列执行，是后端调度选择。
+
+连续三维 full coarsening 时，全局 unknown 数变为
 \begin{equation}
-256^3\rightarrow128^3\rightarrow64^3\rightarrow32^3\rightarrow\cdots.
+256^3
+\rightarrow
+128^3
+\rightarrow
+64^3
+\rightarrow
+32^3
+\rightarrow
+16^3
+\rightarrow\cdots.
 \end{equation}
-若四块 GPU 始终保持活跃，每块 GPU 上的未知量依次约为
+若始终保持四块 GPUs 活跃，则每 GPU unknown 数约为
 \begin{equation}
 4.19\times10^6,
-\quad 5.24\times10^5,
-\quad 6.55\times10^4,
-\quad 8.19\times10^3.
+\quad
+5.24\times10^5,
+\quad
+6.55\times10^4,
+\quad
+8.19\times10^3,
+\quad
+1.02\times10^3,\ldots
 \end{equation}
-假设工程上把 $16{,}384$ unknowns/GPU 作为一个\emph{示意性}最小有效粒度。忽略拓扑与分区约束时，可以先用
+
+因此粗化同时在两个维度耗尽并行度：
+\begin{itemize}
+\item 单 GPU 内 thread/block 数快速下降；
+\item 全局上继续保留全部 ranks/GPUs 的意义也快速下降。
+\end{itemize}
+
+\section{Device 并行度与 Rank 并行度是两个不同阈值}
+
+单 GPU 是否饱和，主要取决于该层有多少 blocks/warps 与每 task work；多 GPU 是否值得全部活跃，则取决于每 device work、message latency、redistribution 与 collective 成本。
+
+可以用一个示意性规则估计目标 GPU 数：
 \begin{equation}
 P_\ell^{\mathrm{target}}
 =
-\min\!\left(
+\min
+\left(
 P_{\ell-1},
-\max\!\left(1,\left\lfloor\frac{N_\ell}{n_{gpu,min}}\right\rfloor\right)
+\max
+\left(
+1,
+\left\lfloor
+\frac{N_\ell}{n_{\mathrm{gpu,min}}}
+\right\rfloor
 \right)
+\right).
 \label{eq:distributed-gpu-target-ranks}
 \end{equation}
-估计该层值得保留的 GPU 数，再把结果投影到实际允许的 rank/device 拓扑。对 $32^3$ 层，四 GPU 时只有 $8{,}192$ unknowns/GPU，因此示意策略会收缩到两个 rank/GPU，使每块 GPU 恢复到 $16{,}384$ unknowns。继续粗化到 $16^3$ 时，即使收缩到单 GPU 也只剩 $4{,}096$ unknowns；这说明 $n_{gpu,min}$ 是\textbf{效率启发式阈值}，不是必须满足的可行性约束。到达单 GPU 后，继续粗化仍会发生设备并行度塌缩，只是已经不能再通过减少 GPU 数来补偿。
+其中 $n_{\mathrm{gpu,min}}$ 是通过 benchmark 得到的效率阈值，而不是算法正确性条件。
 
-因此一次完整 V-cycle 的并行拓扑不是固定的
+即使已经收缩到一块 GPU，继续粗化以后仍会进入低利用率区。因此：
 \begin{equation}
-4\rightarrow4\rightarrow4\rightarrow4,
+\boxed{
+\text{rank/device consolidation}
+\quad
+\text{只能解决跨设备并行度过剩，}
+}
 \end{equation}
-而可能是
+不能解决单 GPU 内部已经没有足够 block 的问题。
+
+\section{Coarse Redistribution 是所有权变换}
+
+若 active GPU/rank 数由
 \begin{equation}
-\boxed{4\rightarrow4\rightarrow4\rightarrow2\rightarrow1.}
+4
+\rightarrow
+2
+\rightarrow
+1
+\end{equation}
+收缩，粗层 state 的 MPI owner set 也必须同步变化：
+\begin{equation}
+\text{fine owner set}
+\rightarrow
+\text{coarse redistribution}
+\rightarrow
+\text{coarse owner set}.
+\label{eq:distributed-gpu-owner-transition}
 \end{equation}
 
-这一步还揭示了两个必须同时核对的正确性条件。其一，rank 集合改变以后，粗层向量的所有权、active rank set 与 collective participation 必须彼此一致。常见实现是为活跃 ranks 建立更小的 communicator；也可以保留父 communicator 作为全局上下文，但任何在父 communicator 上发起的 collective 仍要求其全部成员按 MPI 语义参与，不能让所谓 inactive ranks 任意跳过。其二，回程 prolongation 前必须把 coarse correction 按反向映射送回原来的细层所有者。也就是说，coarse redistribution 不是单纯的负载均衡，而是 V-cycle 数据依赖图的一部分。
+正确性至少要求三件事：
 
-\begin{checkpointbox}
-\textbf{即时检查：}如果上述 $32^3$ 层已经收缩到两个 GPU，而下一层 $16^3$ 暂时仍保留两个 GPU，每块 GPU 只有 $2{,}048$ unknowns；若继续收缩到单 GPU，也只有 $4{,}096$ unknowns。为什么这并不违反式~\eqref{eq:distributed-gpu-target-ranks}？这个检查用于确认两件事：粗层并行度应随问题规模变化；而一旦已经缩到单 GPU，低于 $n_{gpu,min}$ 只能被视为进入低利用率 bottom region，而不能继续靠 communicator shrink 解决。
-\end{checkpointbox}
+\begin{enumerate}
+\item coarse vector/operator/metadata 都使用一致的新 owner mapping；
+\item coarse collective 只在正确的 active communicator/rank subset 上执行；
+\item V-cycle 回程 prolongation 前，coarse correction 能沿反向映射返回需要它的 fine owners。
+\end{enumerate}
 
-\section{粗网格的双重并行度塌缩}
+因此 rank consolidation 不是“让一些 GPU 休息”，而是 V-cycle 数据模型的一次显式 ownership transformation。
 
-粗化会同时减少：
+其 break-even 条件仍然是
+\begin{equation}
+T_{\mathrm{redistribute}}
++
+T_{\mathrm{coarse}}(P_{\mathrm{new}})
+<
+T_{\mathrm{coarse}}(P_{\mathrm{old}}).
+\label{eq:distributed-gpu-consolidation-break-even}
+\end{equation}
+
+\section{粗网格存在双重并行度塌缩}
+
+粗层的典型症状是：
+\begin{equation}
+\boxed{
+\text{small kernels}
++
+\text{small messages}
++
+\text{few blocks}
++
+\text{too many active GPUs}.
+}
+\end{equation}
+
+这四项会形成恶性组合：
 \begin{itemize}
-\item 每 GPU 上可执行的 threads/blocks；
-\item 全局上值得继续保持活跃的 ranks/GPUs。
+\item kernel launch/dispatch 固定成本占比上升；
+\item 单 GPU occupancy/grid saturation 下降；
+\item halo 消息更容易被 latency 主导；
+\item network endpoint 和 collective participant 数仍然过多。
 \end{itemize}
-所以多 GPU coarse problem 比单 GPU 更容易进入低利用率区。保持所有 GPUs 活跃会出现“小 kernel + 小消息 + 高 latency”；过早收缩又会支付 redistribution 成本。
 
-一种层级策略是设置最小 cells/GPU 阈值：当
+因此 coarse strategy 往往需要同时考虑：
+\begin{itemize}
+\item kernel fusion / graph replay，降低提交固定成本；
+\item 一个 thread/block 处理更多 coarse work；
+\item 改变 smoother 或 bottom solver；
+\item box agglomeration；
+\item rank/device consolidation；
+\item 必要时 CPU handoff。
+\end{itemize}
+
+CPU handoff 不能只看“CPU 对小问题 latency 更低”。必须把
 \begin{equation}
-\frac{N_\ell}{P_\ell}<n_{gpu,min}
+T_{D\rightarrow H}
++
+T_{\mathrm{CPU\ solve}}
++
+T_{H\rightarrow D}
 \end{equation}
-时，把 coarse data 聚合到更少 ranks/GPUs。之后后续 levels 只在缩小后的 communicator 上执行。最粗层还可以转 CPU direct solve，但必须把 device--host transfer 纳入成本。
+与留在 GPU 的低利用率 solve 比较。
 
-\section{全局归约与 Krylov 外层迭代}
+\section{Global Reduction 与多 GPU Krylov}
 
-多 GPU Krylov+MG 中，一次外层迭代可能包含：算子应用、若干点积与全局归约、一次 MG 预条件器，以及向量更新。MG 内部主要使用近邻 halo，而 Krylov 点积需要全局 collective；两类通信具有不同的扩展特性。
+多 GPU Krylov+MG 中，一次外层迭代通常包含：
+\begin{equation}
+\text{operator}
+\rightarrow
+\text{dot/reduction}
+\rightarrow
+\text{MG preconditioner}
+\rightarrow
+\text{vector update}
+\rightarrow\cdots
+\end{equation}
 
-为了做可加和的阶段记账，可以把一次外层迭代划分成互斥的 accounting bins：
+MG 内部主要含 nearest-neighbor halo 和 coarse redistribution；Krylov dot/norm 则会增加 global collective。两者的通信范围完全不同。
+
+为了避免重叠事件重复计时，可以用互斥 accounting bins 表示 wall time：
 \begin{equation}
 T_{Krylov}^{\mathrm{wall}}
 =
@@ -168,35 +390,87 @@ T_{MG\ preconditioner}^{\mathrm{excl}}
 T_{vector}^{\mathrm{excl}}.
 \label{eq:distributed-gpu-krylov-exclusive-cost}
 \end{equation}
-其中上标 $\mathrm{excl}$ 表示同一时刻的 wall-clock 时间只归入一个桶；$T_{op}$ 表示离散算子应用，显式稀疏矩阵路径中它可能表现为 SpMV，无矩阵路径中则是 stencil/kernel apply。若 profiler 记录的是原始 kernel、copy 或 MPI event duration，由于它们可能重叠，这些 duration 不能直接相加得到 wall time。\chapref{ch:benchmarking}会正式区分 wall time、exclusive phase time 与可重叠 event duration。预条件器的数学角色已经在\secref{sec:mg-preconditioner}建立；这里关注它与全局归约共同形成的执行关键路径。
+
+其中 $\mathrm{excl}$ 的含义是同一段 wall-clock 时间只归到一个阶段。Profiler 中不同 GPU kernels、copies 和 MPI events 若发生 overlap，其 duration 不能直接求和得到 wall time。
+
+这也说明“单 GPU kernel 快了 2 倍但多 GPU solve 只快 8\%”完全可能：真正的 critical path 可能主要由 network、global reduction 或 coarse redistribution 组成。
+
+\section{Pack、Network、Kernel 的资源竞争会破坏理想 Overlap}
+
+即使 DAG 允许 pack/network 与 interior compute 并发，也还要问它们是否竞争同一硬件资源。
+
+例如：
+\begin{itemize}
+\item pack kernel 与 interior kernel 都需要 GPU memory bandwidth；
+\item device copy engine、NIC 与 kernel 可能共享 PCIe/互连路径；
+\item pack kernel 占满 SM 或 HBM 后，interior kernel 未必能同时达到原吞吐；
+\item 为等待 MPI request 而插入的 device sync 可能阻断 stream overlap。
+\end{itemize}
+
+所以理想模型
+\begin{equation}
+T
+\approx
+\max(T_{\mathrm{comm}},T_{\mathrm{interior}})
+\end{equation}
+只是上界目标。真实 overlap 必须从 timeline 验证，而不是从 API 名称推断。
+
+\section{多 GPU V-Cycle 的诊断顺序}
+
+建议按以下层次定位：
+
+\begin{enumerate}
+\item \textbf{rank ownership}：owned/ghost 与 active communicator 是否正确；
+\item \textbf{device residency}：热路径是否出现意外 H2D/D2H；
+\item \textbf{pack/unpack}：halo 预处理是否已经成为主要 kernel；
+\item \textbf{network}：消息大小、数量与 latency/bandwidth；
+\item \textbf{overlap}：interior work 是否真的与 network 同时发生；
+\item \textbf{resource contention}：pack/network 与 interior 是否争用 HBM、copy engine、PCIe/NVLink 等资源；
+\item \textbf{single-GPU coarse utilization}：每层 block 数是否已显著低于设备并行容量；
+\item \textbf{multi-GPU coarse utilization}：每 GPU work 是否低到应该 consolidation；
+\item \textbf{global collective}：Krylov reductions 是否形成更长 critical path；
+\item \textbf{bottom strategy}：继续 GPU、融合、收缩、CPU handoff 中哪条路径实际更快。
+\end{enumerate}
+
+这套顺序可以避免把所有问题都归结为“网络慢”或“GPU 利用率低”。
 
 \section{本章小结}
 
-分布式 GPU 多重网格是“rank 所有权 + device residency”的双层映射。GPU-aware MPI 改变数据路径而不改变 halo 语义；通信重叠依赖足够的内部工作和异步推进；粗化同时削弱设备占用率与 rank 级并行度，因此粗层重分布往往是多 GPU 扩展性的核心设计点。
+分布式 GPU 多重网格的核心不是两套并行模型并排存在，而是一张跨 rank、device 和 network 的统一依赖图。Rank 决定数值所有权，device 决定主要数据驻留与 kernel 执行位置，GPU-aware communication 只改变 owned-to-ghost 数据路径。
+
+粗化会同时耗尽单 GPU 内 block-level parallelism 和全局 rank/GPU parallelism，因此多 GPU coarse levels 必须同时处理 kernel fixed cost、small-message latency、ownership redistribution 与 active communicator 缩减。最终性能只能通过 end-to-end critical path 判断，而不能由单 kernel 或单 MPI call 独立推断。
 
 \section*{习题}
-\subsection*{通信与粗层成本模型}
-\begin{enumerate}[label=\arabic*.]
-\item 一个 device halo 为 8 MB，PCIe D2H/H2D 各 20 GB/s，网络 25 GB/s。估算 staged 路径的数据搬运时间下界，并与忽略 host staging 的 GPU-aware 路径比较。
-\item 64 GPUs 上 $512^3$ 网格连续 coarsen，计算每层 cells/GPU；给定阈值 32768 cells/GPU，决定从哪层开始收缩 GPU 数。
-\item pack kernel 8 $\mu$s、network 20 $\mu$s、unpack 6 $\mu$s、interior kernel 30 $\mu$s。计算理想完全重叠与完全串行两种时间。
-\item 外层 Krylov 每步 2 次 allreduce，各 10 $\mu$s；MG preconditioner 120 $\mu$s。计算 reduction 占 iteration 比例。
 
-\item 建立 staged 与 direct-device halo path 的成本模型并推导 break-even 条件。
-\item 说明为何 GPU-aware MPI 不改变离散算子的数学结果，只改变数据移动路径。
-\item 推导 communicator shrink 后 redistribution 成本需要满足的 break-even 不等式。
-\item 解释 nearest-neighbor halo 与 global allreduce 在依赖图中的范围差异。
-\end{enumerate}
-\subsection*{多 GPU 执行实验}
+\subsection*{所有权与数据路径}
 \begin{enumerate}[label=\arabic*.]
-\item 实现 device pack/unpack + MPI halo，验证与 host staging 版本数值一致。
-\item 使用 streams/nonblocking MPI 尝试 overlap interior compute 与 halo communication。
-\item 记录多 GPU V-cycle trace，分离 pack、network、unpack、interior、boundary 时间。
-\item 实现简单 communicator shrink 原型并比较 coarse-level 时间。
+\item 对一 rank 一 GPU，分别画出 global cell、owner rank、rank-local index、device address 四层映射，并解释哪一层属于逻辑所有权。
+\item 设计一 rank 两 GPU 的 rank-local partition，指出此时哪些数据需要增加 device-local ownership/ghost。
+\item 一个 device halo 为 8 MB，PCIe D2H/H2D 各 $20\,\mathrm{GB/s}$，网络 $25\,\mathrm{GB/s}$。估算 staged path 的数据搬运下界，并与忽略 host staging 的 direct-device path 比较。
+\item 说明为什么 GPU-aware MPI 不改变离散算子结果，只改变式~\eqref{eq:distributed-gpu-staged-path}的数据移动路径。
 \end{enumerate}
-\subsection*{数据流与架构诊断}
+
+\subsection*{统一 DAG 与 Overlap}
 \begin{enumerate}[label=\arabic*.]
-\item 设计 rank/device/stream 的映射规则，说明它如何避免跨 NUMA socket 的错误 GPU affinity。
-\item 对“单 GPU kernel 优化 2 倍但多 GPU总时间只改善 8\%”建立可能的因果解释。
-\item 比较把 bottom solve 留在 GPU 与搬到 CPU 的条件。
+\item 为 residual 写出 device pack、network、unpack、interior residual、boundary residual 和 restriction 的依赖图。
+\item pack kernel 为 $8\,\mu s$、network 为 $20\,\mu s$、unpack 为 $6\,\mu s$、interior kernel 为 $30\,\mu s$。计算完全串行与理想 overlap 的阶段时间。
+\item 构造一个 DAG 允许 overlap 但实际 timeline 没有 overlap 的案例，分别从通信 progress、GPU resource contention 和隐式 synchronization 解释。
+\item 用 profiler 记录 pack、network、unpack、interior、boundary 的时间线，不允许只用各 event duration 求和估计 wall time。
+\end{enumerate}
+
+\subsection*{粗层与 Consolidation}
+\begin{enumerate}[label=\arabic*.]
+\item 对 $256^3$ 全局问题和 4 GPUs，计算连续五层 full coarsening 后每 GPU unknown 数。
+\item 给定 $n_{\mathrm{gpu,min}}=16384$，使用式~\eqref{eq:distributed-gpu-target-ranks}设计一个 $4\rightarrow2\rightarrow1$ 的目标 active-GPU 序列。
+\item 设 redistribution 需要 $0.6$ ms，4 GPU coarse solve 为 $1.8$ ms，2 GPU coarse solve 为 $0.7$ ms。判断式~\eqref{eq:distributed-gpu-consolidation-break-even}是否满足。
+\item 解释为什么已经收缩到单 GPU 后，继续粗化仍会出现 device-level parallelism collapse。
+\item 比较“留在单 GPU”“CPU handoff”两条 bottom path，列出 break-even 所需的全部可测时间。
+\end{enumerate}
+
+\subsection*{多 GPU Krylov 与诊断}
+\begin{enumerate}[label=\arabic*.]
+\item 外层 Krylov 每步含 2 次 global reductions，每次 $10\,\mu s$，MG preconditioner 为 $120\,\mu s$。计算 reductions 占简化 iteration 时间的比例。
+\item 某 fine-grid kernel 优化 2 倍，但 end-to-end solve 仅改善 8\%。构造一组 exclusive phase accounting 解释这一结果。
+\item 设计 rank/device/NIC affinity 检查表，说明如何发现 rank 绑定 GPU 正确但 CPU/NIC 拓扑错误的情况。
+\item 对一个 coarse-level 低效率案例，同时记录 blocks/SM、cells/GPU、message size、active ranks、collective time，判断是 device collapse 还是 rank collapse 先出现。
 \end{enumerate}
