@@ -15,10 +15,81 @@
 前面各执行模型章节提供机制，本章只负责把机制组合成决策流程；最终选择必须用\chapref{ch:benchmarking}的公平基准和\chapref{ch:diagnosis}的诊断流程验证。
 \end{keybox}
 
+\section{先画应用阶段图，而不是先选并行 API}
+
+很多求解器设计失败并不是因为某个 kernel 慢，而是因为\textbf{整个应用的阶段并行结构不一致}。例如一个 particle--field 程序可能同时包含
+\begin{equation}
+\text{particle transport}
+\rightarrow
+\text{charge deposition}
+\rightarrow
+\text{field solve}
+\rightarrow
+\text{particle push}
+\rightarrow
+\text{geometry update}.
+\end{equation}
+
+field solve 很适合 domain-decomposed MPI，不代表 particle transport 也适合相同 rank decomposition。反过来，粒子阶段可能更适合一个共享场副本加大量线程，而 Poisson solve 又可能希望把空间域分给多个 ranks。
+
+因此在 solver 选型以前，先为每个 phase 写出：
+
+\begin{equation}
+\boxed{
+\{\text{read state},\ \text{write state},\ \text{natural task},\ \text{preferred ownership},\ \text{required synchronization}\}.
+}
+\label{eq:architecture-phase-contract}
+\end{equation}
+
+如果两个相邻 phase 的 preferred ownership 不同，真正的架构成本不是各自单独的 kernel time，而是 ownership conversion：
+\begin{equation}
+T_{\mathrm{application}}
+=
+\sum_q T_q^{\mathrm{phase}}
++
+\sum_q T_q^{\mathrm{redistribute/synchronize}}.
+\label{eq:architecture-phase-total}
+\end{equation}
+
+这与\chapref{ch:distributed-gpu}中 coarse redistribution 的逻辑相同，只是现在发生在不同物理/数值 phase 之间。
+
+\section{数据所有权与执行资源是两个不同决策}
+
+一个常见错误是把“rank 数”直接当成“数据怎么存”。更稳定的软件架构应显式区分：
+
+\begin{enumerate}
+\item \textbf{application ownership}：主状态由谁持有，哪些对象是权威版本；
+\item \textbf{solver ownership}：进入求解器以后，网格/矩阵怎样分区；
+\item \textbf{execution placement}：当前 kernel 由哪个 CPU thread/GPU 执行；
+\item \textbf{active resource set}：当前 phase/level 实际参与计算的 ranks/threads/devices。
+\end{enumerate}
+
+前面源码已经给出真实例子。AMReX 的 \texttt{DistributionMapping} 表示 coarse-grid ownership，而 \texttt{BottomCommunicator()} 可以让真正 bottom solve 只使用一个子 communicator；PETSc GAMG 的 \texttt{createlevel()} 可以在构造 coarse matrix 时减少 active processes。它们都说明：
+\begin{equation}
+\boxed{
+\text{应用的全局 rank 集}
+\neq
+\text{某个 solver level 必须使用的 active rank 集}.
+}
+\label{eq:architecture-global-vs-active}
+\end{equation}
+
+因此“程序由 64 个 MPI ranks 启动”并不意味着每一级 multigrid 都应该让 64 个 ranks 工作。
+
 \section{问题画像与架构筛选}
 
 \subsection{问题特征描述}
-在选择框架前，至少记录：全局 unknown 数、每层 box/patch 数、是否 AMR、系数是否强跳变、同一 hierarchy 会重复求解多少次、单节点内存是否足够、节点中 CPU socket 与 GPU 数量、节点间网络特征。没有这张画像，“应该用 MPI 还是 OpenMP”通常没有稳定答案。
+在选择框架前，至少记录四组信息。
+
+第一组是\textbf{数值结构}：全局 unknown 数、每层 box/patch 数、是否 AMR、系数是否强跳变、smoother/coarse strategy。
+
+第二组是\textbf{生命周期}：同一 hierarchy 会重复求解多少次，矩阵/系数多久变化一次，setup 能否复用，solver object 是否长期驻留。
+
+第三组是\textbf{应用耦合}：求解前后的 phase 分别怎样拥有数据，是否需要 particle/mesh/field 之间的重分布，哪些状态允许复制。
+
+第四组才是\textbf{机器结构}：socket、NUMA、GPU、NIC、节点内存和节点间网络。
+
+没有这四组画像，“应该用 MPI 还是 OpenMP”通常没有稳定答案。
 
 
 \subsection{架构与算法匹配}
@@ -31,6 +102,74 @@
 
 \paragraph{一个不做“架构排名”的选型例子。}
 设某规则三维 Poisson 问题需要反复求解同一 hierarchy，单节点内存足够容纳全部数据。这个信息只能把候选范围缩小到“单节点 CPU shared memory”与“单 GPU/多 GPU 中能够完整驻留数据的方案”，还不能直接选出赢家。接下来分别检查：CPU 端是否已接近内存带宽上限；GPU 端最粗层是否出现严重 small-kernel；setup 是否可复用；数据是否需要频繁往返 host/device。最后用\chapref{ch:benchmarking}的相同数学路径做规模扫描，再用\chapref{ch:diagnosis}解释 crossover。这个例子体现本章的原则：\textbf{架构选择是约束逐步筛选，不是先验打分。}
+
+\section{Solver 生命周期必须成为架构的一等对象}
+
+从\chapref{ch:software}的源码可以看到，成熟库都会把 setup state 和 apply state 分开。应用层也应明确 solver 生命周期：
+
+\begin{equation}
+\boxed{
+\text{construct}
+\rightarrow
+\text{build hierarchy/setup}
+\rightarrow
+\underbrace{\text{apply/solve}\rightarrow\cdots\rightarrow\text{apply/solve}}_{N_{\mathrm{reuse}}}
+\rightarrow
+\text{rebuild/destroy}.
+}
+\label{eq:architecture-solver-lifecycle}
+\end{equation}
+
+若每次 Poisson solve 都重建 CSR、KSP、AMG hierarchy 或 communication plan，那么 benchmark 中看到的“solver 慢”可能主要是 architecture/lifecycle 问题，而不是迭代算法问题。
+
+因此接口至少应允许下面几类状态长期存在：
+
+\begin{itemize}
+\item geometry/hierarchy 与 level metadata；
+\item ownership/communication plan；
+\item operator coefficients 或可更新的 coefficient view；
+\item smoother/bottom-solver setup；
+\item persistent workspace/buffer pool；
+\item backend execution resources，例如 stream、thread team 或 communicator。
+\end{itemize}
+
+真正需要每次 solve 刷新的通常只是 RHS、initial guess、部分 coefficients 和 convergence state。哪些对象可复用必须由数值依赖决定，而不是由“函数写起来方便”决定。
+
+\section{复制状态还是分布状态}
+
+某些耦合应用会遇到一个重要选项：field/mesh 状态是否在多个 workers/ranks 上复制。
+
+若完整场状态内存为 $M_f$，复制到 $P$ 个 rank 的理想内存成本约为
+\begin{equation}
+M_{\mathrm{rep}}
+\approx
+P M_f,
+\end{equation}
+但 particle/local query 可以完全读取本地副本。
+
+分布式存储则近似为
+\begin{equation}
+M_{\mathrm{dist}}
+\approx
+M_f
++
+M_{\mathrm{ghost}}
++
+M_{\mathrm{metadata}},
+\end{equation}
+但跨分区的 particle/query/field operation 可能需要通信。
+
+因此复制与分布的基本交换是
+\begin{equation}
+\boxed{
+\text{memory replication}
+\quad\leftrightarrow\quad
+\text{runtime communication / ownership conversion}.
+}
+\label{eq:architecture-replicate-distribute}
+\end{equation}
+
+场规模相对小、读请求极多且更新频率低时，复制可能有工程吸引力；场规模巨大或更新频繁时，分布式 ownership 更自然。这个判断必须放在整个应用的 phase 图中做，而不能只看 Poisson solver 本身。
 
 \section{候选架构路径}
 
@@ -64,9 +203,20 @@ GPU 是否划算不存在脱离硬件和算法的固定 unknown 阈值。\chapre
 
 若必须同时覆盖 NVIDIA/AMD/Intel，CUDA-only 的维护成本会升高。可以考虑 HIP/SYCL/Kokkos/OpenMP target，或者像 AMReX 那样在高层保持统一 API、底层使用原生后端\cite{amrexGPUdocs2026}。但任何 performance-portability 选择都应配套跨架构 benchmark，而不是把“编译成功”当作完成。
 
-\subsection{纯 MPI 与 MPI+OpenMP}
+\subsection{纯 MPI、纯共享内存与 MPI+OpenMP}
 
-设节点有 $C$ CPU cores。纯 MPI 使用 $C$ ranks；混合模型使用 $R$ ranks，每 rank $T=C/R$ threads。
+设节点有 $C$ CPU cores。至少存在三种不同软件结构：
+\begin{equation}
+\boxed{
+C\text{ ranks}\times1\text{ thread},
+\qquad
+1\text{ rank}\times C\text{ threads},
+\qquad
+R\text{ ranks}\times(C/R)\text{ threads}.
+}
+\end{equation}
+
+这三者不仅是启动参数不同，还会改变 ownership、solver state duplication、halo 数量、NUMA placement 与 coarse-level active set。
 
 纯 MPI 的优点：
 \begin{itemize}
@@ -81,10 +231,87 @@ GPU 是否划算不存在脱离硬件和算法的固定 unknown 阈值。\chapre
 \item 每 rank 复制的 solver 数据结构可能增加内存。
 \end{itemize}
 
-MPI+OpenMP 可以减少 rank 数和网络 endpoints，但需要处理 NUMA、thread scaling、barrier 与 MPI thread level。对于 memory-bound stencil，一个 socket 上 32 threads 未必比 8--16 threads 更快；最佳组合必须测量。
+纯共享内存最适合“单节点内状态天然共享、热点操作可线程化”的情形，它避免 rank 间 halo 和 per-rank solver duplication，但要求 solver 本身真正具有 thread-parallel kernel；如果某关键阶段仍只有单线程，那么把 MPI ranks 全部收掉只会暴露新的串行瓶颈。
+
+MPI+OpenMP 可以减少 rank 数和网络 endpoints，但需要处理 NUMA、thread scaling、barrier 与 MPI thread level。若只有 rank 主线程调用 MPI，\texttt{MPI\_THREAD\_FUNNELED} 一类模式即可表达这种 ownership；若多个 worker 直接发起 MPI，则需要更强的线程支持，并承担相应 runtime 复杂度。
+
+对于 memory-bound stencil，一个 socket 上 32 threads 未必比 8--16 threads 更快；最佳组合必须同时测量 bandwidth saturation、barrier、NUMA 与每 level 的 useful worker 数。
+
+\section{把架构选择写成约束求解，而不是偏好}
+
+候选架构可以先经过四个硬约束过滤：
+
+\paragraph{内存约束.}
+\begin{equation}
+M_{\mathrm{state}}
++
+M_{\mathrm{hierarchy}}
++
+M_{\mathrm{workspace}}
++
+M_{\mathrm{replication}}
+\le
+M_{\mathrm{available}}.
+\end{equation}
+
+\paragraph{最小有效工作粒度.}
+对每个关键 phase/level，需要
+\begin{equation}
+\frac{W_{\ell,q}}
+{P_{\ell,q}^{\mathrm{active}}}
+\gtrsim
+g_{q,\min},
+\end{equation}
+否则固定调度/同步/launch 成本会主导。
+
+\paragraph{所有权转换约束.}
+若两个相邻 phase 使用不同 decomposition，应显式预算
+\begin{equation}
+T_{\mathrm{convert}}
+\end{equation}
+而不是把它藏进某个 solver call。
+
+\paragraph{生命周期摊销约束.}
+昂贵 setup 的方案只有在
+\begin{equation}
+T_{\mathrm{setup}}
++
+N_{\mathrm{reuse}}T_{\mathrm{solve}}
+\end{equation}
+具有优势时才有意义。
+
+通过硬约束以后，剩余候选再进入\chapref{ch:benchmarking}的受控实验与平台最优实验，最后用\chapref{ch:diagnosis}解释差异。
+
+\section{一个典型的跨阶段冲突：粒子与场求解}
+
+考虑一个抽象 particle--field 应用。若 field solve 使用 $P$ 个空间分区 MPI ranks，而 particle transport 的自然并行方式是大量共享只读 field 的 workers，就可能出现三种架构：
+
+\begin{enumerate}
+\item \textbf{全程空间分区 MPI}：field ownership 一致，但粒子跨分区时需要迁移或远端访问；
+\item \textbf{单份共享 field + rank 内线程粒子}：粒子简单，但 field solver 必须具备足够强的 shared-memory parallelism；
+\item \textbf{field 分布求解 + solve 后复制/重分布}：以额外 memory 和 conversion cost 换粒子阶段更简单的读取模型。
+\end{enumerate}
+
+没有哪一个可以仅凭“Poisson MPI 更成熟”或“OpenMP 没通信”直接胜出。真正比较的是
+\begin{equation}
+T_{\mathrm{step}}
+=
+T_{\mathrm{particles}}
++
+T_{\mathrm{field}}
++
+T_{\mathrm{ownership\ conversion}}
++
+T_{\mathrm{geometry/other}}.
+\label{eq:architecture-coupled-step}
+\end{equation}
+
+这类问题说明：\textbf{局部最优 solver architecture 可能不是全应用最优 architecture。}
 
 \section{本章小结}
-本章把前面各章组合成工程决策：shared-memory、distributed-memory、accelerator、hybrid model、rank/thread mapping 与 bottom solver strategy。这里不存在脱离问题规模和机器结构的“最佳框架”。
+本章把架构设计从“硬件/API 选型”提升为应用级所有权设计。先画 phase graph，明确每个阶段读写什么状态、最自然的 task 与 ownership；再设计 solver 生命周期、setup 复用与 active resource set；最后才选择 shared memory、MPI、GPU 或 hybrid backend。
+
+前面源码中的 AMReX \texttt{DistributionMapping/BottomCommunicator} 与 PETSc GAMG coarse-process reduction 都说明 active resource set 可以随 hierarchy 改变。更一般地，不同应用 phase 也可以采用不同并行粒度。最终目标不是让某个 solver kernel 单独最快，而是最小化完整 application step 的 time-to-solution 与 ownership conversion 成本。
 
 \section*{习题}
 
@@ -104,12 +331,12 @@ MPI+OpenMP 可以减少 rank 数和网络 endpoints，但需要处理 NUMA、thr
 \begin{enumerate}[label=\arabic*.]
 \item 写一个配置扫描脚本，对 rank/thread/GPU 数组合运行固定 benchmark，收集内存、cycle time、iteration count 与 setup time，输出 Pareto 候选。
 \item 对同一节点比较纯 MPI、MPI+OpenMP、单 GPU（若可用），确保数值路径一致并绘制 time breakdown。
-\item 实现一个简单 architecture advisor：输入 unknowns、bytes/cell、节点内存、GPU 数、网络参数，先排除内存不可行配置，再按 benchmark 数据排序剩余候选。
+\item 实现一个简单 architecture advisor：除 unknowns、bytes/cell、节点/GPU/网络外，再输入 phase graph、$N_{\mathrm{reuse}}$ 与 ownership-conversion cost；先排除内存/粒度不可行配置，再按完整 application-step benchmark 数据筛选剩余候选。
 \end{enumerate}
 
 \subsection*{架构决策}
 \begin{enumerate}[label=\arabic*.]
 \item 给定一个假想问题画像（规模、AMR/规则网格、重复求解次数、节点/GPU 数），按“内存可行性 $\rightarrow$ 局部粒度 $\rightarrow$ 通信拓扑 $\rightarrow$ benchmark”完成架构决策，不允许用经验口号直接排名。
-\item 对粒子--场耦合应用，场求解器适合 MPI 但粒子阶段难以分布。设计至少两种整体架构，并分析 idle resources、内存复制和同步成本。
+\item 对粒子--场耦合应用，分别设计“全程 MPI 空间分区”“共享 field + 线程粒子”“field 分布求解后复制/重分布”三种整体架构，用式~\eqref{eq:architecture-coupled-step}比较 idle resources、内存复制、particle migration 与 ownership conversion。
 \item 一个 GPU 方案单次 solve 最快，但 setup 和数据迁移使短任务更慢。说明产品环境中应如何依据任务生命周期而不是单 kernel 峰值做选择。
 \end{enumerate}
