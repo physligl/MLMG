@@ -1,358 +1,1092 @@
-\chapter{几何多重网格、代数多重网格与软件实现}
+\chapter{几何多重网格、代数多重网格与源码实现}
 \label{ch:software}
 
 \begin{keybox}
-\textbf{本章先分类算法，再看软件。}如果层级关系来自已知网格几何，这是 GMG；如果主要从矩阵的非零图和数值耦合构造层级，这是 AMG。只有先理解两类 hierarchy 如何产生，比较 AMReX、hypre、PETSc、MueLu、Ginkgo 与 AmgX 才不会变成 API 名词表。
+\textbf{本章不把 AMReX、hypre、PETSc 等软件当作 API 名词表，而是直接从源码恢复它们的求解器结构。}
+阅读重点固定为四个问题：
+\begin{equation}
+\boxed{
+\text{谁构造 hierarchy}
+\rightarrow
+\text{谁保存 level state}
+\rightarrow
+\text{谁驱动 cycle}
+\rightarrow
+\text{每个数学操作最终调用什么 kernel/object}.
+}
+\label{eq:software-source-reading-chain}
+\end{equation}
+AMReX MLMG 用来观察 block-structured GMG；hypre BoomerAMG 用来观察分布式 AMG；PETSc PCMG/PCGAMG 用来观察对象组合式求解器架构。读完本章以后，读者应能从一个成熟求解器的源码入口一路追到 smoother、restriction、coarse operator、bottom solve 与 coarse-process reduction，而不是只会配置参数。
 \end{keybox}
 
-\section{多重网格层次的构造}
-\label{sec:hierarchy-construction}
+\section{源码快照与阅读边界}
 
-\chapref{ch:two-grid}和\chapref{ch:mg-cycles}一直默认“粗网格已经知道怎样构造”。这一假设在几何多重网格中很自然：规则 Poisson 已知每个未知量的空间位置，所以可以直接把 $h$ 网格变成 $2h$ 网格，并写出 $R$、$P$ 和粗网格 stencil。代数多重网格（algebraic multigrid, AMG）面对的输入却可能只有一个稀疏矩阵 $A$；它必须从 $A$ 自己恢复出“哪些未知量应该共同形成一个粗尺度表示”。
+为了避免源码随版本变化导致函数位置漂移，本章按固定源码快照讨论：
+
+\begin{center}
+\small
+\begin{tabularx}{0.98\textwidth}{>{\bfseries}p{2.0cm}p{3.1cm}X}
+\toprule
+软件 & 源码快照 & 本章重点文件\\
+\midrule
+AMReX &
+\texttt{fca855037a2184aae8fbfe4ff7b5435e182e7cfa} &
+\texttt{Src/LinearSolvers/MLMG/AMReX\_MLMG.H}，
+\texttt{AMReX\_MLLinOp.H}\\
+hypre &
+\texttt{5b582610a113ede9162a5744d33873b860498a11} &
+\texttt{src/parcsr\_ls/par\_amg\_setup.c}，
+\texttt{par\_cycle.c}，
+\texttt{par\_strength.c}，
+\texttt{par\_rap.c}\\
+PETSc &
+\texttt{0239ddb405da990d3e3adce5fef62d8582258e84} &
+\texttt{include/petsc/private/pcmgimpl.h}，
+\texttt{src/ksp/pc/impls/mg/mg.c}，
+\texttt{gamg/gamg.c}\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+对应源码可从以下固定链接进入：
+
+\begin{itemize}
+\item \href{https://github.com/AMReX-Codes/amrex/blob/fca855037a2184aae8fbfe4ff7b5435e182e7cfa/Src/LinearSolvers/MLMG/AMReX_MLMG.H}{AMReX \texttt{AMReX\_MLMG.H}}
+\item \href{https://github.com/AMReX-Codes/amrex/blob/fca855037a2184aae8fbfe4ff7b5435e182e7cfa/Src/LinearSolvers/MLMG/AMReX_MLLinOp.H}{AMReX \texttt{AMReX\_MLLinOp.H}}
+\item \href{https://github.com/hypre-space/hypre/blob/5b582610a113ede9162a5744d33873b860498a11/src/parcsr_ls/par_amg_setup.c}{hypre \texttt{par\_amg\_setup.c}}
+\item \href{https://github.com/hypre-space/hypre/blob/5b582610a113ede9162a5744d33873b860498a11/src/parcsr_ls/par_cycle.c}{hypre \texttt{par\_cycle.c}}
+\item \href{https://github.com/petsc/petsc/blob/0239ddb405da990d3e3adce5fef62d8582258e84/include/petsc/private/pcmgimpl.h}{PETSc \texttt{pcmgimpl.h}}
+\item \href{https://github.com/petsc/petsc/blob/0239ddb405da990d3e3adce5fef62d8582258e84/src/ksp/pc/impls/mg/mg.c}{PETSc \texttt{mg.c}}
+\item \href{https://github.com/petsc/petsc/blob/0239ddb405da990d3e3adce5fef62d8582258e84/src/ksp/pc/impls/gamg/gamg.c}{PETSc \texttt{gamg.c}}
+\end{itemize}
+
+本章不是逐行注释整个项目。我们只追能够解释求解器骨架的调用链，并把它重新映射到前面已经建立的
+\[
+\text{state}
+\rightarrow
+\text{DAG}
+\rightarrow
+\text{ownership}
+\rightarrow
+\text{machine cost}
+\]
+心智模型。
+
+\section{先保留一个最小 GMG/AMG 区分}
+
+几何多重网格与代数多重网格的根本区别发生在 \textbf{setup}。
+
+GMG 已知几何层级，因此可以直接构造
+\begin{equation}
+\Omega_h
+\rightarrow
+\Omega_H,
+\qquad
+R,\ P,\ A_H.
+\end{equation}
+
+AMG 的输入通常是稀疏矩阵 $A$。它必须先从矩阵恢复粗空间：
+\begin{equation}
+\boxed{
+A
+\rightarrow
+S\ \text{(strength graph)}
+\rightarrow
+\text{coarsening/aggregation}
+\rightarrow
+P,R
+\rightarrow
+A_c=RAP.
+}
+\label{eq:software-amg-setup-chain}
+\end{equation}
+
+这一差别在源码里非常明显。AMReX 的主要复杂度集中在几何层级、BoxArray、DistributionMapping 与离散算子；BoomerAMG 的 setup 则直接出现 strength matrix、C/F splitting、interpolation builder 和 ParCSR RAP。
+
+AMG 的两个基础复杂度指标仍然值得保留：
+\begin{equation}
+C_g
+=
+\frac{\sum_{\ell=0}^{L}n_\ell}{n_0},
+\qquad
+C_o
+=
+\frac{\sum_{\ell=0}^{L}\operatorname{nnz}(A_\ell)}
+{\operatorname{nnz}(A_0)}.
+\label{eq:software-complexities}
+\end{equation}
+后面会看到，PETSc GAMG 甚至直接在 setup 源码中统计并打印 operator complexity。
+
+\section{AMReX MLMG：Cycle Driver 与 Linear Operator 分离}
+\label{sec:software-amrex-source}
+
+AMReX MLMG 最值得学习的不是某个 stencil，而是它把\textbf{求解器控制流}和\textbf{离散算子实现}分成两个对象：
+
+\begin{equation}
+\boxed{
+\texttt{MLMGT}
+=
+\text{cycle / convergence / temporary-state driver}
+}
+\end{equation}
+\begin{equation}
+\boxed{
+\texttt{MLLinOpT}
+=
+\text{operator / smooth / restriction / interpolation / hierarchy metadata}.
+}
+\end{equation}
+
+这是理解整个源码的第一把钥匙。
+
+\subsection{\texttt{solve()} 只负责外层求解控制}
+
+从 \texttt{MLMGT<MF>::solve()} 进入，可以看到核心顺序近似为
+
+\begin{verbatim}
+prepareForSolve(a_sol, a_rhs);
+computeMLResidual(finest_amr_lev);
+...
+for (int iter = 0; iter < niters; ++iter) {
+    oneIter(iter);
+    computeResidual(finest_amr_lev);
+    ...
+}
+\end{verbatim}
+
+源码并没有在 \texttt{solve()} 里展开 stencil。它做的是：
+
+\begin{enumerate}
+\item 根据输入 solution/RHS 建立 solve state；
+\item 计算初始 composite residual；
+\item 做全局 residual/RHS norm reduction；
+\item 反复调用 \texttt{oneIter()}；
+\item 每轮以后重新计算 residual 并判断收敛。
+\end{enumerate}
+
+因此 \texttt{solve()} 对应的是\chapref{ch:parallel-model}中的\textbf{最外层控制 DAG}，不是局部数值 kernel。
+
+源码还有一个很值得注意的 GPU 细节：当调用
+\texttt{setNoGpuSync(true)} 时，\texttt{solve()} 用
+\texttt{Gpu::SyncAtExitOnly} 与
+\texttt{Gpu::SingleStreamRegion}
+包住整段求解。这说明 AMReX 已经把“函数调用结束是否隐式同步”视为求解器级策略，而不是每个 kernel 自己决定。
+
+\subsection{\texttt{oneIter()} 同时处理 AMR hierarchy 与 MG hierarchy}
+
+AMReX MLMG 有两个不同的层级索引：
+
+\begin{equation}
+\boxed{
+\texttt{alev}
+=
+\text{AMR level},
+\qquad
+\texttt{mglev}
+=
+\text{某个 AMR level 内部的 multigrid level}.
+}
+\label{eq:software-amrex-two-hierarchies}
+\end{equation}
+
+\texttt{oneIter()} 先沿 AMR level 从 fine 向 coarse 推进：
+\begin{verbatim}
+for (int alev = finest_amr_lev; alev > 0; --alev) {
+    miniCycle(alev);
+    LocalAdd(sol[alev], cor[alev][0], ...);
+    computeResWithCrseSolFineCor(alev-1, alev);
+    ...
+}
+\end{verbatim}
+
+而 \texttt{miniCycle(alev)} 的主体只是
+\begin{verbatim}
+mgVcycle(amrlev, 0);
+\end{verbatim}
+
+也就是说：
+
+\begin{equation}
+\boxed{
+\texttt{oneIter}
+\text{ 管 AMR 复合层级，}
+\qquad
+\texttt{mgVcycle}
+\text{ 管单个 AMR level 内部的 MG 层级。}
+}
+\end{equation}
+
+这是阅读 AMReX MLMG 时最容易混淆的结构。若把 \texttt{alev} 和 \texttt{mglev} 都理解成“粗网格层”，后面的 coarse-fine residual 与 correction 逻辑就会完全看乱。
+
+\subsection{\texttt{mgVcycle()} 几乎就是教材公式的直接实现}
+
+AMReX 的 \texttt{mgVcycle()} 很适合源码精读，因为它与标准 V-cycle 一一对应。
+
+下降阶段的核心源码是：
+
+\begin{verbatim}
+setVal(cor[amrlev][mglev], 0.0);
+linop.smooth(..., cor[amrlev][mglev],
+             res[amrlev][mglev], ..., nu1);
+
+computeResOfCorrection(amrlev, mglev);
+
+linop.restriction(amrlev, mglev+1,
+                  res[amrlev][mglev+1],
+                  rescor[amrlev][mglev]);
+\end{verbatim}
+
+数学上就是
+\begin{align}
+e_\ell &\leftarrow S_\ell^{\nu_1}(0,r_\ell),\\
+\tilde r_\ell &\leftarrow r_\ell-A_\ell e_\ell,\\
+r_{\ell+1} &\leftarrow R_\ell\tilde r_\ell.
+\end{align}
+
+到底以后调用哪个 OpenMP loop、GPU kernel、EB operator 或 ghost fill，不由 \texttt{mgVcycle()} 决定；它只调用 \texttt{linop} 提供的数值动作。
+
+上升阶段同样直接：
+
+\begin{verbatim}
+addInterpCorrection(amrlev, mglev);
+linop.smooth(amrlev, mglev,
+             cor[amrlev][mglev],
+             res[amrlev][mglev], false, nu2);
+\end{verbatim}
+
+对应
+\begin{align}
+e_\ell &\leftarrow e_\ell + P_\ell e_{\ell+1},\\
+e_\ell &\leftarrow S_\ell^{\nu_2}(e_\ell,r_\ell).
+\end{align}
+
+因此 AMReX 的软件结构可以压缩为：
+\begin{equation}
+\boxed{
+\texttt{MLMGT}
+\text{ 保持 V-cycle 语义，}
+\quad
+\texttt{MLLinOpT}
+\text{ 提供具体算子实现。}
+}
+\label{eq:software-amrex-driver-operator}
+\end{equation}
+
+这正是\chapref{ch:portability}所说的 numerical semantics 与 backend implementation 分离的真实工程例子。
+
+\subsection{Bottom solver 是显式策略边界}
+
+在最粗 MG level，\texttt{bottomSolve()} 最终进入
+\texttt{actualBottomSolve()}。源码首先切换到
+
+\begin{verbatim}
+ParallelContext::push(linop.BottomCommunicator());
+\end{verbatim}
+
+然后根据策略分支：
+
+\begin{itemize}
+\item \texttt{BottomSolver::smoother}：继续调用 \texttt{linop.smooth}；
+\item \texttt{BottomSolver::hypre}：调用 \texttt{bottomSolveWithHypre}；
+\item \texttt{BottomSolver::petsc}：调用 \texttt{bottomSolveWithPETSc}；
+\item \texttt{custom}：调用 operator 自己提供的 coarse solver；
+\item 其他内部路径：使用 AMReX 的 CG/BiCGStab bottom solve。
+\end{itemize}
+
+这里有一个重要实现结论：
 
 \begin{keybox}
-\textbf{AMG setup 的核心心智链：}
-\[
-\boxed{
-A\rightarrow\text{matrix graph}\rightarrow\text{strong connections}
-}
-\]
-\[
-\boxed{
-\text{coarse variables / aggregates}\rightarrow P,R\rightarrow A_c=RAP
-}
-\]
-然后对 $A_c$ 重复同样过程，直到问题足够小。Setup 结束后，solve 阶段才在这个层级上执行已经熟悉的 smooth--restrict--coarse solve--prolong 循环。
+在 AMReX MLMG 中选择 hypre/PETSc 作为 bottom solver，并不意味着整个 multigrid hierarchy 改成 hypre/PETSc。AMReX 仍然负责 fine/intermediate GMG levels，只在真正 bottom level 把线性系统交给外部求解器。
 \end{keybox}
 
-\subsection{矩阵图}
+这类“外部库只接管底层”的组合模式，在大型 PDE 软件中比“整套 solver 全部替换”常见得多。
 
-先把\chapref{ch:discretization}的稀疏矩阵重新解释成图。给定 $A\in\mathbb R^{n\times n}$，为每个未知量 $u_i$ 建一个顶点；若 $a_{ij}\neq0$ 且 $i\neq j$，就在顶点 $i,j$ 之间建立一条代数连接。这样得到的图称为\textbf{矩阵图（matrix graph）}。
+\section{AMReX 的粗层优化直接写进 Grid/Ownership 数据结构}
 
-一维 Poisson 的三对角矩阵
+前几章把 agglomeration 和 consolidation 分别解释为
+\textbf{任务粒度重组}与\textbf{所有权收缩}。在
+\texttt{MLLinOpT::defineGrids()} 中，这两个概念可以直接从源码看到。
+
+\subsection{Agglomeration 改的是 \texttt{BoxArray}}
+
+AMReX 首先检查 coarse AMR level 是否适合 agglomeration，然后连续测试 MG coarsening。
+
+其触发判据之一可以读成：
 \begin{equation}
-A=\frac1{h^2}
-\begin{bmatrix}
-2&-1&&&\\
--1&2&-1&&\\
-&\ddots&\ddots&\ddots&\\
-&&-1&2&-1\\
-&&&-1&2
-\end{bmatrix}
+\frac{\text{coarsened domain points}}
+{\text{number of boxes}}
+<
+\texttt{agg\_grid\_size}^{d}.
 \end{equation}
-对应的矩阵图就是一条链：$1-2-3-\cdots-n$。在 GMG 中，我们知道这条链来自一维空间相邻关系；在 AMG 中，算法只看到矩阵，却仍能从非零结构恢复“谁和谁直接耦合”。
 
-\subsection{强连接}
+触发以前，源码主要做
+\begin{verbatim}
+m_grids[0].push_back(coarsen(a_grids[0], ...));
+m_dmap [0].push_back(a_dmap[0]);
+\end{verbatim}
 
-仅知道 $a_{ij}\neq0$ 还不够。若某条耦合极弱，让它与最强耦合同等重要会使粗空间过度复杂。因此经典 AMG 会进一步定义\textbf{强连接（strong connection）}。对 Poisson 一类具有负非对角元的 M-matrix 型问题，一个常见示意准则是
-\begin{equation}
--a_{ij}
-\ge
-\theta\max_{k\ne i}(-a_{ik}),
-\qquad 0<\theta<1.
-\label{eq:amg-strength-example}
-\end{equation}
-满足条件的 $j$ 被认为与 $i$ 强耦合。
+也就是继续沿用原 patch 拓扑和原 ownership。
 
-式~\eqref{eq:amg-strength-example}不是所有 AMG 的统一定义；不同矩阵类型、符号结构和算法会采用不同 strength measure。这里需要建立的心智模型只有一个：\textbf{AMG 不把所有非零元等价看待，而是试图从数值系数中识别哪些连接主导“难消误差”的传播。}
+触发以后，源码改为从更大的 coarse bounding box 重新生成
+\texttt{BoxArray}，并用 \texttt{maxSize(agg\_grid\_size)} 控制 box 尺寸。
 
-\subsection{粗变量与聚合}
-
-知道强连接以后，需要决定粗层保留什么自由度。常见路线有两类。
-
-\textbf{Classical AMG} 常把 fine-level unknowns 分成 coarse variables（C-points）和 fine variables（F-points）。C-points 直接成为下一层未知量，F-points 则通过附近 C-points 插值得到。
-
-\textbf{Aggregation AMG} 不一定显式做 C/F splitting，而是把若干强连接顶点组成 aggregate，每个 aggregate 再产生一个或多个粗层自由度。二者实现不同，但认知目标相同：
+所以 agglomeration 的准确解释是：
 \begin{equation}
 \boxed{
-\text{用更少的粗自由度保留细层中难以被 smoother 消掉的误差形态。}
+\text{重写 coarse-level spatial task decomposition}.
 }
 \end{equation}
-这正是\chapref{ch:two-grid}“粗空间必须能表示光滑误差”的代数版本。
 
-\subsection{插值矩阵与限制矩阵}
+它首先解决的是 box 太碎、每 box work 太小的问题。
 
-假设一个一维问题选择细点 $1,3,5$ 作为三个粗变量。最简单的线性插值矩阵可以写成
+\subsection{Consolidation 改的是 \texttt{DistributionMapping}}
+
+另一条路径先计算
 \begin{equation}
-P=
-\begin{bmatrix}
-1&0&0\\
-\tfrac12&\tfrac12&0\\
-0&1&0\\
-0&\tfrac12&\tfrac12\\
-0&0&1
-\end{bmatrix}.
-\label{eq:amg-simple-P}
+\texttt{avg\_npts}
+=
+\frac{\text{fine-grid points}}
+{\text{active ranks}}.
 \end{equation}
-若粗向量为 $e_c$，则 $Pe_c$ 给出一个细层误差表示。这个矩阵恰好长得像几何线性插值，是因为这个例子本身来自规则一维 Poisson；一般 AMG 的插值权重会根据矩阵耦合计算，而不是根据坐标距离直接写出。
 
-对对称问题常取 $R=P^T$ 或其缩放形式；其他 AMG 也可以独立构造 restriction。重要的是：从此以后，粗空间不再需要显式的 $2h$ 几何网格，只要有 $P$ 和 $R$，就已经知道怎样在细、粗代数空间之间传递向量。
+随着 coarsening，如果估计的每 rank work 低于
+\texttt{con\_grid\_size}$^d$ 阈值，就把相应 MG level 的
+\texttt{DistributionMapping} 留空，后续再调用
 
-\subsection{Galerkin 粗算子与 RAP}
+\begin{verbatim}
+makeConsolidatedDMap(...);
+\end{verbatim}
 
-粗算子仍使用\chapref{ch:two-grid}的 Galerkin 关系式~\eqref{eq:galerkin}：
+生成新的 ownership mapping。
+
+最后还有：
+
+\begin{verbatim}
+m_bottom_comm =
+    makeSubCommunicator(m_dmap[0].back());
+\end{verbatim}
+
+这和\chapref{ch:mpi}的抽象完全一致：
+
 \begin{equation}
-A_c=RAP.
+\boxed{
+\texttt{BoxArray}
+=
+\text{几何任务分块},
+\qquad
+\texttt{DistributionMapping}
+=
+\text{rank ownership}.
+}
+\label{eq:software-amrex-ba-dm}
 \end{equation}
-区别只在于：GMG 中 $R,P$ 多由几何规则直接给出；AMG 中它们来自前面的 matrix graph、strength 与 coarse-space construction。
 
-在显式稀疏矩阵实现中，应用 $A$ 到向量称为\textbf{SpMV（sparse matrix-vector product）}；形成 $RAP$ 通常涉及\textbf{SpGEMM（sparse matrix-matrix multiplication）}。因此 AMG setup 往往比规则 GMG setup 昂贵：它不仅要选择粗层结构，还要真正构造新的稀疏矩阵。
+Agglomeration 主要改变前者，consolidation 主要改变后者。源码层面的这个区分，比“两个参数都能优化粗网格”更重要。
 
-\paragraph{把 $RAP$ 真正算一次。}
-忽略统一的 $1/h^2$ 因子，取具有 5 个内部未知量的一维 Poisson 矩阵
+\section{hypre BoomerAMG：Setup 是层级制造流水线}
+\label{sec:software-hypre-source}
+
+BoomerAMG 的源码组织与 AMReX 很不同。它没有已知几何 hierarchy，而是围绕
+\texttt{hypre\_ParCSRMatrix} 数组构造整个代数层级。
+
+最值得追的入口是
+\begin{verbatim}
+hypre_BoomerAMGSetup(...)
+\end{verbatim}
+所在的 \texttt{par\_amg\_setup.c}。
+
+\subsection{第一步：从 $A_\ell$ 构造 strength matrix}
+
+标准路径直接调用：
+
+\begin{verbatim}
+hypre_BoomerAMGCreateS(
+    A_array[level],
+    strong_threshold,
+    max_row_sum,
+    num_functions,
+    dof_func_data,
+    &S);
+\end{verbatim}
+
+这里的 \texttt{S} 就是式~\eqref{eq:software-amg-setup-chain}中的 strength graph。
+
+因此 \texttt{strong\_threshold} 不是“某个神秘调参项”；它直接决定哪些矩阵边进入后续 coarsening graph。
+
+\subsection{第二步：Coarsening 不是一个算法，而是一组策略分派}
+
+源码随后根据 \texttt{coarsen\_type} 选择：
+
+\begin{verbatim}
+hypre_BoomerAMGCoarsenFalgout(...)
+hypre_BoomerAMGCoarsenPMIS(...)
+hypre_BoomerAMGCoarsenHMIS(...)
+hypre_BoomerAMGCoarsenRuge(...)
+...
+\end{verbatim}
+
+例如 \texttt{coarsen\_type == 8} 进入 PMIS，
+\texttt{10} 进入 HMIS。
+
+这揭示了 BoomerAMG 的一个重要架构事实：
+
 \begin{equation}
-A=
-\begin{bmatrix}
-2&-1&0&0&0\\
--1&2&-1&0&0\\
-0&-1&2&-1&0\\
-0&0&-1&2&-1\\
-0&0&0&-1&2
-\end{bmatrix},
+\boxed{
+\texttt{BoomerAMG}
+\text{ 不是一个固定 AMG 算法，}
+\quad
+\text{而是一套可组合的 AMG setup policy family}.
+}
 \end{equation}
-并使用式~\eqref{eq:amg-simple-P}的 $P$ 与 $R=P^T$。直接相乘得到
-\begin{equation}
-A_c=P^TAP=
-\begin{bmatrix}
-\tfrac32&-\tfrac12&0\\
--\tfrac12&1&-\tfrac12\\
-0&-\tfrac12&\tfrac32
-\end{bmatrix}.
-\label{eq:amg-small-rap}
-\end{equation}
-这个小例子说明 coarse operator 不是“把原矩阵每隔一行一列抽出来”，而是由细层算子和 transfer operators 共同决定。这里刻意取 $R=P^T$ 来展示代数乘积；若采用\chapref{ch:two-grid}中与线性插值配对的缩放 full-weighting restriction，则 $R$ 还会带额外比例因子。因此不能脱离 $R/P$ 的归一化约定，把式~\eqref{eq:amg-small-rap}的数值系数直接与某个 $2h$ 重离散 stencil 逐项比较。这个规则一维例子仍保持三对角结构；一般 AMG 中 $P$ 的支撑更宽，$RAP$ 可能产生新的远邻耦合，这正是 operator complexity 会增长的来源。
 
-\subsection{网格复杂度与算子复杂度}
+输出通常通过 \texttt{CF\_marker} 表示 coarse/fine splitting，后续 interpolation builder 会消费这个状态。
 
-AMG 不能只看“层数”。设第 $\ell$ 层未知量数为 $n_\ell$，非零元数为 $\mathrm{nnz}(A_\ell)$。定义\textbf{网格复杂度（grid complexity）}
-\begin{equation}
-C_g=\frac{\sum_{\ell=0}^{L}n_\ell}{n_0},
-\label{eq:grid-complexity}
-\end{equation}
-以及\textbf{算子复杂度（operator complexity）}
-\begin{equation}
-C_o=\frac{\sum_{\ell=0}^{L}\mathrm{nnz}(A_\ell)}{\mathrm{nnz}(A_0)}.
-\label{eq:operator-complexity}
-\end{equation}
-$C_g$ 回答“整个 hierarchy 一共保存多少未知量”；$C_o$ 则进一步回答“所有粗算子一共保存多少非零耦合”。即使 $n_\ell$ 下降很快，若 RAP 让粗矩阵越来越稠，$C_o$ 仍可能很高，于是内存、SpMV 和通信成本都会上升。
+\subsection{第三步：Interpolation 同样是策略分派}
 
-这两个量把 AMG setup 与后面的性能工程连接起来：\chapref{ch:benchmarking}评测 hierarchy 时，不应只记录层数，还应记录每层 unknowns、nonzeros 与 operator complexity。
+在同一个 setup 文件中，
+\texttt{interp\_type} 又会选择不同 builder，例如：
 
-\subsection{几何多重网格与代数多重网格}
-
-现在再比较 GMG 与 AMG 就不会停留在名称层面。GMG 把“邻接、粗化、插值”主要从几何中得到；AMG 把同一组问题转化为 matrix graph、strength、coarse variables/aggregates 和 algebraic interpolation。二者进入 solve 阶段以后仍共享\chapref{ch:mg-cycles}的 V-cycle 骨架。
-\chapref{ch:portability}已经建立 execution space、memory space、后端特化与完整 solve 评价的统一抽象。本节把这些抽象落到具体求解软件栈：考察 MueLu 如何基于 Tpetra 等分布式线性代数对象组织 multigrid hierarchy，并比较 Ginkgo 及后续框架怎样表示 $P/R/A_c$、选择 smoother、管理向量/矩阵数据，再把这些算法对象映射到具体执行后端。
-
-在软件实现中，\textbf{setup} 指构造 hierarchy、传递算子和粗网格算子的阶段；\textbf{solve} 指复用已建立 hierarchy 执行一个或多个多重网格循环。GMG 通常 setup 更轻、operator 更规则；AMG 更通用，但 setup 可能包含 graph coarsening、interpolation construction 与 RAP/SpGEMM。是否值得付出这些成本，取决于几何信息是否可用、矩阵是否重复求解以及目标硬件上的 setup/solve 比例。
-
-\section{求解器与预条件器的软件组合}
-
-数学上，\secref{sec:mg-preconditioner}已经把一次 multigrid apply 写成 $z=B_{MG}r$。软件接口通常也围绕同一边界组织：外层 solver 负责 residual、搜索空间和停止准则，preconditioner 只负责把输入 residual 映射成近似修正。
-
-因此一个可维护的求解器接口应至少区分：
 \begin{itemize}
-\item \textbf{setup（构建）}：构造 hierarchy、transfer、coarse operator、smoother 与 coarse solver；
-\item \textbf{apply（应用）}：给定 $r$，执行一次固定或受控的 multigrid cycle，返回 $z$；
-\item \textbf{outer solve（外层求解）}：CG/GMRES/FGMRES 等维护 Krylov 历史、点积、范数与停止准则；
-\item \textbf{update/rebuild（更新/重建）}：当网格、系数或稀疏模式改变时，决定哪些 setup 数据可复用。
+\item \texttt{hypre\_BoomerAMGBuildMultipass}
+\item \texttt{hypre\_BoomerAMGBuildInterpLS}
+\item \texttt{hypre\_BoomerAMGBuildDirInterp}
+\item \texttt{hypre\_BoomerAMGBuildExtPIInterp}
+\item \texttt{hypre\_BoomerAMGBuildStdInterp}
+\item \texttt{hypre\_BoomerAMGBuildInterpOnePnt}
 \end{itemize}
 
-这里最容易犯的错误是把“inner MG solve tolerance”设得极严，再把它称为 preconditioner。若外层 Krylov 只需要一个稳定的近似逆，过度求解 inner problem 可能浪费大量 work；反之，若每次 inner solve 的停止位置变化很大，则预条件器变成可变算子，外层算法也应相应选择 flexible 形式。
+最终都产生一个 \texttt{ParCSRMatrix *P}。
 
-从并行角度，软件 profiler 最好把一次 outer iteration 至少拆成
+因此从源码看，AMG setup 的中间状态非常清楚：
 \begin{equation}
-T_{iter}
-=T_{A\text{-apply}}+T_{reductions}+T_{MG\text{-apply}}+T_{vector},
-\label{eq:software-preconditioned-iteration-cost}
+A_\ell
+\rightarrow
+S_\ell
+\rightarrow
+\texttt{CF\_marker}_\ell
+\rightarrow
+P_\ell.
+\label{eq:software-hypre-setup-state}
 \end{equation}
-而 $T_{MG\text{-apply}}$ 再按\chapref{ch:mg-parallel-operations}的 V-cycle 阶段细分。式~\eqref{eq:software-preconditioned-iteration-cost}只有在这些项被定义成互斥的 wall-clock accounting bins 时才可直接相加；若 profiler 输出的是可以重叠的 kernel、copy 或 MPI event duration，应按\chapref{ch:benchmarking}的计时语义分别解释。这样才能判断瓶颈来自 outer Krylov collective，还是 MG coarse level。
 
-\section{典型软件体系}
+\subsection{第四步：Coarse operator 是真实的分布式 sparse RAP}
 
-\subsection{AMReX MLMG}
+标准 Galerkin 路径最终调用
 
-AMReX 是 block-structured AMR 框架，MLMG 面向几何多重网格线性求解。当前 GPU 路径覆盖 CUDA/HIP/SYCL，整体采用 MPI+X；CPU 上 X 通常为 OpenMP，GPU 上 X 为设备后端\cite{zhang2019amrex,zhang2021amrex,amrexGPUdocs2026}。
+\begin{verbatim}
+hypre_BoomerAMGBuildCoarseOperatorKT(
+    P_array[level],
+    A_array[level],
+    P_array[level],
+    keepTranspose,
+    &A_H);
+\end{verbatim}
 
-值得重点研究的实现机制：
+或者走模块化的
+\texttt{hypre\_ParCSRMatrixRAPKT}。
+
+这不是教材里抽象的一个矩阵公式而已。它意味着 setup 真实地执行 distributed sparse matrix--matrix multiplication，并为新矩阵建立下一层通信结构。
+
+所以 BoomerAMG 的 setup 成本来源至少包括：
+
+\begin{equation}
+\boxed{
+\text{strength construction}
++
+\text{parallel graph coarsening}
++
+\text{interpolation construction}
++
+\text{ParCSR RAP/SpGEMM}.
+}
+\label{eq:software-hypre-setup-cost}
+\end{equation}
+
+这也是为什么“solve 阶段 SpMV 很快”并不能推出动态重建 AMG hierarchy 也很便宜。
+
+\section{hypre 的 V-Cycle：不是递归函数，而是显式状态机}
+
+真正执行 cycle 的入口是
+\begin{verbatim}
+hypre_BoomerAMGCycle(amg_data, F_array, U_array)
+\end{verbatim}
+位于 \texttt{par\_cycle.c}。
+
+它持有：
+
 \begin{itemize}
-\item MultiFab/BoxArray/DistributionMapping 数据模型；
-\item Box 与 GPU thread 的映射；
-\item coarse/fine boundary；
-\item agglomeration / consolidation；
-\item bottom solver 切换；
-\item GPU memory arena、stream 与 asynchronous kernel；
-\item AMR regridding 后 solver hierarchy 的重建成本。
+\item \texttt{A\_array[level]}
+\item \texttt{P\_array[level]}
+\item \texttt{R\_array[level]}
+\item \texttt{F\_array[level]}
+\item \texttt{U\_array[level]}
+\item 当前 \texttt{level}
+\item \texttt{lev\_counter}
+\item \texttt{cycle\_param}
 \end{itemize}
 
-对于规则或 block-structured Poisson，这是最接近“从 PDE 几何直接构造高性能 GMG”的代表。
+和 PETSc 的递归实现不同，BoomerAMG 用这些控制变量显式决定“下一步去粗层、留在本层还是回细层”。
 
-\paragraph{Patch 几何与执行粒度。}
+\subsection{下降阶段就是 SpMV + Restriction Matvec}
 
-均匀网格可用一个大 box 产生巨大 kernel。AMR 则可能有许多尺寸不同的 Boxes：
+向粗层移动时，源码先计算 residual：
+
+\begin{verbatim}
+hypre_ParCSRMatrixMatvecOutOfPlace(
+    -1.0, A_array[fine_grid],
+    U_array[fine_grid],
+    1.0, F_array[fine_grid],
+    Vtemp);
+\end{verbatim}
+
+也就是
 \begin{equation}
-\mathcal B=\{B_1,B_2,\ldots,B_K\}.
+V
+=
+F_\ell-A_\ell U_\ell.
 \end{equation}
-如果每个 $B_k$ 都很小且单独 launch：
+
+随后 restriction 直接由分布式稀疏矩阵乘实现。若 restriction 以 transpose 关系表达，会调用
+
+\begin{verbatim}
+hypre_ParCSRMatrixMatvecT(
+    R_array[fine_grid],
+    Vtemp,
+    F_array[coarse_grid]);
+\end{verbatim}
+
+否则调用普通 \texttt{ParCSRMatrixMatvec}。
+
+所以在 BoomerAMG 的 solve 阶段，
+\textbf{restriction 不是某个特殊“AMG kernel”}，它本质上已经变成一个 ParCSR operator apply。
+
+\subsection{上升阶段就是 Prolongation Matvec-Add}
+
+从 coarse level 返回时：
+
+\begin{verbatim}
+hypre_ParCSRMatrixMatvec(
+    1.0, P_array[fine_grid],
+    U_array[coarse_grid],
+    1.0, U_array[fine_grid]);
+\end{verbatim}
+
+对应
 \begin{equation}
-T\approx\sum_k(T_{launch}+T_{kernel}(B_k)),
+U_\ell
+\leftarrow
+U_\ell+P_\ell U_{\ell+1}.
 \end{equation}
-固定 launch 成本会被放大。
 
-在 GPU 上，块结构框架通常倾向于使用比 CPU 更大的执行粒度，并支持把同一 level 的多个网格块组织成较大的设备任务，以降低过多 kernel launch 的风险\cite{amrexGPUdocs2026}。
+因此 BoomerAMG 的 solve 热路径可以概括成：
 
-这给出一个普遍结论：\textbf{AMR gridding 参数不仅决定数值分辨率，也决定 GPU execution granularity。}
+\begin{equation}
+\boxed{
+\text{smoother}
++
+\text{ParCSR SpMV residual}
++
+\text{ParCSR restriction}
++
+\text{ParCSR prolongation}
+}
+\label{eq:software-hypre-solve-core}
+\end{equation}
 
+这也直接解释了 GPU 版本为什么非常依赖 device-native ParCSR matvec、relaxation 与 communication package。
 
-\paragraph{Agglomeration 与 Consolidation。}
+\subsection{Smoother 分支比 Cycle 本身复杂得多}
 
-AMReX MLMG 的粗层优化包含两个极重要概念\cite{amrexMLMGdocs2026}：
+\texttt{par\_cycle.c} 中 smoother 会根据配置跳到不同路径，包括
+Jacobi/\(\ell_1\)-Jacobi、Chebyshev、CG 类 smoother、FCF Jacobi、Schwarz 等。
+
+从软件架构上看：
+
+\begin{equation}
+\boxed{
+\text{cycle state machine 很稳定，}
+\quad
+\text{smoother policy 是最大的可变分支之一。}
+}
+\end{equation}
+
+因此 profiler 若只把全部时间归到
+\texttt{hypre\_BoomerAMGCycle}，信息仍然太粗；至少要继续拆到
+Relaxation、Residual、Restriction、Interpolation 与 coarse solve。
+
+\section{PETSc PCMG：把每一层做成可组合对象}
+\label{sec:software-petsc-source}
+
+PETSc 的实现思路与前两者再次不同。
+
+\texttt{PC\_MG\_Levels} 直接把一个 level 的状态收在一个结构里。源码中的关键成员包括：
+
+\begin{verbatim}
+Vec b, x, r;
+Mat A;
+KSP smoothd;
+KSP smoothu;
+Mat interpolate;
+Mat restrct;
+\end{verbatim}
+
+这里
+\texttt{smoothd} 是下降阶段 smoother，
+\texttt{smoothu} 是上升阶段 smoother。
+
+因此 PETSc 没有把“smoother”硬编码成一个内部 relaxation enum，而是直接嵌入另一个完整的 \texttt{KSP} 对象。
+
+这意味着一个 level 的抽象实际是：
+\begin{equation}
+\boxed{
+\text{level}
+=
+(A,b,x,r)
++
+(P,R)
++
+(\text{pre-KSP},\text{post-KSP}).
+}
+\label{eq:software-petsc-level-object}
+\end{equation}
+
+\subsection{\texttt{PCMGMCycle\_Private()} 是最清楚的递归 V-Cycle}
+
+PETSc 的 multiplicative cycle 源码几乎可以当作标准递归 V-cycle 的参考实现。
+
+先做 pre-smooth：
+\begin{verbatim}
+KSPSolve(mglevels->smoothd,
+         mglevels->b,
+         mglevels->x);
+\end{verbatim}
+
+再由函数指针计算 residual：
+\begin{verbatim}
+(*mglevels->residual)(
+    mglevels->A,
+    mglevels->b,
+    mglevels->x,
+    mglevels->r);
+\end{verbatim}
+
+再 restriction：
+\begin{verbatim}
+MatRestrict(mglevels->restrct,
+            mglevels->r,
+            mgc->b);
+\end{verbatim}
+
+随后直接递归：
+
+\begin{verbatim}
+while (cycles--)
+    PCMGMCycle_Private(..., mglevelsin - 1, ...);
+\end{verbatim}
+
+返回以后：
+
+\begin{verbatim}
+MatInterpolateAdd(
+    mglevels->interpolate,
+    mgc->x,
+    mglevels->x,
+    mglevels->x);
+
+KSPSolve(mglevels->smoothu,
+         mglevels->b,
+         mglevels->x);
+\end{verbatim}
+
+对照\chapref{ch:mg-cycles}可见，PETSc 基本没有隐藏 V-cycle 数学结构。
+
+\subsection{PETSc 的核心不是“实现一个 MG”，而是组合现有对象}
+
+从上面的源码可以看到：
+
 \begin{itemize}
-\item \textbf{agglomeration}：把粗层数据组织为更少、更大的 boxes；
-\item \textbf{consolidation}：把粗层问题转移到更少 MPI ranks。
+\item smooth 是 \texttt{KSP}；
+\item restriction/prolongation 是 \texttt{Mat}；
+\item state 是 \texttt{Vec}；
+\item operator 是 \texttt{Mat}；
+\item cycle 是 \texttt{PC} 内部控制流。
 \end{itemize}
 
-这两个动作分别针对两类塌缩：
+因此 PETSc 的性能可移植性很大程度上取决于这些底层对象的具体类型。例如同一个 \texttt{PCMGMCycle\_Private} 不需要知道矩阵最终由 CPU AIJ、CUDA、HIP 或其他 backend 执行。
+
+这就是对象组合式架构的价值：
 \begin{equation}
-\text{box too small}\Rightarrow\text{kernel/thread granularity poor},
+\boxed{
+\text{cycle code 不直接依赖硬件，}
+\quad
+\text{backend 能力由 Mat/Vec/KSP 实现承担。}
+}
 \end{equation}
+
+代价也很明确：若某个 backend 对 \texttt{MatRestrict}、某类 smoother 或 coarse solver 的 device path 不完整，统一的上层 cycle 本身并不能自动补救性能。
+
+\section{PETSc PCGAMG：Hierarchy Factory 建完以后复用 PCMG}
+
+PETSc 中另一个很值得源码学习的设计是：
+\textbf{PCGAMG 并没有重新写一套 V-cycle executor。}
+
+\texttt{PCSetUp\_GAMG()} 的 setup 循环会依次做：
+
+\begin{verbatim}
+PCGAMGCreateGraph(pc, Aarr[level], &Gmat);
+pc_gamg->ops->coarsen(...);
+pc_gamg->ops->prolongator(..., &Prol11);
+
+if (pc_gamg->ops->optprolongator)
+    pc_gamg->ops->optprolongator(...);
+
+pc_gamg->ops->createlevel(
+    ..., &Prol11, &Aarr[level1], ...);
+\end{verbatim}
+
+然后 hierarchy 构造完以后调用：
+
+\begin{verbatim}
+PCSetUp_MG(pc);
+\end{verbatim}
+
+这给出一个非常清晰的软件分层：
+
 \begin{equation}
-\text{rank local work too small}\Rightarrow\text{communication dominates}.
+\boxed{
+\texttt{PCGAMG}
+=
+\text{AMG hierarchy factory},
+\qquad
+\texttt{PCMG}
+=
+\text{multigrid execution engine}.
+}
+\label{eq:software-petsc-gamg-mg}
 \end{equation}
 
-当前 AMReX 文档指出 GPU build 的默认 agglomeration grid-length threshold 与 CPU build 不同，说明粗层 box 尺寸本身就是架构相关参数，而非纯数值参数\cite{amrexMLMGdocs2026}。
+这一点比“PETSc 同时支持 PCMG 和 GAMG”更值得记忆。
 
+\subsection{GAMG 通过函数表替换 coarse-space 算法}
 
-\paragraph{嵌入边界算子。}
+\texttt{PCGAMGCreateGraph()} 本身只是：
 
-Embedded Boundary（EB）会让 stencil 系数、邻接关系和控制流变得不规则。GPU 上可能出现：
+\begin{verbatim}
+pc_gamg->ops->creategraph(pc, A, G);
+\end{verbatim}
+
+具体实现由 \texttt{agg.c}、\texttt{classical.c}、
+\texttt{geo.c} 等安装到函数表中。
+
+同样地，
+\texttt{coarsen}、
+\texttt{prolongator}、
+\texttt{optprolongator}、
+\texttt{createlevel}
+也是策略接口。
+
+因此 PETSc GAMG 的“多种 AMG”不是在主循环里写大量硬编码分支，而是通过 operation table 插入不同 hierarchy construction policy。
+
+\subsection{Coarse-process reduction 直接进入 \texttt{createlevel()}}
+
+GAMG 的 coarse level 构造代码还会估计新的 active process 数：
+\begin{equation}
+P_{\mathrm{new}}
+\approx
+\frac{N_{\mathrm{coarse}}}
+{\texttt{min\_eq\_proc}}.
+\end{equation}
+
+若 active process 数不变，路径可以直接执行
+\begin{verbatim}
+MatPtAP(Amat_fine, Pold, ..., A_coarse);
+\end{verbatim}
+
+若需要减少进程，则进入 repartition/reduce 路径，重新构造 coarse matrix 与 prolongator ownership。
+
+这与 AMReX consolidation 在概念上类似，但数据对象完全不同：
+
 \begin{itemize}
-\item regular cells 走快速固定 stencil；
-\item cut cells 走复杂几何分支；
-\item 一个 warp 内 regular/cut 混合导致 divergence；
-\item coarse levels 上 EB 几何信息限制可继续 coarsen 的深度。
+\item AMReX 重写 \texttt{DistributionMapping}；
+\item PETSc GAMG 重写 coarse \texttt{Mat} / prolongator 的分布布局。
 \end{itemize}
-工程上常把 regular 与 irregular work 分流，避免让极少数 cut cells 拖慢全部 warp。AMReX 的线性算子也包含 EB-aware 类型，并允许限制 coarsening 深度\cite{amrexMLMGdocs2026}。
 
-
-\subsection{hypre 与 BoomerAMG}
-
-hypre 同时覆盖结构网格与代数多重网格路线。其 BoomerAMG 是大规模并行 AMG 的代表，最初即面向分布式内存 HPC 设计\cite{falgout2002hypre}。当前 BoomerAMG 的 GPU 路径支持 PMIS 粗化、多种插值、Jacobi/$\ell_1$-Jacobi、two-stage GS、Chebyshev 等，并支持 CUDA/HIP/SYCL/device OpenMP 的设备内存模型\cite{hypreBoomer2026}。
-
-对 GPU，重点不是“把 CSR SpMV 放到 device”这么简单，而是 setup 阶段：
+两者都在实现\chapref{ch:mpi}的同一个原则：
 \begin{equation}
-\text{coarsening}\rightarrow P,R\rightarrow RAP
+\boxed{
+N_\ell/P_\ell
+\text{ 太小时，coarse ownership 必须改变。}
+}
 \end{equation}
-也必须 device-native，否则 solve 很快但 setup 反复退回 host，瞬态或动态网格场景会很吃亏。
 
-\subsection{PETSc PCMG 与 PCGAMG}
+\section{三套源码放在一起看}
 
-PETSc 提供统一 KSP/PC 组合模型。几何 hierarchy 已知时可以使用 PCMG；未知时可用 PCGAMG。PCGAMG 提供 repartition 与 coarse-process reduction 参数，从软件接口层面直接承认 coarse-grid parallelism collapse 是一个必须管理的问题\cite{petscGAMG2026}。
-
-PETSc 的优势是 solver composition：同一个外层 Krylov 可以替换不同 PC、不同 Mat/Vec backend。当前 GPU 生态包含 CUDA、HIP、Kokkos 等路径，但具体矩阵类型和 solver 操作的 device 完整性要按版本与 backend 核实\cite{petscGPU2026}。
-
-\subsection{Trilinos/MueLu}
-
-MueLu 是 Trilinos 中的多重网格框架，可与 Tpetra、Belos、Ifpack2、Zoltan2 等组合。其价值在于模块化 coarsening、transfer、smoother、rebalancing，以及通过 Kokkos/Tpetra 走 performance-portable 路径\cite{mueluDocs2026}。
-
-对研究者而言，MueLu 特别适合作为“算法组件实验平台”：可以替换不同 factory 和 hierarchy 构造策略，而不是只把它当黑盒 AMG preconditioner。
-
-\subsection{Ginkgo}
-
-Ginkgo 以面向加速器、跨平台的稀疏线性代数为核心。其 multigrid 采用后端化 kernel 结构，可在 NVIDIA、AMD、Intel GPU 上执行，并成为混合精度/三精度 AMG 研究的重要载体\cite{tsai2023mixed,tsai2023three,ginkgoMG2026}。
-
-Ginkgo 的研究意义在于把“不同层级采用不同 precision”做成求解器架构的一等概念：粗层对数值精度的需求可能不同，而较低精度可以同时降低内存流量并提高硬件吞吐。
-
-\subsection{NVIDIA AmgX}
-
-AmgX 是 NVIDIA 面向 GPU 的 AMG 与迭代求解器库，支持经典 AMG、聚合型 AMG、各种 smoother 与 Krylov 组合，并可通过用户提供的 MPI 进行分布式多 GPU 求解\cite{naumov2015amgx,amgxRepo2026}。
-
-它的经典论文展示了 GPU AMG 设计中图匹配、着色、smoother 与分布式层级的结合\cite{naumov2015amgx}。作为厂商优化基准，AmgX 常用于判断“自研 CUDA 稀疏求解器与成熟 NVIDIA 路径之间还差多少”。
-
-\section{软件体系比较}
+现在可以不依赖软件宣传页，直接比较三种设计。
 
 {\small
-\begin{longtable}{@{}>{\raggedright\arraybackslash}p{1.65cm}
-                        >{\raggedright\arraybackslash}p{2.15cm}
-                        >{\raggedright\arraybackslash}p{2.25cm}
-                        >{\raggedright\arraybackslash}p{3.35cm}
-                        >{\raggedright\arraybackslash}p{3.45cm}@{}}
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{2.3cm}
+                        >{\raggedright\arraybackslash}p{3.5cm}
+                        >{\raggedright\arraybackslash}p{3.5cm}
+                        >{\raggedright\arraybackslash}p{3.5cm}@{}}
 \toprule
-框架 & 主路线 & 并行模型 & GPU/可移植性重点 & 最值得观察的粗层机制\\
+问题 & AMReX MLMG & hypre BoomerAMG & PETSc PCMG/GAMG\\
 \midrule
 \endfirsthead
 \toprule
-框架 & 主路线 & 并行模型 & GPU/可移植性重点 & 最值得观察的粗层机制\\
+问题 & AMReX MLMG & hypre BoomerAMG & PETSc PCMG/GAMG\\
 \midrule
 \endhead
-AMReX MLMG & block-structured GMG & MPI + OpenMP / MPI + GPU & CUDA / HIP / SYCL；Box-level kernels & agglomeration、consolidation、bottom solver\\
-\addlinespace
-hypre & Struct GMG + BoomerAMG & MPI + device backend & CUDA / HIP / SYCL / device OpenMP & parallel coarsening、RAP、GPU smoother\\
-\addlinespace
-PETSc & PCMG / GAMG & MPI + CUDA / HIP / Kokkos 等 & backend-neutral Mat/Vec/KSP/PC & repartition、process reduction\\
-\addlinespace
-MueLu & AMG / 多重网格框架 & MPI + Kokkos / Tpetra & performance portability & rebalancing、factory hierarchy\\
-\addlinespace
-Ginkgo & accelerator-oriented AMG & MPI + executor & CUDA / HIP / DPC++ 等 & mixed precision、distributed PGM\\
-\addlinespace
-AmgX & GPU AMG & CUDA + MPI & NVIDIA GPU 专用优化 & aggregation、coloring、distributed AMG\\
+Hierarchy 来源 &
+几何、BoxArray、coarsening &
+ParCSR strength/coarsening/interpolation &
+PCMG 可由 DM/用户提供；GAMG 从 Mat 构造\\
+
+Level state &
+\texttt{res/cor/sol} + operator hierarchy &
+\texttt{A/P/R/U/F} arrays &
+\texttt{PC\_MG\_Levels} 中的 Vec/Mat/KSP\\
+
+Cycle owner &
+\texttt{MLMGT::mgVcycle} &
+\texttt{hypre\_BoomerAMGCycle} 状态机 &
+\texttt{PCMGMCycle\_Private} 递归\\
+
+Smoother &
+\texttt{linop.smooth()} &
+relax/smoother type dispatch &
+每层独立 \texttt{KSP}\\
+
+Restriction &
+operator 专用实现 &
+ParCSR matvec / matvecT &
+\texttt{MatRestrict}\\
+
+Prolongation &
+operator 专用 interpolation &
+ParCSR matvec-add &
+\texttt{MatInterpolateAdd}\\
+
+Coarse operator &
+几何/离散算子生成 &
+显式 ParCSR RAP &
+PCMG 可外部提供；GAMG \texttt{MatPtAP}\\
+
+粗层进程收缩 &
+\texttt{DistributionMapping} consolidation + subcommunicator &
+由 AMG hierarchy/distributed ParCSR 策略控制 &
+GAMG createlevel 中 process reduction/repartition\\
+
+底层求解 &
+smoother、内部 CG/BiCGStab、hypre、PETSc、custom &
+AMG coarse-level relaxation/solver path &
+level 0 的 KSP/PC 配置\\
 \bottomrule
 \end{longtable}
 }
 
-这张表的目的不是排名，而是建立“阅读源码时应该看什么”的索引。
+三个项目的数学对象高度相似，但软件边界完全不同。
+
+AMReX 的主线是
+\begin{equation}
+\boxed{
+\text{geometry/operator polymorphism}
++
+\text{explicit MG driver}.
+}
+\end{equation}
+
+hypre BoomerAMG 的主线是
+\begin{equation}
+\boxed{
+\text{ParCSR hierarchy construction}
++
+\text{explicit level state machine}.
+}
+\end{equation}
+
+PETSc 的主线是
+\begin{equation}
+\boxed{
+\text{generic Mat/Vec/KSP composition}
++
+\text{MG orchestration}.
+}
+\end{equation}
+
+\section{从源码判断“为什么这个库快或慢”}
+
+有了源码结构以后，性能问题可以落到具体阶段，而不是停留在“某库快六倍”。
+
+\subsection{AMReX}
+
+应优先 profile：
+
+\begin{itemize}
+\item \texttt{MLMG::mgVcycle\_down::<level>}
+\item \texttt{MLMG::mgVcycle\_bottom}
+\item smooth kernel
+\item residual/operator apply
+\item restriction/interpolation
+\item agglomeration/consolidation 后的 coarse box/rank 数
+\item bottom solver 构建与求解是否被重复执行
+\end{itemize}
+
+尤其要区分：
+\begin{equation}
+\text{MLMG cycle time}
+\qquad\text{与}\qquad
+\text{external bottom solver setup time}.
+\end{equation}
+
+\subsection{hypre}
+
+setup 应至少拆成：
+
+\begin{equation}
+\text{strength}
++
+\text{coarsening}
++
+\text{interpolation}
++
+\text{RAP}
++
+\text{communication-package setup}.
+\end{equation}
+
+solve 则至少拆为：
+
+\begin{equation}
+\text{relaxation}
++
+\text{residual SpMV}
++
+\text{restriction}
++
+\text{interpolation}
++
+\text{coarse solve}.
+\end{equation}
+
+若动态问题每次都重建 AMG hierarchy，单独比较 cycle time 会严重误导。
+
+\subsection{PETSc}
+
+PETSc 最关键的是继续向对象内部追：
+
+\begin{itemize}
+\item 每层 \texttt{smoothd/smoothu} 到底是什么 KSP/PC；
+\item \texttt{Mat} 类型是否驻留在期望 backend；
+\item \texttt{MatPtAP} 是否占 setup 主导；
+\item GAMG process reduction 在哪一层触发；
+\item coarse KSP 是否使用了完全不同的 solver/backend；
+\item \texttt{-log\_view} 中 MG level events 与 MPI collectives 的对应关系。
+\end{itemize}
+
+如果只看到 \texttt{PCApply} 很慢，还没有定位到真正瓶颈。
+
+\section{MueLu、Ginkgo 与 AmgX 应该怎样继续读}
+
+本章不再用相同篇幅重复介绍另外三个库。真正继续源码阅读时，可以沿同一套问题进入。
+
+\paragraph{MueLu.}
+优先寻找 hierarchy、level 与 factory 之间的关系：谁生成 coarse map、aggregate、tentative/smoothed prolongator 与 coarse operator；再追 Tpetra/Kokkos 对象如何决定 execution/memory backend。它适合观察\textbf{factory-driven hierarchy construction}。
+
+\paragraph{Ginkgo.}
+优先寻找 Executor、LinOp、Multigrid level factory 与 distributed matrix/vector 的边界。它适合观察\textbf{operator object + executor} 如何把同一算法放到 Reference、OpenMP、CUDA、HIP、DPC++ 等后端，并进一步研究 mixed precision。
+
+\paragraph{AmgX.}
+优先从 solver configuration 到具体 AMG level/smoother/aggregation 实现，再追 CUDA kernel 与 distributed halo。它适合观察\textbf{GPU-first AMG} 如何把 setup 与 solve 都围绕设备执行组织。
+
+真正值得比较的不是类名数量，而是它们分别把
+\[
+A_\ell,\quad P_\ell,\quad R_\ell,\quad
+S_\ell,\quad x_\ell,\quad b_\ell
+\]
+放在哪里，由谁构造，由谁消费，以及 coarse ownership 怎样变化。
+
+\section{源码阅读的统一方法}
+
+面对任何新的 multigrid 软件，建议固定按下面顺序追：
+
+\begin{enumerate}
+\item 找 public \texttt{solve/apply/setup} 入口；
+\item 找 level state 的实际数据结构；
+\item 找 cycle driver，确认递归还是显式状态机；
+\item 找 pre/post smoother 的真实调用；
+\item 找 residual/operator apply；
+\item 找 restriction/prolongation 的真实 representation；
+\item 找 coarse operator construction；
+\item 找 bottom solver；
+\item 找 coarse ownership / communicator / repartition 逻辑；
+\item 最后才看配置参数和 backend kernel。
+\end{enumerate}
+
+这一顺序能防止源码阅读退化为“搜到很多函数名但不知道谁控制谁”。
 
 \section{本章小结}
-本章把“粗层从哪里来”分成了两条路线。GMG 利用已知几何直接构造粗网格与传递算子；AMG 则从矩阵图和数值耦合出发，经 strong connection、coarse variables/aggregation、插值 $P$、限制 $R$ 与 Galerkin $RAP$ 构造层级。grid complexity 与 operator complexity 进一步把“层级是否过重”变成可测量的量。
 
-软件框架只是这条算法链的不同实现。读者不需要记住所有类名，而应能回答：hierarchy 在哪里构造？$P/R$ 从哪里来？粗算子如何生成？setup 与 solve 是否复用？粗层如何改变 box/rank/device 拓扑？
+成熟多重网格软件之间最大的差异，不是是否都实现了 V-cycle，而是\textbf{它们把 V-cycle 的稳定语义放在哪一层，把可替换策略放在哪一层}。
+
+AMReX 用 \texttt{MLMGT} 驱动 cycle，用 \texttt{MLLinOpT} 隔离几何与离散算子；它的 agglomeration/consolidation 直接分别落到 BoxArray 与 DistributionMapping。BoomerAMG 的 setup 是明确的
+\[
+A\rightarrow S\rightarrow\text{coarsening}\rightarrow P\rightarrow RAP
+\]
+流水线，solve 则是围绕 ParCSR arrays 的显式 level 状态机。PETSc PCMG 把每层表示为 Mat/Vec/KSP 的组合，而 PCGAMG 只负责制造 hierarchy，最终仍把执行交还 PCMG。
+
+因此阅读求解器源码时，不应先问“这个库支持哪些参数”，而应先回答：
+\[
+\boxed{
+\text{谁拥有 hierarchy？谁拥有 cycle？谁拥有 level state？}
+}
+\]
+这三个问题一旦回答，性能、并行和可扩展性问题才有明确落点。
 
 \section*{习题}
 
-\subsection*{层级构造与复杂度推导}
+\subsection*{AMReX 源码追踪}
 \begin{enumerate}[label=\arabic*.]
-\item 对
-\[
-A=\begin{bmatrix}
-2&-1&0&0&0\\-1&2&-1&0&0\\0&-1&2&-1&0\\0&0&-1&2&-1\\0&0&0&-1&2
-\end{bmatrix}
-\]
-画出 matrix graph，并列出每个节点的邻接集合。
-\item 给定
-\[
-A=\begin{bmatrix}
-4&-3&-0.5&0\\
--2&5&-1&-0.2\\
--0.5&-0.4&3&-2\\
-0&-0.2&-1.5&2.5
-\end{bmatrix}.
-\]
-按式~\eqref{eq:amg-strength-example}逐行判断 $\theta=0.5$ 时哪些有向连接为 strong；再把 $\theta$ 改为 $0.8$，重新列出 strong graph，并说明哪些连接消失。
-\item 给定
-\[
-P=\begin{bmatrix}1&0\\1/2&1/2\\0&1\end{bmatrix},\qquad
-A=\begin{bmatrix}2&-1&0\\-1&2&-1\\0&-1&2\end{bmatrix},
-\]
-取 $R=P^T$，手算 $A_c=RAP$ 的全部条目。
-\item 对上一题任取 $e_c=(1,-1)^T$，计算 $Pe_c$；指出哪些 fine unknown 是直接继承、哪些是插值得到。
-\item 某 AMG hierarchy 的 unknown 数为 $[10^6,2.5\times10^5,6.25\times10^4]$，nnz 数为 $[7,9,14]$ 乘以对应 unknown 数。计算 grid complexity 与 operator complexity。
-
-\item 若 $A$ 对称正定且 $P$ 满列秩，证明 Galerkin coarse operator $A_c=P^TAP$ 仍对称正定。
-\item 从矩阵乘法定义说明为什么 RAP/SpGEMM 可能使 coarse matrix 的 stencil 比 fine matrix 更宽，从而导致 operator complexity 大于 grid complexity。
-\item 比较 classical C/F coarsening 与 aggregation：分别说明 coarse variables 的数学含义，以及 prolongation 构造需要满足的最低一致性要求。
-\item 证明规则 Cartesian Poisson 中几何 coarse grid 已知时，可以直接生成 coarse stencil，而一般 AMG 只能从矩阵关系构造 transfer/coarse operator。
+\item 从 \texttt{MLMGT::solve} 开始，画出
+\texttt{solve -> oneIter -> miniCycle -> mgVcycle -> bottomSolve}
+调用图，并标出 convergence check 位于哪一层。
+\item 在 \texttt{mgVcycle} 中把每条关键调用分别映射为
+smooth、residual、restriction、coarse solve、prolongation、post-smooth。
+\item 阅读 \texttt{MLLinOpT::defineGrids}，指出 agglomeration 首次改变 \texttt{BoxArray} 的位置，以及 consolidation 首次改变 \texttt{DistributionMapping} 的位置。
+\item 解释 \texttt{BottomCommunicator()} 为什么属于 ownership 层，而不是 stencil 数学层。
+\item 对一个 profiler trace，把 \texttt{mgVcycle\_down}、bottom、up-cycle 与具体 operator kernels 对齐。
 \end{enumerate}
 
-\subsection*{软件实验与复现}
+\subsection*{hypre 源码追踪}
 \begin{enumerate}[label=\arabic*.]
-\item 编程验证上一组小矩阵的 $P^TAP$ 结果；再随机生成 SPD 三对角矩阵，检查 $A_c$ 的对称性和正定性。
-\item 实现一个最简 aggregation AMG setup：构造 matrix graph、简单聚合、piecewise-constant $P$、$R=P^T$ 与 RAP。对小 Poisson 问题输出每层矩阵。
-\item 用任一成熟库（hypre/PETSc/MueLu/Ginkgo/AmgX 中可用者）求解同一 Poisson 问题，记录 setup time、solve time、levels、operator complexity 与迭代次数。
-\item 对比 GMG 与 AMG：在规则 Poisson 上分别记录 hierarchy setup 与 solve；再加入随机变系数，观察两者的鲁棒性和 setup 变化。
+\item 在 \texttt{par\_amg\_setup.c} 中沿
+\texttt{CreateS -> Coarsen -> BuildInterp -> BuildCoarseOperator}
+追一遍默认配置，记录每一步产生的新数据结构。
+\item 改变 \texttt{coarsen\_type}，找出 PMIS/HMIS/Falgout 分支的源码入口，说明哪些状态保持不变。
+\item 在 \texttt{par\_cycle.c} 中解释
+\texttt{level}、\texttt{lev\_counter}、\texttt{cycle\_param}
+怎样替代递归调用栈。
+\item 找出 residual、restriction 与 interpolation 的三个 ParCSR matvec 调用，分别写成数学公式。
+\item 设计 profiler 标签，把 AMG setup 与 cycle solve 完全分离，避免把 RAP 时间算进迭代时间。
 \end{enumerate}
 
-\subsection*{库选择与配置诊断}
+\subsection*{PETSc 源码追踪}
 \begin{enumerate}[label=\arabic*.]
-\item 把 AMReX、hypre、PETSc、MueLu、Ginkgo、AmgX 任选五个映射到“setup--transfer--coarse operator--smoother--redistribution”统一链，指出各自最值得 profile 的阶段。
-\item 一个 AMG setup 很快但 operator complexity=3.5，另一个 setup 慢一倍但 operator complexity=1.4。设计重复求解场景下的总成本比较。
-\item 对仅知道稀疏矩阵、不知道原网格几何的问题，说明哪些 GMG 优势不再可用；反之若几何充分已知，为什么仍可能选择 AMG？
+\item 根据 \texttt{PC\_MG\_Levels} 画出一个 level object，说明
+\texttt{A,b,x,r,smoothd,smoothu,interpolate,restrct}
+之间的关系。
+\item 沿 \texttt{PCMGMCycle\_Private} 手工画出递归调用栈，比较 V-cycle 与 W-cycle 时 \texttt{cycles} 的变化。
+\item 在 \texttt{PCSetUp\_GAMG} 中追
+\texttt{creategraph -> coarsen -> prolongator -> createlevel -> PCSetUp\_MG}
+调用链，解释为什么 GAMG 可以复用 PCMG executor。
+\item 找出 \texttt{MatPtAP} 与 process reduction/repartition 相邻的源码，说明 coarse operator construction 与 ownership change 为什么耦合。
+\item 使用 PETSc profiling 输出，把 \texttt{PCSetUp\_GAMG}、\texttt{PCApply\_MG}、level smoother 与 MPI collective 分开计时。
+\end{enumerate}
+
+\subsection*{跨软件架构比较}
+\begin{enumerate}[label=\arabic*.]
+\item 对同一个三层 Poisson 问题，分别用 AMReX、hypre、PETSc 的内部对象描述
+$A_\ell,b_\ell,x_\ell,r_\ell,P_\ell,R_\ell$。
+\item 比较“AMReX 调用 hypre 作为 bottom solver”和“直接使用 BoomerAMG 作为整个 preconditioner”在 hierarchy ownership 上的根本区别。
+\item 设计一个重复求解 benchmark，同时记录 setup、apply、bottom solve 与 coarse redistribution；说明三套软件中哪些阶段最可能被复用。
+\item 选择 MueLu、Ginkgo 或 AmgX 之一，按本章十步源码阅读法补充一页实现笔记，不允许只引用用户文档。
 \end{enumerate}
