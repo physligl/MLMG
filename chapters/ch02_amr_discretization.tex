@@ -226,6 +226,144 @@ u_{C_3}
 \label{eq:amr-minimal-composite-vector}
 \end{equation}
 
+为了把“层级数组中存了八个数，但只有六个独立自由度”写成严格的线性代数关系，先按
+\begin{equation}
+\bm u_{\mathrm{hier}}
+=
+\begin{bmatrix}
+u_{C_0}&u_{C_1}&u_{C_2}&u_{C_3}&
+u_{F_0}&u_{F_1}&u_{F_2}&u_{F_3}
+\end{bmatrix}^{T}
+\label{eq:amr-minimal-hierarchy-vector}
+\end{equation}
+排列层级存储。定义选择矩阵
+\begin{equation}
+S=
+\begin{bmatrix}
+1&0&0&0&0&0&0&0\\
+0&0&0&0&1&0&0&0\\
+0&0&0&0&0&1&0&0\\
+0&0&0&0&0&0&1&0\\
+0&0&0&0&0&0&0&1\\
+0&0&0&1&0&0&0&0
+\end{bmatrix},
+\end{equation}
+则复合未知量正好是
+\begin{equation}
+\boxed{
+\bm u_{\mathrm{comp}}
+=
+S\bm u_{\mathrm{hier}}.
+}
+\label{eq:amr-storage-to-composite}
+\end{equation}
+选择矩阵满足
+\begin{equation}
+SS^T=I_6,
+\label{eq:amr-selection-left-identity}
+\end{equation}
+而
+\begin{equation}
+S^TS
+=
+\operatorname{diag}(1,0,0,1,1,1,1,1).
+\label{eq:amr-selection-mask}
+\end{equation}
+式~\eqref{eq:amr-selection-mask} 的第 2、3 个对角元为零，正好对应被细层覆盖的 $C_1,C_2$。因此“被覆盖”在代数上可以理解为：这些存储位置被选择算子从独立自由度集合中投影掉。
+
+反方向从复合物理解恢复一份\textbf{一致的层级存储}，还需要给被覆盖粗层单元指定同步规则。若变量是单元平均值，则
+\begin{equation}
+u_{C_1}=\frac12(u_{F_0}+u_{F_1}),
+\qquad
+u_{C_2}=\frac12(u_{F_2}+u_{F_3}).
+\label{eq:amr-minimal-covered-sync}
+\end{equation}
+于是可以定义
+\begin{equation}
+\boxed{
+\bm u_{\mathrm{hier}}
+=
+J\bm u_{\mathrm{comp}},
+}
+\label{eq:amr-composite-to-synchronized-storage}
+\end{equation}
+其中
+\begin{equation}
+J=
+\begin{bmatrix}
+1&0&0&0&0&0\\
+0&\frac12&\frac12&0&0&0\\
+0&0&0&\frac12&\frac12&0\\
+0&0&0&0&0&1\\
+0&1&0&0&0&0\\
+0&0&1&0&0&0\\
+0&0&0&1&0&0\\
+0&0&0&0&1&0
+\end{bmatrix}.
+\label{eq:amr-synchronized-storage-matrix}
+\end{equation}
+直接相乘可得
+\begin{equation}
+\boxed{
+SJ=I_6.
+}
+\label{eq:amr-selection-sync-identity}
+\end{equation}
+因此，先把复合物理解扩展成一致的层级存储，再重新抽取有效自由度，不会改变物理解。反方向则有
+\begin{equation}
+JS\neq I_8,
+\qquad
+(JS)^2=JS.
+\label{eq:amr-storage-projection}
+\end{equation}
+所以 $JS$ 是层级存储空间上的一个投影：它保留有效粗层值和所有细层值，同时把任意旧的 $u_{C_1},u_{C_2}$ 替换成由细层状态决定的一致粗层表示。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1.0cm,y=1.0cm,>=Stealth,font=\small]
+\tikzset{
+  cell/.style={draw=black!65,minimum width=1.35cm,minimum height=0.72cm,align=center},
+  covered/.style={cell,fill=black!10},
+  fine/.style={cell,fill=black!3},
+  arr/.style={->,line width=0.75pt}
+}
+\node[anchor=east] at (-0.2,2.6) {层级存储};
+\node[cell] (c0) at (0.7,2.6) {$C_0$};
+\node[covered] (c1) at (2.2,2.6) {$C_1$};
+\node[covered] (c2) at (3.7,2.6) {$C_2$};
+\node[cell] (c3) at (5.2,2.6) {$C_3$};
+\node[fine] (f0) at (7.0,2.6) {$F_0$};
+\node[fine] (f1) at (8.5,2.6) {$F_1$};
+\node[fine] (f2) at (10.0,2.6) {$F_2$};
+\node[fine] (f3) at (11.5,2.6) {$F_3$};
+
+\node[anchor=east] at (-0.2,0.2) {复合自由度};
+\node[cell] (v0) at (0.7,0.2) {$C_0$};
+\node[fine] (v1) at (3.0,0.2) {$F_0$};
+\node[fine] (v2) at (4.5,0.2) {$F_1$};
+\node[fine] (v3) at (6.6,0.2) {$F_2$};
+\node[fine] (v4) at (8.1,0.2) {$F_3$};
+\node[cell] (v5) at (10.5,0.2) {$C_3$};
+
+\draw[arr] (c0)--(v0);
+\draw[arr] (f0)--(v1);
+\draw[arr] (f1)--(v2);
+\draw[arr] (f2)--(v3);
+\draw[arr] (f3)--(v4);
+\draw[arr] (c3)--(v5);
+
+\draw[dashed,->] (f0) to[bend left=16] node[left,font=\scriptsize] {$1/2$} (c1);
+\draw[dashed,->] (f1) to[bend right=16] node[right,font=\scriptsize] {$1/2$} (c1);
+\draw[dashed,->] (f2) to[bend left=16] node[left,font=\scriptsize] {$1/2$} (c2);
+\draw[dashed,->] (f3) to[bend right=16] node[right,font=\scriptsize] {$1/2$} (c2);
+
+\node[align=center,font=\scriptsize] at (3.0,3.55) {灰色位置存在于存储中\\但不是独立复合自由度};
+\node[align=center,font=\scriptsize] at (9.4,3.55) {虚线表示由细层平均值\\同步覆盖粗层存储};
+\end{tikzpicture}
+\caption{两层最小例子中的层级存储与复合自由度。实线箭头表示选择算子 $S$ 保留的独立自由度；灰色的 $C_1,C_2$ 不进入复合未知量。虚线箭头表示同步算子 $J$ 用细层平均值更新被覆盖粗层存储。}
+\label{fig:amr-storage-composite-map}
+\end{figure}
+
 这个例子同时说明“层级存储”和“复合未知量”为什么不能混为一谈。程序完全可以同时存有
 \begin{equation}
 u_{C_0},u_{C_1},u_{C_2},u_{C_3}
@@ -472,14 +610,74 @@ FV 路线固定复合控制体和面法向，区分连续精确通量 $Q$ 与数
 =
 \frac{\beta_FA}{h/2}(u_\Gamma-u_F).
 \end{equation}
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1.0cm,y=1.0cm,>=Stealth,font=\small]
+\draw[line width=0.9pt] (0,0)--(10,0);
+\draw[line width=1.2pt] (6, -0.8)--(6,0.8);
+\fill (2,0) circle (2pt) node[above=3pt] {$u_C$};
+\fill (6,0) circle (2pt) node[above=3pt] {$u_\Gamma$};
+\fill (9,0) circle (2pt) node[above=3pt] {$u_F$};
+\draw[<->] (2,-0.6)--node[below] {$H/2$}(6,-0.6);
+\draw[<->] (6,-0.6)--node[below] {$h/2$}(9,-0.6);
+\node at (4,0.45) {$\beta_C$};
+\node at (7.5,0.45) {$\beta_F$};
+\draw[->,line width=0.8pt] (3.3,1.35)--node[above] {$\widehat Q$}(7.7,1.35);
+\node[align=center] at (6,-1.55) {同一个积分通量穿过两个半单元};
+\end{tikzpicture}
+\caption{一维粗细接口的局部几何。界面值 $u_\Gamma$ 只是用于闭合两侧半单元通量的中间变量，最终会被消去。}
+\label{fig:amr-interface-elimination}
+\end{figure}
+
 要求局部通量连续，
 \begin{equation}
 \widehat Q_{C\rightarrow\Gamma}
 =
 \widehat Q_{\Gamma\rightarrow F}
-=:\widehat Q_{C\rightarrow F},
+=:\widehat Q_{C\rightarrow F}.
 \end{equation}
-并消去 $u_\Gamma$，得到
+为了把消元过程完整写开，定义两段半单元的传导能力
+\begin{equation}
+a_C:=\frac{2\beta_CA}{H},
+\qquad
+a_F:=\frac{2\beta_FA}{h}.
+\label{eq:amr-half-cell-conductances}
+\end{equation}
+于是
+\begin{equation}
+a_C(u_C-u_\Gamma)
+=
+a_F(u_\Gamma-u_F).
+\end{equation}
+移项得到
+\begin{equation}
+(a_C+a_F)u_\Gamma
+=
+a_Cu_C+a_Fu_F,
+\end{equation}
+从而
+\begin{equation}
+\boxed{
+u_\Gamma
+=
+\frac{a_C}{a_C+a_F}u_C
++
+\frac{a_F}{a_C+a_F}u_F.
+}
+\label{eq:amr-interface-state-elimination}
+\end{equation}
+将它代回粗层侧通量，
+\begin{align}
+\widehat Q_{C\rightarrow F}
+&=
+a_C\left(
+u_C-
+\frac{a_Cu_C+a_Fu_F}{a_C+a_F}
+\right)\\
+&=
+\frac{a_Ca_F}{a_C+a_F}(u_C-u_F).
+\end{align}
+因此
 \begin{equation}
 \boxed{
 \widehat Q_{C\rightarrow F}
@@ -487,10 +685,53 @@ FV 路线固定复合控制体和面法向，区分连续精确通量 $Q$ 与数
 \qquad
 T_{CF}
 =
+\frac{a_Ca_F}{a_C+a_F}
+=
 \frac{A}{\dfrac{H}{2\beta_C}+\dfrac{h}{2\beta_F}}.
 }
 \label{eq:amr_cf_transmissibility}
 \end{equation}
+若定义两段半单元的扩散阻力
+\begin{equation}
+R_C=\frac{H}{2\beta_CA},
+\qquad
+R_F=\frac{h}{2\beta_FA},
+\end{equation}
+则同一关系还可以写成
+\begin{equation}
+\boxed{
+T_{CF}
+=
+\frac{1}{R_C+R_F}.
+}
+\label{eq:amr-interface-series-resistance}
+\end{equation}
+
+这一条共享界面对粗层与细层两个积分平衡方程的局部矩阵贡献为
+\begin{equation}
+\boxed{
+K_{CF}
+=
+T_{CF}
+\begin{bmatrix}
+1&-1\\
+-1&1
+\end{bmatrix}.
+}
+\label{eq:amr-interface-two-by-two-block}
+\end{equation}
+因此对任意局部状态 $\bm v=(v_C,v_F)^T$，
+\begin{equation}
+\boxed{
+\bm v^TK_{CF}\bm v
+=
+T_{CF}(v_C-v_F)^2
+\ge0
+\qquad (T_{CF}>0).
+}
+\label{eq:amr-interface-energy}
+\end{equation}
+这一式同时解释了三个性质：两侧矩阵系数成对出现、局部块对称、局部扩散能量非负。
 这就是常见的串联扩散阻力公式。它在上述一维、分段常系数、局部分段线性模型下由消元直接得到；对一般变系数与多维问题，它应被理解为一种数值通量闭合关系，而不是从守恒定律本身自动推出的精确公式。
 
 为保留后文引用，把数值界面通量单独记为
@@ -880,7 +1121,7 @@ u_g^{(f)}
 
 \subsection{幽灵值消元与复合矩阵耦合}
 
-假设一个细层单元的原始线性离散模板含 幽灵位置：
+假设一个细层单元的原始线性离散模板含幽灵位置：
 \begin{equation}
 a_Pu_P+a_gu_g+
 \sum_{N\in\mathcal N_f}a_Nu_N=b_P.
@@ -901,6 +1142,94 @@ A_{P,j}^{cf}\;\mathrel{+}=\;a_gw_j.
 }
 \end{equation}
 这说明粗到细插值并不是“与线性系统无关的预处理”。只要插值是固定线性的，它就是复合线性算子的一部分；无矩阵算子应用与显式矩阵装配必须代表同一个消元关系。
+
+把所有真实自由度收集成 $\bm u$，把所有幽灵值收集成 $\bm u_g$。在线性情形下，幽灵值可以统一写成
+\begin{equation}
+\boxed{
+\bm u_g=W\bm u+\bm g,
+}
+\label{eq:amr-ghost-linear-map}
+\end{equation}
+其中 $W$ 收集同层复制、粗到细插值和线性边界闭合中依赖未知量的部分，$\bm g$ 收集已知边界数据。于是扩展工作向量为
+\begin{equation}
+\bm u_{\mathrm{ext}}
+=
+\begin{bmatrix}
+\bm u\\
+\bm u_g
+\end{bmatrix}
+=
+\underbrace{
+\begin{bmatrix}
+I\\
+W
+\end{bmatrix}}_{E}
+\bm u
++
+\begin{bmatrix}
+0\\
+\bm g
+\end{bmatrix}.
+\label{eq:amr-extended-work-vector}
+\end{equation}
+设规则离散模板对扩展工作向量的作用写成
+\begin{equation}
+B=
+\begin{bmatrix}
+B_v&B_g
+\end{bmatrix},
+\end{equation}
+其中 $B_v$ 作用于真实位置，$B_g$ 作用于幽灵位置，则
+\begin{align}
+B\bm u_{\mathrm{ext}}
+&=
+B_v\bm u+B_g(W\bm u+\bm g)\\
+&=
+\underbrace{(B_v+B_gW)}_{A}\bm u+B_g\bm g.
+\end{align}
+因此
+\begin{equation}
+\boxed{
+A
+=
+B
+\begin{bmatrix}
+I\\W
+\end{bmatrix}
+=
+B_v+B_gW.
+}
+\label{eq:amr-ghost-elimination-factorization}
+\end{equation}
+这就是“先填幽灵值再作用规则模板”和“直接装配复合矩阵”完全等价的算子形式。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[>=Stealth,font=\small,node distance=14mm]
+\tikzset{
+  box/.style={draw=black!65,rounded corners=2pt,align=center,minimum width=3.0cm,minimum height=1.05cm,fill=black!2},
+  arr/.style={->,line width=0.8pt}
+}
+\node[box] (u) {真实自由度\\$\bm u$};
+\node[box,right=of u] (w) {延拓算子\\$W$};
+\node[box,right=of w] (g) {幽灵值\\$\bm u_g=W\bm u+\bm g$};
+\node[box,below=16mm of w] (ext) {扩展工作向量\\$\bm u_{\mathrm{ext}}$};
+\node[box,right=of ext] (b) {规则离散模板\\$B=[B_v\;B_g]$};
+\node[box,right=of b] (out) {复合算子结果\\$A\bm u+\bm b_{\mathrm{bc}}$};
+
+\draw[arr] (u)--(w);
+\draw[arr] (w)--(g);
+\draw[arr] (u)--(ext);
+\draw[arr] (g)--(ext);
+\draw[arr] (ext)--(b);
+\draw[arr] (b)--(out);
+
+\node[align=center,font=\scriptsize] at (7.0,-2.45)
+{$A=B[I;W]=B_v+B_gW$};
+\end{tikzpicture}
+\caption{线性幽灵值延拓与复合算子的关系。幽灵值不是新的独立未知量，而是由真实自由度通过 $W$ 生成；把这一步代入规则离散模板 $B$，就得到复合算子 $A$。}
+\label{fig:amr-ghost-elimination-operator}
+\end{figure}
 
 把这一点放到一个最小矩阵行中会更直观。设某个细层单元 $F$ 的一维二阶离散模板为
 \begin{equation}
@@ -937,7 +1266,7 @@ K_{fc}\neq0
 
 这个例子还给出一个直接的实现校验方法。显式装配路径应在该行产生 $-1/4$ 与 $-3/4$ 两个粗层列系数；无矩阵路径则应先根据粗层状态计算同一个 $u_g$，再执行原来的细层模板。对任意测试向量，两条路径得到的 $A\bm u$ 必须一致。若把 $u_g$ 错当成新的独立未知量，就不仅增加了系统维数，还需要额外方程决定它；这已经不是原来的复合离散。
 
-如果插值使用依赖当前解的限制器、非线性重构或状态相关权重，则 $w_j=w_j(\bm u)$，上述关系不再定义一个固定矩阵 $A$。此时应把 复合算子 视为非线性映射 $\mathcal A(\bm u)$，或在线性化后讨论其 Jacobian。把这种状态相关的幽灵值填充强行解释成固定稀疏矩阵，会混淆离散模型与求解器对象。
+如果插值使用依赖当前解的限制器、非线性重构或状态相关权重，则 $w_j=w_j(\bm u)$，上述关系不再定义一个固定矩阵 $A$。此时应把 复合算子视为非线性映射 $\mathcal A(\bm u)$，或在线性化后讨论其 Jacobian。把这种状态相关的幽灵值填充强行解释成固定稀疏矩阵，会混淆离散模型与求解器对象。
 
 \begin{warningbox}
 常数保持只保证零阶一致性，并不能证明粗细接口达到与内部离散模板相同的截断误差阶。AMR 的整体收敛性还取决于重构、数值通量、边界闭合、稳定性与解正则性。
@@ -1290,7 +1619,7 @@ P_{c\rightarrow f}R_{f\rightarrow c}\bm u_f
 平均下传只保留粗尺度平均值，细层子单元之间的子单元变化已经被压缩掉；之后再插值只能依据粗分辨率表示重建新的细尺度分布，而无法恢复任意原始细层状态。这个不对称关系是理解 AMR 跨层数据传递最重要的心智模型之一。
 
 
-最简单的 分片常数传递 可以把这个信息损失写成一个 $2\times2$ 投影矩阵。对一维 $r=2$，令
+最简单的分片常数传递可以把这个信息损失写成一个 $2\times2$ 投影矩阵。对一维 $r=2$，令
 \begin{equation}
 P_0=
 \begin{bmatrix}1\\1\end{bmatrix},
@@ -1300,18 +1629,110 @@ R=\frac12
 \end{equation}
 于是
 \begin{equation}
+\boxed{
 RP_0=1,
-\qquad
-P_0R
-=\frac12
+}
+\label{eq:amr-rp-coarse-identity}
+\end{equation}
+而
+\begin{equation}
+\boxed{
+Q:=P_0R
+=
+\frac12
 \begin{bmatrix}
 1&1\\
 1&1
 \end{bmatrix}
 \neq I_2.
+}
 \label{eq:amr-simple-transfer-projector}
 \end{equation}
-$P_0R$ 把任意 细层状态 $(u_{F_-},u_{F_+})^T$ 变成两个相同的均值。它保留平均模态 $(1,1)^T$，却消去细尺度差分模态 $(1,-1)^T$。因此 平均下传的“信息损失”不是抽象说法，而可以直接看成某些 细尺度模态 被 投影 的零空间消去。
+并且
+\begin{equation}
+Q^2=Q.
+\label{eq:amr-transfer-projector-idempotent}
+\end{equation}
+因此 $Q$ 确实是细层状态空间中的一个投影。
+
+任意两子单元状态都可唯一分解为
+\begin{equation}
+\begin{bmatrix}
+u_{F_-}\\u_{F_+}
+\end{bmatrix}
+=
+\underbrace{
+\bar u
+\begin{bmatrix}1\\1\end{bmatrix}}_{\text{粗尺度平均模态}}
++
+\underbrace{
+\delta
+\begin{bmatrix}-1\\1\end{bmatrix}}_{\text{细尺度差分模态}},
+\label{eq:amr-fine-mean-detail-decomposition}
+\end{equation}
+其中
+\begin{equation}
+\bar u=\frac12(u_{F_-}+u_{F_+}),
+\qquad
+\delta=\frac12(u_{F_+}-u_{F_-}).
+\end{equation}
+作用平均下传后，
+\begin{equation}
+R
+\begin{bmatrix}
+u_{F_-}\\u_{F_+}
+\end{bmatrix}
+=
+\bar u,
+\label{eq:amr-average-removes-detail}
+\end{equation}
+再做分片常数粗到细传递，
+\begin{equation}
+Q
+\begin{bmatrix}
+u_{F_-}\\u_{F_+}
+\end{bmatrix}
+=
+\bar u
+\begin{bmatrix}1\\1\end{bmatrix}.
+\label{eq:amr-projector-keeps-mean}
+\end{equation}
+因此
+\begin{equation}
+(I-Q)
+\begin{bmatrix}
+u_{F_-}\\u_{F_+}
+\end{bmatrix}
+=
+\delta
+\begin{bmatrix}-1\\1\end{bmatrix}.
+\label{eq:amr-projector-detail-space}
+\end{equation}
+“细到粗会丢信息”的精确含义就是：$R$ 保留平均模态，却把差分模态映射到零。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1.0cm,y=1.0cm,>=Stealth,font=\small]
+\tikzset{
+  c/.style={draw=black!65,minimum width=2.2cm,minimum height=1.0cm,align=center,fill=black!2},
+  f/.style={draw=black!65,minimum width=2.5cm,minimum height=1.0cm,align=center},
+  arr/.style={->,line width=0.8pt}
+}
+\node[c] (coarse) at (0,0) {粗层\\$\bar u$};
+\node[f] (fm) at (5,0.7) {左子单元\\$\bar u-\delta$};
+\node[f] (fp) at (5,-0.7) {右子单元\\$\bar u+\delta$};
+
+\draw[arr] (coarse) to[bend left=12] node[above] {$P$} (fm);
+\draw[arr] (coarse) to[bend right=12] node[below] {$P$} (fp);
+\draw[arr] (fm.west) to[bend left=18] node[above,font=\scriptsize] {$R$} (coarse.east);
+\draw[arr] (fp.west) to[bend right=18] node[below,font=\scriptsize] {$R$} (coarse.east);
+
+\node[align=center,font=\scriptsize] at (2.5,-2.0)
+{$R$ 只保留 $\bar u$；细尺度分量 $\delta$ 在细到粗过程中被消去};
+\end{tikzpicture}
+\caption{一维 $r=2$ 时平均模态与细尺度差分模态的分解。粗层只能保存平均模态；差分模态属于被粗化消去的细尺度信息。}
+\label{fig:amr-mean-detail-transfer}
+\end{figure}
 
 \subsection{变量语义与同步规则}
 
@@ -1549,7 +1970,51 @@ R_{\mathrm{AMR}}\,u^{\mathrm{old}}_{\ell+1},
 \end{equation}
 这里 $\Pi_{\mathrm{copy}}$ 表示同分辨率数据的几何重映射，$P_{\mathrm{AMR}}$ 表示粗到细的 AMR 插值，$R_{\mathrm{AMR}}$ 表示细到粗的同步算子。
 
-对新出现的 细层单元，$P_{\mathrm{AMR}}$ 的具体形式取决于离散变量的含义。若未知量是 单元平均值，并且它代表某个守恒密度，则仅要求点值插值精度还不够；新生成的细层单元平均值 还应满足相应的积分守恒关系。对于一个被 $r^d$ 个等体积细层单元覆盖的粗层单元$C$，最基本的约束是
+若进一步引入旧空间上的抽取算子
+\begin{equation}
+C_{\mathrm{keep}},
+\qquad
+C_{\mathrm{refine}},
+\qquad
+C_{\mathrm{derefine}},
+\end{equation}
+以及把三个区域结果写入新空间相应位置的注入算子
+\begin{equation}
+E_{\mathrm{keep}},
+\qquad
+E_{\mathrm{refine}},
+\qquad
+E_{\mathrm{derefine}},
+\end{equation}
+则整个线性状态转移可以统一写成
+\begin{equation}
+\boxed{
+\mathcal T_{\mathrm{regrid}}
+=
+E_{\mathrm{keep}}\Pi_{\mathrm{copy}}C_{\mathrm{keep}}
++
+E_{\mathrm{refine}}P_{\mathrm{AMR}}C_{\mathrm{refine}}
++
+E_{\mathrm{derefine}}R_{\mathrm{AMR}}C_{\mathrm{derefine}}.
+}
+\label{eq:amr-regrid-operator-decomposition}
+\end{equation}
+三项分别对应保持细化、新增细化和取消细化区域。这个表达式把图~\ref{fig:amr-regrid-transfer}中的三类箭头变成了一个真正的线性算子分解。
+
+对任意新空间自由度，三个注入区域互不重叠，因此有
+\begin{equation}
+E_{\mathrm{keep}}E_{\mathrm{keep}}^T
++
+E_{\mathrm{refine}}E_{\mathrm{refine}}^T
++
+E_{\mathrm{derefine}}E_{\mathrm{derefine}}^T
+=
+I_{\mathrm{new}}.
+\label{eq:amr-regrid-partition-identity}
+\end{equation}
+这正是“新层级每个物理位置只能由一种数据来源负责”的代数版本。
+
+对新出现的细层单元，$P_{\mathrm{AMR}}$ 的具体形式取决于离散变量的含义。若未知量是 单元平均值，并且它代表某个守恒密度，则仅要求点值插值精度还不够；新生成的细层单元平均值 还应满足相应的积分守恒关系。对于一个被 $r^d$ 个等体积细层单元覆盖的粗层单元$C$，最基本的约束是
 \begin{equation}
 \boxed{
 \sum_{F\subset C}V_F u_F^{\mathrm{new}}
