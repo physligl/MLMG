@@ -2,148 +2,468 @@
 \label{ch:shared-memory}
 
 \begin{keybox}
-\textbf{共享内存实现的本质：}多个线程看到同一地址空间，因此跨线程区域读取不需要显式消息；真正需要设计的是输出所有权、任务粒度、cache/NUMA 数据位置和阶段同步。本章始终把\chapref{ch:mg-parallel-operations}中的同一组 MG 操作映射到线程执行。
+\textbf{共享内存并行的核心并不是“所有线程都能看到同一个数组”，而是把\chapref{ch:mg-parallel-operations}中的状态版本、所有权和依赖映射到一个共享地址空间。}在这类机器上，跨线程读取通常不需要显式消息，但仍然存在三类完全不同的问题：
+\begin{equation}
+\boxed{
+\text{谁写}
+\quad+\quad
+\text{数据物理上放在哪里}
+\quad+\quad
+\text{什么时候其他线程可以安全读取}.
+}
+\label{eq:shared-memory-three-questions}
+\end{equation}
+因此共享地址空间只消除了“必须通过网络取得远端字节”这一层问题，并没有消除 cache、NUMA、同步、false sharing、调度和带宽瓶颈。
 \end{keybox}
 
-\section{共享数组、线程所有权与内存布局}
+\section{共享地址空间不等于统一代价}
 
-设一个三维 level 采用 $x$ 连续存储，状态数组为
+设一个 level 上有
 \begin{equation}
-u[p],\quad b[p],\quad r[p],\qquad p=i+n_x[(j-1)+n_y(k-1)].
+u[p],\quad b[p],\quad r[p],
 \end{equation}
-所有线程都能读取这些数组，但为了避免 write--write race，通常给每个输出 cell 指定唯一线程 owner。最简单的静态分块把连续 cell 区间或空间 tile 分配给线程；动态调度则在运行时分配 tile。
+所有线程都可以用普通地址访问这些数组。从编程接口看，它们处在同一个地址空间中；从硬件看，同一个地址可能对应：
 
-共享地址空间不等于“数据访问成本相同”。不同线程读取同一邻域可能产生 cache line 竞争、重复加载或 NUMA remote access。因此线程划分最好与物理存储连续性一致，并让一个线程在短时间内连续处理相邻 cells。
+\begin{itemize}
+\item 当前核心的 L1/L2 cache line；
+\item 共享 LLC 中的数据；
+\item 本 socket 的本地 DRAM；
+\item 另一个 NUMA node 的 DRAM；
+\item 刚被其他核心修改、正在通过 cache coherence 协议传播的新版本。
+\end{itemize}
 
-\section{Cell、Tile 与 Box 粒度}
+因此“共享”只说明\textbf{地址可达}，不说明访问延迟和带宽相同。
 
-一个 cell 一个 task 提供最大逻辑并行度，但实际线程调度不能细到每个 cell 创建一次任务。通常把 cells 聚合成 tile：
+把\chapref{ch:parallel-model}的三个概念直接搬过来：
+
+\begin{enumerate}
+\item \textbf{逻辑所有权}：哪个线程负责某个输出区域的最终写入；
+\item \textbf{物理放置}：相关页面和 cache line 实际位于哪个 NUMA node / cache hierarchy；
+\item \textbf{执行分配}：当前这个 tile 由哪个 worker 执行。
+\end{enumerate}
+
+一个正确但很慢的共享内存程序，经常不是所有权错了，而是后两者错位了：线程在 socket 1 上执行，却不断读取 first-touch 到 socket 0 的页面。
+
+\section{正确性的第一原则仍然是 Unique Writer}
+
+对 Jacobi、residual、restriction、prolongation 等 gather 型 kernel，最简单可靠的规则仍然是
 \begin{equation}
-\text{tile}=n_x^{(t)}\times n_y^{(t)}\times n_z^{(t)}.
+\boxed{
+\text{每个输出位置在一个阶段内只有一个 writer}.
+}
+\label{eq:shared-memory-unique-writer}
 \end{equation}
-线程领取 tile 后在内部执行普通串行循环。tile 太小会增加调度与边界工作集重复，太大则降低并行度并放大负载不均。
 
-对 stencil kernel，tile 周围一层邻域也会被读取。若 tile 体积为 $V_t$、扩张后的输入工作集为 $V_t^{+}$，一个简单指标是
+假设 residual task $t_i$ 负责
 \begin{equation}
-\eta_{ws}=\frac{V_t^{+}}{V_t}.
+r_i=b_i-(Au)_i.
+\end{equation}
+它可能读取其他线程输出区域附近的 $u_j$，但只要这一阶段的 $u$ 是只读版本，而 $r_i$ 只有当前 task 写入，就不存在数据竞争。
+
+这说明\textbf{读取越过 tile 边界本身不是 race}。race 的来源是两个并发 task 对同一存储位置至少有一个写访问，并且缺少满足程序语义的同步关系。
+
+共享内存实现还必须考虑\textbf{可见性}。例如 RBGS 的 black phase 必须读取 red phase 已完成的新值；这里不仅逻辑上有 RAW 依赖，还需要实际执行机制保证 red 写入在 black 读取前已经完成并对其可见。OpenMP barrier、task dependency 或其他同步原语承担的正是这个职责。
+
+\section{Logical Task 与线程调度粒度必须分开}
+
+在\chapref{ch:mg-parallel-operations}中，一个 residual logical task 可以只负责一个 cell。但真实 CPU 不会为每个 cell 创建一个独立重量级线程任务。通常会把大量 point tasks 聚合成 tile、chunk 或 box：
+\begin{equation}
+T
+=
+n_x^{(t)}
+\times
+n_y^{(t)}
+\times
+n_z^{(t)}.
+\end{equation}
+
+于是出现两个尺度：
+
+\begin{equation}
+\boxed{
+\text{point-level dependency analysis}
+\quad\neq\quad
+\text{tile-level scheduling}.
+}
+\label{eq:shared-memory-two-granularities}
+\end{equation}
+
+前者回答正确性与算法并行度，后者决定 runtime overhead、locality 和 load balance。
+
+tile 太小通常会带来：
+\begin{itemize}
+\item 调度与任务元数据开销增加；
+\item 相邻 tile 重复读取边界 cache lines；
+\item 更多线程同时触及相邻内存，增加 coherence traffic；
+\item 动态调度时工作窃取或队列操作更频繁。
+\end{itemize}
+
+tile 太大则会：
+\begin{itemize}
+\item 降低可调度 task 数；
+\item 放大 patch 间 workload 差异；
+\item 使最慢 tile 决定阶段尾部时间；
+\item 在 coarse level 上更早出现“task 数小于线程数”。
+\end{itemize}
+
+合理粒度必须在 locality、调度开销与负载均衡之间折中。
+
+\section{Stencil Tile 的工作集与边界放大}
+
+对一层 halo 的三维 stencil，若输出 tile 为
+\begin{equation}
+n_x^{(t)}\times n_y^{(t)}\times n_z^{(t)},
+\end{equation}
+输入可能需要扩张为
+\begin{equation}
+(n_x^{(t)}+2)
+\times
+(n_y^{(t)}+2)
+\times
+(n_z^{(t)}+2).
+\end{equation}
+记输出体积为 $V_t$，输入 footprint 为 $V_t^+$，定义
+\begin{equation}
+\eta_{\mathrm{ws}}
+=
+\frac{V_t^+}{V_t}.
 \label{eq:shared-memory-working-set-amplification}
 \end{equation}
-它描述的是 cache/workset 放大，而不是 MPI 通信量。tile 越小，边界相对比例越大，多个线程可能重复触及相邻 cache lines。
 
-\section{Jacobi、残差与网格间传递的线程映射}
+$\eta_{\mathrm{ws}}$ 不是“实际 DRAM 流量一定增加这么多倍”，因为邻近 tile 可能从 cache 复用数据；它只是一个几何上的工作集放大指标。它提醒我们：tile 越小，边界相对比例越大，对 locality 的要求越高。
 
-Jacobi 和 residual 都是“一个输出点一个 writer”的 stencil gather。线程只需处理自己的 tile，并读取相邻 tile 的旧状态；因为输入阶段是只读的，不需要对跨 tile load 加锁。
-
-Restriction 也适合 coarse-output ownership：每个线程领取一组 coarse cells，从 fine residual gather 所需邻域并写唯一 coarse output。Prolongation 同样采用 fine-output gather，可以完全避免多个 coarse tasks 对同一 fine cell 的原子加法。
-
-Correction 是纯 map，通常可以与 prolongation 融合成
+因此 stencil tile 选择不能只看“能放多少线程”，还要看：
 \begin{equation}
-u_h(i)\mathrel{+}=\sum_I p_{iI}e_H(I),
+\boxed{
+\text{tile footprint}
+\quad\text{是否适合 cache hierarchy}.
+}
 \end{equation}
-减少一次完整 fine-grid 内存遍历。是否融合应由数据生命周期决定：若独立的 $e_h$ 后面还要使用，就不能为了少一次 loop 提前覆盖。
 
+\section{False Sharing：没有数据 Race 也可能很慢}
+
+共享内存中一个很典型的反直觉现象是：两个线程写\textbf{不同变量}，程序完全正确，却仍然互相拖慢。
+
+如果这些变量位于同一个 cache line，线程 A 修改 line 中的一部分，线程 B 修改同一 line 的另一部分，cache coherence 仍可能让这条 line 在核心之间反复失效和迁移。这就是 false sharing。
+
+例如每线程 partial sum 若紧密排列为
+\begin{equation}
+s_0,s_1,\ldots,s_{P-1},
+\end{equation}
+多个线程可能同时更新同一条 cache line 上的不同 $s_p$。逻辑上每个元素有唯一 writer，却仍产生 coherence traffic。
+
+因此要区分：
+\begin{equation}
+\boxed{
+\text{data race}
+\neq
+\text{false sharing}.
+}
+\end{equation}
+
+前者是正确性问题；后者是 cache-line 粒度的数据放置问题。对 thread-private counters、reduction buffers 和边界 metadata，padding 或分块布局有时比继续优化算术指令更重要。
+
+\section{静态与动态调度对应不同代价模型}
+
+对规则均匀网格，一个 tile 的 work 往往近似一致，静态调度通常具有明显优势：
+\begin{itemize}
+\item 低调度开销；
+\item worker 与数据区域关系稳定；
+\item 更容易维持 cache/NUMA affinity；
+\item 多个 sweep 中可重复使用相同划分。
+\end{itemize}
+
+若 patch 大小差异明显、embedded boundary 导致每 cell 工作不一致，或某些 block smoother 代价变化很大，静态划分可能产生严重 tail imbalance。此时 dynamic/guided scheduling 或显式 task queue 可以改善负载平衡，但代价是 locality 和调度开销变差。
+
+可以把阶段时间近似写成
+\begin{equation}
+T_{\mathrm{stage}}
+\approx
+\max_p W_p
++
+T_{\mathrm{schedule}}
++
+T_{\mathrm{memory/coherence}},
+\end{equation}
+其中 $W_p$ 是 worker $p$ 实际承担的工作时间。动态调度试图降低 $\max_p W_p$，但通常会提高后两项。
+
+因此“dynamic 比 static 更高级”是错误心智模型。它们只是不同 workload 下的不同折中。
+
+\section{Jacobi、Residual 与 Transfer 的线程映射}
+
+\subsection{Jacobi 与 Residual}
+
+Jacobi 与 residual 都是 unique-writer stencil gather。一个常见线程映射是：
 
 \begin{algorithm}[htbp]
 \caption{共享内存 tile-based residual}
 \begin{algorithmic}[1]
-\State 所有线程共享只读输入 $u,b$ 与系数数组，共享输出数组 $r$
-\State 将 owned cells 划分为互不重叠 tiles
+\State 输入 $u,b$ 与 operator data 在本阶段只读，输出为 $r$
+\State 将 owned cells 聚合为互不重叠输出 tiles
 \ForAll{tiles $T$ \textbf{in parallel}}
   \ForAll{cells $i\in T$}
-    \State 从共享数组读取 $u_i$ 及 stencil 邻居
+    \State 读取 $u_i$ 与 stencil neighbors
     \State $r_i\gets b_i-(Au)_i$
   \EndFor
 \EndFor
 \end{algorithmic}
 \end{algorithm}
-这里 tile 只规定输出写入范围；读取邻居可以越过 tile 边界，因为所有线程看到同一地址空间。正确性依赖“每个 $r_i$ 只有一个 owner”，性能则取决于 tile 工作集、cache 和 NUMA 放置。
 
-\section{Gauss--Seidel 与同步}
+tile 只规定\textbf{输出写入范围}。读取邻居可以跨越 tile 边界，因为所有线程共享地址空间。这里不需要 halo message；若 patch 数据结构显式保存 ghost，则 ghost copy 是另外一个 producer--consumer 阶段。
+
+Jacobi 若使用 old/new arrays，每个 sweep 结束后只需交换逻辑角色：
+\begin{equation}
+u^{old}\leftrightarrow u^{new}.
+\end{equation}
+不要把“交换指针/handle”误解为拷贝整个数组。
+
+\subsection{Restriction 与 Prolongation}
+
+Restriction 采用 coarse-output gather：线程拥有一组 coarse outputs，从 fine residual 读取所需邻域。Prolongation 采用 fine-output gather：线程拥有一组 fine outputs，从 coarse error 读取插值邻域。二者都延续第八章的 unique-writer 规则。
+
+如果 prolongation 之后立即 correction，可以融合为
+\begin{equation}
+u_h(i)
+\mathrel{+}=
+\sum_I p_{iI}e_H(I).
+\end{equation}
+共享内存上的主要收益通常不是减少“线程数”，而是少物化一个 $e_h$ 数组、少一次完整 fine-grid memory pass。是否值得融合应通过 memory traffic 与后继数据生命周期判断。
+
+\section{Gauss--Seidel 把同步直接放进热路径}
 \label{sec:shared-rbgs}
 
-Lexicographic GS 的链式依赖不适合简单 parallel-for。RBGS 把任务拆成两个颜色阶段：
+Lexicographic GS 的依赖链不适合普通 parallel-for。对于标准五点/七点 stencil，RBGS 把一个 sweep 组织成
 \begin{equation}
-\text{parallel red}\rightarrow\text{barrier}\rightarrow\text{parallel black}\rightarrow\text{barrier}.
+\text{parallel red}
+\rightarrow
+\text{barrier}
+\rightarrow
+\text{parallel black}
+\rightarrow
+\text{barrier}.
+\label{eq:shared-rbgs-barriers}
 \end{equation}
-每个颜色内部可并行，但每个 sweep 至少包含颜色间同步。若 smoother 需要多次 sweep，同步次数也线性增加。
 
-更一般的图着色或 block smoother 可以扩大单个 task 粒度，但会增加 setup、工作集和颜色数。共享内存优化不能只比较单 sweep 时间，还必须比较 V-cycle convergence factor 与总 time-to-solution。
+每个颜色内部可并行，但颜色之间的 barrier 属于算法真依赖，而不是“OpenMP 太慢”造成的额外步骤。
 
-\section{归约与收敛检查}
-
-线程级 residual norm 通常先做每线程局部累加：
+如果一个 V-cycle 在某层执行 $\nu_1$ 次 pre-smoothing 和 $\nu_2$ 次 post-smoothing，那么仅 RBGS 颜色阶段就会重复出现大量 barrier。随着 coarse level work 下降，
 \begin{equation}
-s_p=\sum_{i\in\Omega_p}r_i^2,
+T_{\mathrm{barrier}}
 \end{equation}
-再归约
+在单 sweep 中的占比会不断上升。
+
+这说明 smoother 选择必须同时比较：
 \begin{equation}
-\|r\|_2=\sqrt{\sum_p s_p}.
+\boxed{
+\text{convergence per sweep}
+\quad\text{与}\quad
+\text{parallel cost per sweep}.
+}
 \end{equation}
-把每个 cell 都直接原子加到全局标量会制造严重竞争。树形 reduction 或线程私有 partial sums 把高并发 map 阶段与低并发聚合阶段分开。
+一个单 sweep 较慢但显著减少 V-cycle 数的 smoother 仍可能具有更小的 time-to-solution。
 
-\section{NUMA 与 First-Touch}
+\section{Reduction 既有同步成本也有数值语义}
 
-多 socket 系统虽然提供单一虚拟地址空间，但物理内存页通常归属于某个 NUMA node。若一个线程初始化所有大数组，页面可能集中放在一个 node，其他 socket 后续访问就变成 remote memory traffic。
+残差范数可以先做线程私有局部和
+\begin{equation}
+s_p
+=
+\sum_{i\in\Omega_p}r_i^2,
+\end{equation}
+再做
+\begin{equation}
+\|r\|_2
+=
+\sqrt{\sum_p s_p}.
+\end{equation}
 
-因此初始化最好与求解阶段采用一致的空间分区：负责某块数据的线程先触碰对应页面。对每个 MG level 的 $u,b,r,e$ 和系数数组，都应保持相似 first-touch 策略；只优化最细层而让粗层由单线程初始化，可能在 coarse solve 中产生意外远端访问。
+相比每个 cell 对单一全局标量做 atomic update，private partial sum + tree reduction 通常具有更好的扩展性。
 
-\section{共享内存 V-Cycle 的执行时间线}
+但这里有三个不同问题：
 
-把\eqref{eq:mg-parallel-vcycle-dag}映射到线程后，一个典型 level 的执行是：
 \begin{enumerate}
-\item barrier 后进入 pre-smooth；线程各处理 owned tiles；
-\item 必要的颜色/阶段同步；
-\item parallel residual；
-\item parallel restriction，写入 coarse $b$；
-\item 进入 coarse level，活跃 task 数减少；
-\item 返回后 parallel prolongation/correction；
-\item parallel post-smooth；
-\item 需要收敛检查时做 thread reduction。
+\item \textbf{竞争}：避免所有线程写同一标量；
+\item \textbf{false sharing}：不同 partial sums 最好避免高频写入同一 cache line；
+\item \textbf{reproducibility}：不同 reduction tree 会改变浮点加法顺序，因此末位可能不同。
 \end{enumerate}
 
-这里没有网络 halo exchange，但 patch/box 数据结构仍可能显式维护 ghost cells；这些 ghost fill 多为本进程内 copy 或 coarse-fine interpolation。它们仍然是 task dependency，但不能误称为 MPI 通信。
+如果 residual norm 只用于诊断，而不是算法控制条件，则它还是一个可选同步点。对固定-cycle multigrid，减少不必要 norm 往往比优化 norm kernel 本身更有效。
 
-\section{粗网格并行度衰减与线程收缩}
+\section{NUMA：共享虚拟地址背后的物理分布}
 
-若一直使用固定线程数 $P$，当 $N_\ell/P$ 降到很小以后，每个线程只做很少 cells，却仍承担 barrier、调度和 cache 迁移成本。一个自然策略是让活跃线程数随层级下降：
+在多 socket 系统中，程序看到统一虚拟地址空间，但物理页面通常归属于某个 NUMA node。一个常见策略是 first-touch：页面第一次被某个线程写入时，操作系统倾向于把它放在该线程所在 node 的本地内存。
+
+如果所有数组由单线程初始化，
 \begin{equation}
-P_\ell\le \min(P,N_\ell/g_{\min}),
+u,b,r,e,\text{coefficients}
 \end{equation}
-其中 $g_{\min}$ 是希望每个线程至少处理的任务粒度。
+可能大量集中在一个 node。随后其他 socket 的线程虽然能直接 load，却会产生 remote memory traffic。
 
-最粗层甚至可以转成单线程或小线程组直接法。关键不是“始终使用所有核心”，而是让
+因此初始化本身应该采用与后续计算相近的空间划分：
 \begin{equation}
-\text{useful work per active thread}
+\boxed{
+\text{compute ownership}
+\approx
+\text{initialization ownership}
+\approx
+\text{NUMA placement}.
+}
+\label{eq:shared-numa-alignment}
 \end{equation}
-保持足够大。
+
+还需要配合 thread affinity。若 worker 在运行期间频繁跨 socket 迁移，即使 first-touch 最初正确，数据亲和性也会被破坏。
+
+对多重网格尤其要注意：每个 level 都有自己的数组。只给 finest level 做并行 first-touch，而 coarse levels 仍由单线程初始化，会把 NUMA 问题藏到 V-cycle 后半段。
+
+\section{内存带宽决定线程扩展何时饱和}
+
+Poisson 类 stencil 往往具有较低算术强度。随着线程数增加，性能最初可能近似线性提升，直到 socket/NUMA node 的可持续 memory bandwidth 接近饱和。
+
+可以用一个简化模型理解：
+\begin{equation}
+P_{\mathrm{kernel}}(P)
+\le
+\min
+\left(
+P F_{\mathrm{core}},
+I B_{\mathrm{socket}}(P)
+\right),
+\end{equation}
+其中 $B_{\mathrm{socket}}(P)$ 随线程增加先上升，随后接近平台带宽上限。
+
+因此当 residual 已经把 memory bandwidth 打满以后，再增加线程可能出现：
+\begin{itemize}
+\item wall time 几乎不再下降；
+\item parallel efficiency 继续恶化；
+\item cache/coherence 与 barrier 成本反而增加。
+\end{itemize}
+
+这种现象不是“并行度不足”。算法可能仍有海量 point tasks，只是\textbf{机器资源已经从 core 数切换成 memory bandwidth}。
+
+判断两者的方法也不同：并行度不足应看 task 数、$W/S$ 和 worker idle；带宽饱和则应看 memory bandwidth、LLC miss、bytes/s 与 Roofline。
+
+\section{Parallel Region 与 Barrier 也是固定成本}
+
+若每个小 kernel 都反复创建/销毁线程团队，或者频繁进入独立 parallel region，fork/join 与 runtime bookkeeping 可能在 coarse levels 上占明显比例。
+
+一种常见设计是维持较长生命周期的线程团队，在内部通过 worksharing、task dependency 或必要 barrier 推进多个 MG 阶段，而不是每个小 loop 都重新创建执行上下文。
+
+但减少 barrier 不能破坏状态依赖。例如 residual 尚未完全写好时，restriction 不能随意读取未完成区域，除非实现显式 patch/task-level producer--consumer dependency。于是
+\begin{equation}
+\boxed{
+\text{barrier elimination}
+\neq
+\text{dependency elimination}.
+}
+\end{equation}
+真正能删除的只是比 DAG 要求更强的全局同步。
+
+\section{共享内存 V-Cycle 的执行结构}
+
+把式~\eqref{eq:mg-parallel-vcycle-dag}映射到线程后，一个典型 level 可以理解为：
+
+\begin{enumerate}
+\item pre-smooth：线程处理各自 tiles，RBGS 等方法内部可能有颜色 barrier；
+\item residual：unique-writer stencil gather；
+\item restriction：coarse-output gather；
+\item 进入 coarse level，可用 tile 数和 useful worker 数下降；
+\item coarse result ready 后做 prolongation/correction；
+\item post-smooth；
+\item 只有算法需要时才做 residual norm/reduction。
+\end{enumerate}
+
+这里没有网络 halo exchange。即使 patch/box 容器显式保存 ghost，单进程内 ghost fill 也通常是 copy、periodic mapping 或 coarse--fine interpolation。它们仍然是 readiness task，却不是 MPI 通信。
+
+如果 runtime 支持细粒度 task dependency，不同 patch 可以在局部数据 ready 后继续推进；如果 runtime overhead 大于可获得的 overlap，则 level-wide worksharing + 少量 barrier 反而更高效。选择取决于 task 粒度与实际 critical path，而不是“异步越多越先进”。
+
+\section{粗网格上的线程收缩}
+
+由式~\eqref{eq:mg-useful-workers}，粗化后有意义的 worker 数会快速下降。共享内存中可以写成
+\begin{equation}
+P_\ell
+\le
+\min
+\left(
+P_{\max},
+\frac{N_\ell}{g_{\min}}
+\right).
+\label{eq:shared-thread-shrinking}
+\end{equation}
+
+固定使用全部线程会让每个线程只处理极少 cells，却仍支付：
+\begin{itemize}
+\item barrier；
+\item runtime scheduling；
+\item cache line ownership 迁移；
+\item reduction fan-in；
+\item 可能的 NUMA 远端访问。
+\end{itemize}
+
+因此 thread shrinking 的目标不是“少用核心省资源”，而是保持
+\begin{equation}
+\boxed{
+\text{useful work per active worker}
+}
+\end{equation}
+高于固定开销能够接受的阈值。
+
+最粗层还可能切换为单线程、小线程组或直接法。这个切换点应通过 benchmark 决定，而不是固定写成某个 unknown 常数。
+
+\section{共享内存性能诊断顺序}
+
+当一个 OpenMP/线程版 V-cycle scaling 不理想时，建议按以下顺序排查：
+
+\begin{enumerate}
+\item \textbf{正确性层}：是否保持 unique writer、状态版本和必要 happens-before；
+\item \textbf{并行度层}：当前 level 有多少 tiles，是否已经少于线程数；
+\item \textbf{负载层}：各线程 work 是否均衡，尾部是否由少量重 tile 决定；
+\item \textbf{带宽层}：memory bandwidth 是否已经饱和；
+\item \textbf{cache/coherence 层}：是否有 false sharing、过小 tile、重复边界流量；
+\item \textbf{NUMA 层}：页面放置与线程 affinity 是否匹配；
+\item \textbf{同步层}：barrier、reduction、parallel region 和 scheduler overhead 占比多少；
+\item \textbf{算法层}：smoother 的同步成本是否换来了足够的 convergence improvement。
+\end{enumerate}
+
+只有先区分这些层次，\texttt{gomp\_barrier\_wait}、低 CPU utilization 或 bandwidth plateau 才能被解释，而不是简单归结为“OpenMP 不行”。
 
 \section{本章小结}
 
-共享内存映射保留了\chapref{ch:mg-parallel-operations}的操作结构：stencil/gather task 由线程处理 tile，唯一 writer 保证正确性，RBGS 与 reduction 引入显式同步，NUMA 与 cache 决定数据位置成本。粗层问题不是算法 work 变多，而是 task 数下降后同步和内存系统固定成本无法被足够工作摊薄。
+共享内存并行保留了多重网格的原始算法语义，但把跨所有权数据访问从“消息”变成了共享 load。真正需要管理的是 unique writer、状态可见性、tile 粒度、cache line、NUMA placement、线程调度与同步。
+
+这一章最重要的三个区分是：共享地址空间不等于统一访问代价；无 data race 不等于无 false sharing；高算法并行度不等于线程数可以无限扩展。细层常受 memory bandwidth 限制，粗层则逐渐转向 task scarcity、barrier 与 runtime fixed cost。thread shrinking、persistent parallel region 和 locality-aware tiling 都是在回应这条尺度变化。
 
 \section*{习题}
-\subsection*{共享内存成本与正确性}
-\begin{enumerate}[label=\arabic*.]
-\item $256^3$ 网格用 32 线程静态均分，计算每线程 cell 数；连续 coarsen 三层后重复计算，并判断哪一层开始低于每线程 4096 cells。
-\item 一个 $32^3$ tile 的一层 halo 输入工作集为 $34^3$。计算式~\eqref{eq:shared-memory-working-set-amplification}；再比较 $16^3$ tile。
-\item RBGS 做 3 次 pre 和 3 次 post sweep，每 sweep 两颜色。计算一个 V-cycle level 至少包含多少次颜色阶段同步。
-\item 双 socket 各 8 通道内存，local bandwidth 为 150 GB/s，remote bandwidth 为 80 GB/s。若 40\% 流量错误落到 remote node，计算简单加权带宽上界。
 
-\item 证明 Jacobi 旧数组只读、新数组唯一 writer 时，不需要 tile 间锁。
-\item 证明 RBGS 对五点/七点 Cartesian stencil 的同色点不直接耦合。
-\item 说明 first-touch 只影响物理页面位置而不改变数值结果，并推导 remote access 只进入性能模型。
-\item 对融合 prolongation+correction 给出保持数值等价所需的数据依赖条件。
-\end{enumerate}
-\subsection*{线程与 NUMA 实验}
+\subsection*{粒度与工作集}
 \begin{enumerate}[label=\arabic*.]
-\item 用 OpenMP 或等价共享内存接口实现 residual、Jacobi、restriction、prolongation 与 reduction。
-\item 扫描 tile 大小并记录 bandwidth、cache miss 与 wall time。
-\item 比较 static/dynamic schedule 在均匀网格和不均匀 patch workload 上的差别。
-\item 在双 socket 机器上比较 serial initialization 与 parallel first-touch。
+\item 一个 $32^3$ tile 的一层 halo 输入 footprint 为 $34^3$。计算式~\eqref{eq:shared-memory-working-set-amplification}；再比较 $16^3$ 与 $64^3$ tile。
+\item 对 $256^3$ 网格使用 32 个线程，连续 full coarsen 三层。计算每层每线程平均 unknown 数，并判断何时开始低于 $g_{\min}=4096$。
+\item 设计两种 tile：$64\times4\times4$ 与 $16^3$。在不知道具体 cache 参数时，比较它们在连续访问、表面积/体积比和可调度 task 数上的结构差异。
+\item 解释为什么“cell 越小、task 越多”并不推出实际线程并行度越高。
 \end{enumerate}
-\subsection*{扩展性诊断}
+
+\subsection*{正确性、Cache 与 NUMA}
 \begin{enumerate}[label=\arabic*.]
-\item 设计按 MG level 自动缩减线程数的策略，并说明观测哪些指标决定阈值。
-\item 比较 Jacobi 与 RBGS：同时报告 convergence factor、barrier 次数和 time-to-solution。
-\item 给出一个“tile 更小反而更慢”的因果链，区分调度、cache 工作集和同步三种可能原因。
+\item 证明 Jacobi old array 只读、新数组 unique writer 时，不需要 tile 间锁；指出 sweep 结束时仍需要什么 readiness 条件。
+\item 构造一个两个线程分别更新不同标量但发生 false sharing 的例子，并说明为什么它没有 data race。
+\item 设计 per-thread reduction buffer 的 cache-line-friendly 布局，并讨论 padding 带来的内存开销。
+\item 在双 socket 系统中比较 serial initialization 与 parallel first-touch，画出“线程、虚拟页、NUMA node”的对应关系。
+\item 说明 thread migration 为什么可能破坏已经正确建立的 first-touch locality。
+\end{enumerate}
+
+\subsection*{同步与 Smoother}
+\begin{enumerate}[label=\arabic*.]
+\item RBGS 做 3 次 pre 和 3 次 post sweep，每 sweep 两颜色。计算单 level 至少出现多少个颜色完成点，并区分算法依赖与具体 barrier API。
+\item 比较 point Jacobi 与 RBGS：同时报告每 sweep memory traffic、barrier 数、convergence factor 与 time-to-solution。
+\item 假设 coarse level useful work 只有 $8\,\mu s$，一次 barrier 为 $2\,\mu s$。估算含 8 次 barrier 的 smoother 中同步占比。
+\item 设计一个 patch-level producer--consumer 方案，使部分 residual 完成后即可开始 restriction；说明它需要哪些局部 dependency 才能正确替代 level-wide barrier。
+\end{enumerate}
+
+\subsection*{性能实验与诊断}
+\begin{enumerate}[label=\arabic*.]
+\item 扫描线程数并同时记录 wall time、memory bandwidth、LLC miss 与 barrier wait time，判断 scaling 饱和究竟来自 bandwidth 还是 task scarcity。
+\item 比较 static、dynamic 与 guided schedule 在规则网格和高度不均匀 patch workload 上的时间、NUMA locality 与 scheduler overhead。
+\item 比较“每个 kernel 独立 parallel region”和“一个 persistent parallel region 内执行整个 V-cycle”的开销。
+\item 设计按 MG level 自动选择 active thread 数的策略，输入至少包括 $N_\ell$、tile 数、测得的 barrier cost 与 memory-bandwidth saturation point。
+\item 给出一个 \texttt{gomp\_barrier\_wait} 占比很高的 profile，列出至少四种不同根因，并说明下一步分别应观测什么证据。
 \end{enumerate}
