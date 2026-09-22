@@ -1,7 +1,9 @@
-MLMG v0.10.3
-Release date: 2026-09-21
-Public source release based on the current canonical manuscript state.
-Reorganizes the first-part solver narrative so Chapter 3 becomes a general linear-system foundation covering direct methods, stationary iteration, Krylov subspaces, CG, GMRES, preconditioning, and FGMRES.
-Moves multigrid-specific mesh-dependent convergence and smoothing analysis into Chapter 4, so two-grid correction follows directly from the failure mode of local stationary solvers.
-Revises the Chapter 3 mental model: M^{-1} is treated as an operator application rather than an explicit inverse, Krylov methods are presented as subspace correction methods, CG as A-energy minimization with A-conjugate directions, GMRES as residual minimization realized through Arnoldi, and FGMRES as a variable-preconditioned search over stored correction vectors.
-Normalizes terminology so established Chinese technical terms use Chinese while Krylov, Arnoldi, matrix-free, and standard algorithm acronyms remain in English where that improves recognition.
+MLMG v0.10.4
+Release date: 2026-09-22
+本版本系统重构并行计算与多重网格实现章节的心智模型，并以源码为依据强化具体软件实现讲解。
+第 7--13 章统一采用“数值语义 -> 状态版本 -> dependency DAG -> ownership -> placement -> scheduling -> machine cost”作为并行分析主线。
+第 8 章重构多重网格操作的并行结构，明确 Jacobi、Gauss--Seidel、restriction、prolongation、reduction、ghost readiness 与 coarse-level parallelism collapse 的真实依赖。
+第 9 章重构共享内存多重网格，补充 cache line、false sharing、NUMA、first-touch、memory-bandwidth saturation、barrier 与 coarse-level thread shrinking。
+第 11--13 章分别重构 MPI、多 GPU 与性能可移植性模型，明确 owned/ghost version、通信 overlap、rank consolidation、device residency 与异步 completion contract。
+第 14 章由软件概览改写为源码精读，固定 AMReX、hypre、PETSc 源码快照，直接追踪 hierarchy construction、level state、V-cycle driver、smoother、restriction/prolongation、RAP、bottom solve 与 coarse-process reduction。
+Release 流程调整为仅主动发布单个版本 PDF，不再额外生成 Actions artifact 或维护源码压缩产物。
