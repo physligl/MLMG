@@ -417,7 +417,7 @@ p_{m-1}(A)\bm r_0,
 
 这给出一个很重要的统一视角：平稳迭代预先固定了同一个误差传播算子；Krylov 方法则根据已经获得的信息，自适应地选择更好的多项式修正。CG 与 GMRES 都工作在同一个 Krylov 空间里，但“怎样选出这个空间里的最好向量”完全不同。
 
-\subsection{Krylov 方法与 无矩阵 算子}
+\subsection{Krylov 方法与无矩阵算子}
 
 \chapref{ch:discretization}已经区分显式矩阵和 无矩阵 算子。Krylov 方法通常不需要任意访问 $A_{ij}$，其核心接口是
 \begin{equation}
