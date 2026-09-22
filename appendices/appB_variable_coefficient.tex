@@ -17,11 +17,16 @@
 F_{i+1/2}
 =-\beta_{i+1/2}\frac{\phi_{i+1}-\phi_i}{h}.
 \end{equation}
-FV 中对控制体收支求和、再除以 cell measure；守恒型 FD 中直接对两个半点通量作差。两条路线都得到
+FV 中对控制体收支求和、再除以 cell measure；守恒型 FD 中直接对两个半点通量作差。由于这里定义
 \begin{equation}
--\frac{F_{i+1/2}-F_{i-1/2}}{h}=f_i.
+F=-\beta\phi_x,
 \end{equation}
-整理得到
+原方程 $-(\beta\phi_x)_x=f$ 就是 $F_x=f$，因此两条路线都得到
+\begin{equation}
+\frac{F_{i+1/2}-F_{i-1/2}}{h}=f_i.
+\label{eq:appb-flux-balance}
+\end{equation}
+代入 face flux 后整理得到
 \begin{equation}
 (A\phi)_i
 =\frac{1}{h^2}
@@ -33,14 +38,20 @@ FV 中对控制体收支求和、再除以 cell measure；守恒型 FD 中直接
 \end{equation}
 若所有 face coefficient $\beta_{i+1/2}>0$，并且相邻 cells 对同一 face 使用同一个 coefficient，则该守恒离散矩阵保持对称，并在适当边界条件下为正定或半正定。这个结论来自共享耦合系数的代数结构，不依赖我们把该算子称为 FD 还是 FV。
 
-当材料界面系数跳变时，face coefficient 常使用 harmonic average：
+当 $\beta$ 在相邻两个 cell 内近似分段常数，并且 face 位于两个 cell center 的中点时，可以把 center-to-center 路径看成两个长度均为 $h/2$ 的串联扩散阻抗。要求通过两段的稳态 flux 相同，可得到等效 face coefficient
 \begin{equation}
 \beta_{i+1/2}
-=\frac{2\beta_i\beta_{i+1}}{\beta_i+\beta_{i+1}},
+=
+\frac{2\beta_i\beta_{i+1}}
+{\beta_i+\beta_{i+1}},
 \end{equation}
-因为它更符合串联扩散/导电阻抗的物理关系。对 GPU 而言，代价是每次 stencil 需要加载额外 coefficient fields；对 AMG 而言，强跳变还会改变 strength graph 与 coarse-space 需求。
+即 harmonic average。
+
+这里要注意适用边界：这个公式隐含了等距的两个半 cell。若界面位置偏离 face、网格非均匀或 coefficient reconstruction 更复杂，正确的 transmissibility 应使用实际几何距离和材料分段重新推导，而不是机械套用 $2\beta_i\beta_{i+1}/(\beta_i+\beta_{i+1})$。
+
+对 GPU 而言，变系数 stencil 会增加 coefficient loads；对 AMG 而言，强跳变还会改变 strength graph 与 coarse-space 需求。
 
 \section*{推导检查}
 \begin{checkpointbox}
-为什么相邻两个 cell 必须共享同一个 face coefficient 才容易保持矩阵对称？若 $\beta$ 跨界面跳变很大，算术平均与 harmonic average 分别隐含什么物理假设？
+从 $F=-\beta\phi_x$ 出发重新推导式~\eqref{eq:appb-flux-balance}，检查通量差分前的符号。为什么相邻两个 cell 必须共享同一个 face coefficient 才容易保持矩阵对称？对位于两个 cell center 中点的材料界面，用“两个半 cell 串联阻抗”重新推导 harmonic average。
 \end{checkpointbox}
