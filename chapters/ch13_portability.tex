@@ -2,99 +2,337 @@
 \label{ch:portability}
 
 \begin{keybox}
-性能可移植性不是“同一份源码能编译”这么简单。真正需要保持的是\chapref{ch:mg-parallel-operations}已经确定的\textbf{操作语义、数据所有权和依赖关系}，同时允许不同后端选择不同的执行粒度、memory space 和同步实现。
+性能可移植性不是“同一份源码能在 CPU、NVIDIA GPU、AMD GPU 上编译”。一个可靠的异构求解器必须同时守住四层契约：
+\begin{equation}
+\boxed{
+\text{numerical semantics}
+\rightarrow
+\text{state/data contract}
+\rightarrow
+\text{dependency graph}
+\rightarrow
+\text{backend policy}.
+}
+\label{eq:portability-four-contracts}
+\end{equation}
+前三层描述“必须保持什么”，最后一层描述“允许不同硬件怎样做”。真正可移植的不是某个固定 block size，而是\chapref{ch:mg-parallel-operations}已经建立的操作语义、状态版本、所有权与依赖关系。
 \end{keybox}
 
-\section{算法接口与执行后端分离}
+\section{先区分四种“可移植”}
 
-理想的软件边界不是让数值代码直接写满 OpenMP/CUDA/MPI 细节，而是把核心操作表达成稳定接口，例如：
+异构软件中至少有四个容易混淆的目标：
+
+\begin{enumerate}
+\item \textbf{源码可移植（source portability）}：相近源码可以在多个平台构建；
+\item \textbf{语义/正确性可移植（semantic portability）}：相同输入产生数值上等价的离散操作与求解结果；
+\item \textbf{性能可移植（performance portability）}：各目标平台上都能达到合理的平台效率；
+\item \textbf{工程可维护性}：增加或修改后端时，不需要在数值算法中复制大量后端分支。
+\end{enumerate}
+
+第一项最容易做到，也最弱。一个程序即使能在所有设备上编译，只要每次 residual 都发生不必要 host--device copy，或者粗层只能退回极慢路径，就不能称为具有良好的 performance portability。
+
+因此本章讨论的目标是：
+\begin{equation}
+\boxed{
+\text{correct everywhere}
+\quad+\quad
+\text{efficient enough everywhere}
+\quad+\quad
+\text{backend differences remain localized}.
+}
+\end{equation}
+
+\section{数值语义层只描述“做什么”}
+
+理想的数值层接口应表达数学操作和状态变化，例如：
 \begin{align}
-&\texttt{apply\_operator(level, u, r)},\qquad
-\texttt{smooth(level, u, b)},\\
-&\texttt{restrict(transfer, fine, coarse)},\qquad
-\texttt{prolong(transfer, coarse, fine)}.
+&\texttt{apply\_operator(level, u, r)},\\
+&\texttt{smooth(level, u, b)},\\
+&\texttt{restrict(transfer, fine, coarse)},\\
+&\texttt{prolong(transfer, coarse, fine)}.
 \end{align}
-这里的 \texttt{transfer} 不是无语义的函数标签，而是已经固定了 DOF location、quantity semantics、geometry 与离散内积约定的传递算子描述；这一点与\chapref{ch:two-grid}建立的 $R/P$ 数学语义一致。接口固定的是读写集合、数学操作和依赖关系，后端才决定 task 如何映射。
 
-这种分层只有在数据布局也可描述时才成立。单纯抽象 execution policy，却让 host/device memory、ghost ownership、temporary workspace 仍然散落在算法逻辑中，最终仍会形成“可编译但不可维护”的后端分叉。
+这些接口不能只是函数名。它们至少隐含：
 
-\section{执行空间与内存空间}
-
-异构抽象至少需要区分两个维度：
 \begin{itemize}
-\item \textbf{执行空间（execution space）：}任务在 CPU 线程、GPU 线程或其他设备上执行；
-\item \textbf{内存空间（memory space）：}数据位于主机内存、设备内存、统一/共享内存，或分布式的 rank-local memory。
+\item 输入/输出 DOF 位于哪里；
+\item 读取的是哪个状态版本；
+\item 输出 ownership 是什么；
+\item 边界/ghost readiness 前置条件；
+\item operator/transfer 的离散语义；
+\item 是否允许原地覆盖；
+\item 后继 operation 可以在什么条件下消费结果。
 \end{itemize}
-只有执行位置与数据驻留关系匹配，内核（kernel）才能合法且高效地访问数据。一个可移植多维视图（view/container）的价值，是把形状、步长（stride）和所有权与底层 allocation 绑定，而不是假设所有指针在所有设备上都等价。
 
-\section{并行模式的可移植表达}
+例如 \texttt{transfer} 应包含与\chapref{ch:two-grid}中 $R/P$ 一致的 DOF location、quantity semantics、geometry 与离散内积约定，而不是一个“调用不同 kernel 的标签”。
 
-最值得抽象的是稳定的并行模式：
+如果这些数学语义在 CPU 与 GPU 后端中分别重新解释，那么所谓统一接口只是表面统一。
+
+\section{数据契约必须显式表达 Ownership、Layout 与 Residency}
+
+异构抽象不能只封装“怎么启动 parallel-for”，还必须描述数据本身。
+
+至少要区分：
+
+\begin{enumerate}
+\item \textbf{logical ownership}：哪些 unknowns/outputs 属于当前 patch/rank；
+\item \textbf{shape/layout}：多维索引、stride、AoS/SoA、component ordering；
+\item \textbf{memory space}：host、device、unified/shared 或 rank-local distributed memory；
+\item \textbf{residency/version}：当前有效版本实际位于哪些 memory spaces；
+\item \textbf{temporary lifetime}：workspace 从 birth 到 last use 的生命周期。
+\end{enumerate}
+
+因此一个 portable view/container 的价值不只是“封装指针”，而是把
+\begin{equation}
+\boxed{
+\text{indexing semantics}
++
+\text{memory space}
++
+\text{lifetime/ownership}
+}
+\end{equation}
+绑定在一起。
+
+如果数值层拿到的只是裸指针，它就不得不自己知道“这是不是 device pointer”“需不需要 copy”“是否已经 ghost ready”，后端细节会迅速泄漏回算法层。
+
+\section{Execution Space 与 Memory Space 是正交维度}
+
+异构抽象至少要区分：
 \begin{itemize}
-\item parallel-for：Jacobi/residual/correction；
+\item \textbf{execution space}：CPU threads、GPU device 或其他执行资源；
+\item \textbf{memory space}：数据实际存储和可访问的位置。
+\end{itemize}
+
+二者不能互相推出。一个 CPU task 可能处理 pinned host buffer，也可能参与 unified memory；一个 GPU kernel 可能访问 device-local allocation，也可能访问受支持的 managed/shared allocation。
+
+合法性首先要求 execution space 能访问相关 memory space；性能还要求这种访问路径合理。
+
+因此：
+\begin{equation}
+\boxed{
+\text{execution portability}
+\not\Rightarrow
+\text{memory portability}.
+}
+\end{equation}
+
+一个把 CPU loop 换成 GPU parallel-for、却仍在热路径频繁 host/device migration 的程序，只完成了执行语法迁移，没有完成数据模型迁移。
+
+\section{依赖契约必须能表示异步完成}
+
+CPU 串行接口常让人形成一个危险假设：
+\begin{equation}
+\text{函数返回}
+\Rightarrow
+\text{输出已经全局可用}.
+\end{equation}
+
+GPU stream、task runtime、nonblocking MPI 等异步后端并不总满足这一点。Portable interface 如果只返回 void，就可能迫使后端在每次调用末尾做不必要的同步，或者让调用方错误地提前读取结果。
+
+更适合异构执行的抽象是让 operation 产生一个逻辑 completion：
+\begin{equation}
+\text{operation}
+\longrightarrow
+\text{completion token/event/dependency}.
+\label{eq:portability-completion}
+\end{equation}
+
+后继 operation 可以表达：
+\begin{equation}
+\text{consume output}
+\quad\text{after}\quad
+\text{completion}.
+\end{equation}
+
+这个 completion 不要求所有后端使用同一种 event 类型。CPU 同步后端可以立即完成；GPU 可以映射到 stream/event；MPI halo 可以映射到 request/ghost readiness；task runtime 可以映射到 dependency handle。
+
+稳定的是\textbf{先后语义}，不是同步 API。
+
+\section{并行模式是合适的中层抽象}
+
+最值得跨后端保留的是少数稳定 pattern：
+
+\begin{itemize}
+\item parallel-for：Jacobi、residual、correction；
 \item parallel-reduce：norm/dot；
-\item team/tile policy：GPU block 或 CPU tile；
-\item memory view：多维索引与 stride；
-\item 异步任务与依赖：halo readiness、kernel DAG。
+\item gather/transfer：restriction/prolongation；
+\item team/tile/local solve：block/line smoother；
+\item asynchronous producer--consumer：halo、ghost fill、pipeline；
+\item memory view/layout：多维索引与 component organization。
 \end{itemize}
-对本书当前以规则结构网格为主的 target-centric 实现，restriction/prolongation 常可表达为 gather parallel-for，从而映射到 OpenMP loop、CUDA kernel、HIP/SYCL kernel 或 Kokkos execution policy。但这不是 transfer 的一般定义：更复杂的传递可能表现为 sparse operator apply、scatter/reduction，或同时包含跨 rank 通信；可移植层必须保留这些语义差异。
 
+这些 pattern 比“thread/block/rank”更稳定，又比一个完全黑盒的 \texttt{solve()} 更能保留算法结构。
 
-\section{残差计算的跨后端语义一致性}
+例如 target-centric restriction
+\begin{equation}
+b_H(I)
+=
+\sum_j w_{Ij}r_h(j)
+\end{equation}
+可以在 CPU 上映射成 coarse-cell loop，在 GPU 上映射成 one/few threads per coarse output，在 portable layer 上表达为 gather parallel-for。
+
+但这不意味着所有 transfer 都必须伪装成 parallel-for。更复杂的 sparse transfer、scatter/reduction 或跨 rank redistribution 应保留自己的语义。为了 API 统一而抹掉真实 dependency pattern，会让抽象失真。
+
+\section{Residual 是检验抽象边界的最小案例}
 \label{sec:portability-residual-trace}
 
-抽象是否有效，最好不要从 API 名字判断，而要跟踪同一个数值操作。设某一层已经完成 halo exchange，需要计算
+设 ghost 已 ready，要计算
 \begin{equation}
-r_i=b_i-(Au)_i
+r_i
+=
+b_i-(Au)_i
 \end{equation}
-并保证只写 owned cells。这个操作至少包含四个稳定语义：读取 $u$ 与 $b$，读取相邻 stencil 数据，写入 $r$，以及在 ghost ready 之后才能启动。不同后端改变的是执行粒度和内存位置，而不是这四个语义。
+并只写 owned cells。
+
+跨所有后端必须保持的语义是：
+
+\begin{enumerate}
+\item iteration domain 是 owned outputs；
+\item 输入 $u,b$ 与 operator data 对当前 operation 只读；
+\item 每个 $r_i$ 有唯一 writer；
+\item boundary task 只能在所需 ghost version ready 后执行；
+\item 输出数值符合相同离散 operator 定义。
+\end{enumerate}
+
+后端可以改变：
 
 \begin{center}
-\begin{tabularx}{0.96\textwidth}{>{\bfseries}p{2.9cm}XXX}
+\begin{tabularx}{0.97\textwidth}{>{\bfseries}p{3.0cm}XXX}
 \toprule
-对象 & CPU/OpenMP & GPU 原生后端 & 可移植执行层\\
+维度 & CPU/OpenMP & GPU 原生后端 & 可移植后端抽象\\
 \midrule
-迭代域 & owned cells 的并行循环 & grid/block/thread 映射 & parallel-for 的索引空间\\
-数据表示 & host-resident view & device-resident view & 带 memory space 的 view\\
-前置依赖 & halo 完成后进入并行区 & event/stream 等待 ghost ready & 依赖对象或后端同步语义\\
-局部粒度 & chunk/tile/vector width & block size、每线程 cell 数 & team/tile policy 后端特化\\
+调度粒度 & chunk/tile/vector width & thread/block/tile & execution policy\\
+数据位置 & host/NUMA pages & device memory & memory space/view\\
+完成语义 & barrier/同步返回 & stream/event & completion/dependency\\
+局部布局 & cache-friendly loop order & coalesced layout & layout policy\\
 数值定义 & $r=b-Au$ & $r=b-Au$ & $r=b-Au$\\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-这张表揭示了性能可移植的边界。\textbf{数值层必须稳定的是迭代域、读写集合、依赖关系和离散算子；不应该稳定的是 block size、tile shape 或具体同步原语。}如果为了“统一代码”连这些后端参数也强制相同，抽象就把性能调节能力一并抹掉；反过来，如果数值层直接判断 warp size 或设备型号，抽象又失去了隔离硬件细节的意义。
+由此得到一个非常重要的设计原则：
+\begin{equation}
+\boxed{
+\text{语义稳定}
+\quad
+\text{参数和 schedule 可后端特化}.
+}
+\label{eq:portability-semantics-policy}
+\end{equation}
 
-\paragraph{一个可验证的迁移过程。}
-假设先有一个已经验证的 CPU residual 实现。迁移到 GPU 或可移植框架时，不应先比较速度，而应按以下顺序检查：第一，用同一组 $u,b$ 验证输出 $r$ 在允许的舍入误差范围内一致；第二，验证边界/ghost 依赖没有因异步执行发生竞态；第三，再把时间拆成 interior、boundary、同步与数据移动；第四，才比较不同 tile/team 参数。这个顺序把“数值等价”和“执行效率”分开，使性能问题不会被错误地解释成算法差异。
+\section{不要把 Schedule 固化进算法接口}
 
-\section{原生后端与可移植框架}
+性能相关参数经常依赖硬件：
 
-原生 CUDA/HIP 通常提供最直接的设备控制能力；OpenMP target、SYCL、Kokkos 等则提供更统一的执行与内存抽象。选择时应比较的不只是单 kernel 峰值，还包括：
 \begin{itemize}
-\item 多维 view/layout 是否能表达结构网格和 patch；
-\item reduction、team/tile、async dependency 是否自然；
-\item host/device/multi-GPU memory management 是否清晰；
-\item profiler 与调试工具是否足够；
-\item coarse-grid 特殊路径是否允许下沉到原生实现。
+\item CPU tile size；
+\item OpenMP static/dynamic schedule；
+\item GPU block shape；
+\item 每 thread 处理的 cells；
+\item shared-memory tiling；
+\item kernel fusion；
+\item stream 数；
+\item coarse-level active threads/GPUs；
+\item bottom solver 切换点。
 \end{itemize}
 
-性能可移植框架不应该迫使所有后端采用同一个 tile size 或完全相同的 kernel fusion。\textbf{语义可移植，调度参数允许后端特化}通常更现实。
+如果统一接口把这些全部固定为同一个值，源码确实“统一”，但后端失去了最重要的优化自由度。
 
-\section{避免泄漏硬件细节}
-
-如果数值层开始直接出现“warp size”“具体 GPU 型号”“NUMA node”或特定 MPI communicator/rank 编号等硬件与执行后端判断，说明抽象边界可能已经泄漏。更稳定的做法是数值层表达：
+因此应该区分：
 \begin{equation}
-\text{parallel-for / reduction / halo dependency / memory view},
+\boxed{
+\text{algorithm parameters}
+\neq
+\text{execution policy parameters}.
+}
 \end{equation}
-后端层再决定这些语义如何实现。
 
-但抽象也不能抹掉必要信息。例如 line smoother 的任务不是 pointwise；distributed halo 具有 owner/ghost 语义；这些属于算法本身，应保留在接口中，而不是为了“统一 API”伪装成普通 map。
+例如 smoother damping factor $\omega$ 属于数值算法；CUDA block size 属于 execution policy。后端可以拥有自己的 policy defaults、autotuning 或 architecture-specific specialization，但不得静默改变数学 operator。
 
+\section{Capability 比硬件型号更适合作为接口}
 
-\section{V-Cycle 的分层性能评价}
+数值层直接判断
+\begin{equation}
+\texttt{if NVIDIA ... else if AMD ...}
+\end{equation}
+通常意味着抽象边界泄漏。
 
-下面给一个\emph{示意性}例子，说明为什么单个 stencil 的性能比例不足以代表求解器。设某 GPU 上原生后端与可移植后端的一次 V-cycle 时间分解如下：
+更稳定的方式是后端暴露能力，例如：
+\begin{itemize}
+\item supports async dependency；
+\item supports device-resident reduction；
+\item supports direct device communication；
+\item preferred tile/team limits；
+\item available memory space；
+\item supports backend-specific fused primitive。
+\end{itemize}
+
+算法或调度层根据\textbf{capability}选择合法路径，而不是根据具体型号猜实现细节。
+
+这并不意味着完全禁止后端特化。恰恰相反：特化应留在 backend/policy 层，由统一语义接口调用，而不是散落在 PDE 和 multigrid 数学代码中。
+
+\section{可移植抽象必须保留 Escape Hatch}
+
+任何通用抽象都可能遇到少数关键 kernel，其平台最佳实现需要后端专用机制。
+
+合理的软件架构应该允许：
+\begin{equation}
+\boxed{
+\text{portable default}
+\quad+\quad
+\text{backend-specialized fast path}
+}
+\end{equation}
+共享同一个数值契约和测试。
+
+例如大部分 vector operations 可以使用统一 parallel-for，而某个 GPU coarse solver、特殊 tensor kernel 或 vendor library path 可以由特定 backend 接管。
+
+Escape hatch 的边界是：它可以改变执行方式，不能偷偷改变数值问题。这样既保留 performance ceiling，也避免整套算法复制成 CUDA/HIP/CPU 三份。
+
+\section{跨后端迁移应先验证语义，再测性能}
+
+假设已有经过验证的 CPU residual。迁移到新后端时，建议固定以下顺序：
+
+\begin{enumerate}
+\item \textbf{数值验证}：同一 $u,b$ 下，输出 $r$ 在声明的舍入误差范围内一致；
+\item \textbf{边界验证}：physical boundary、ghost、AMR interface 的状态版本正确；
+\item \textbf{依赖验证}：异步执行下没有提前消费未完成输出；
+\item \textbf{residency 验证}：热路径没有意外 memory migration/copy；
+\item \textbf{阶段计时}：分离 interior、boundary、reduction、communication、coarse path；
+\item \textbf{policy tuning}：最后才扫描 tile/team/block/fusion 参数。
+\end{enumerate}
+
+这个流程防止两种常见错误：
+
+\begin{itemize}
+\item 性能差异其实来自数值路径不同，却被误判为硬件差异；
+\item 为了先“跑起来”加入大量同步/copy，后来把这些临时路径误认为框架固有性能。
+\end{itemize}
+
+\section{原生后端与可移植框架的真正比较对象}
+
+原生 CUDA/HIP 往往提供最直接的设备控制；OpenMP target、SYCL、Kokkos 等提供不同程度的 execution/memory abstraction。
+
+选择时不能只测单个 stencil。至少要问：
+
+\begin{itemize}
+\item multidimensional view/layout 是否自然表达 patch/box；
+\item parallel-for/reduce/team 是否覆盖核心 operation；
+\item async dependency 是否足够表达 V-cycle DAG；
+\item host/device/multi-GPU memory ownership 是否清楚；
+\item MPI/device communication 是否容易集成；
+\item coarse-level 特殊路径是否能特化；
+\item profiler、debugger 与 sanitizer 是否能观察抽象内部；
+\item vendor library 与原生 fast path 是否可接入。
+\end{itemize}
+
+一个 framework 即使 fine-grid kernel 只比原生慢 $5\%$，如果 coarse redistribution、device residency 或 reduction 只能走低效通用路径，完整 solve 仍可能明显更慢。
+
+\section{V-Cycle 必须作为整体评价对象}
+
+下面用示意数据说明为什么不能只看一个 kernel：
+
 \begin{center}
 \begin{tabular}{lcc}
 \toprule
@@ -109,67 +347,155 @@ restriction/prolongation & 0.8 & 0.9\\
 \bottomrule
 \end{tabular}
 \end{center}
-细层主 kernel 只慢约 $10\%$，但完整 cycle 慢约 $27\%$。差异主要来自粗层与同步，而不是细层 stencil。因此性能可移植性至少要同时回答两个问题：\textbf{热点 kernel 是否接近平台最佳，以及完整求解流程是否仍能控制粗层、同步和数据驻留。}
 
-\section{性能可移植性的评价}
+细层热点只慢约 $10\%$，完整 cycle 却慢约 $27\%$。真正差异来自 coarse path 和 synchronization。
 
-先定义单个平台 $a$ 上的\textbf{归一化效率} $e_a$。若性能指标 $P$ 是越大越好，例如 throughput，可写成
+因此至少要同时评价：
 \begin{equation}
-e_a=\frac{P_{portable,a}}{P_{best,a}}.
+\boxed{
+\text{kernel efficiency}
+\quad+\quad
+\text{end-to-end solver efficiency}.
+}
+\end{equation}
+
+如果目标软件还包括 setup/hierarchy rebuild，则 setup time 与 amortization 也应单独报告。
+
+\section{性能可移植性的量化}
+
+先定义平台 $a$ 上的归一化效率 $e_a$。
+
+若性能指标 $P$ 越大越好：
+\begin{equation}
+e_a
+=
+\frac{P_{portable,a}}
+{P_{best,a}}.
 \label{eq:portability-platform-efficiency-throughput}
 \end{equation}
-若评价对象是 time-to-solution，则更自然地写成
+
+若评价 time-to-solution：
 \begin{equation}
-e_a=\frac{T_{best,a}}{T_{portable,a}},
+e_a
+=
+\frac{T_{best,a}}
+{T_{portable,a}}.
 \label{eq:portability-platform-efficiency-time}
 \end{equation}
-使得两种定义都满足 $0<e_a\le1$。这里的 $P_{best,a}$ 或 $T_{best,a}$ 必须来自同一个数值问题、同一精度目标和预先声明的参考实现集合，否则归一化本身就不可比较。
 
-单个平台的 $e_a$ 仍不是跨平台 performance portability。Pennycook、Sewall 与 Lee 提出的经典指标在目标平台集合 $\mathcal A$ 上使用效率的调和平均，并把目标平台上不能运行显式视为零 portability\cite{pennycook2019performance}：
+两种定义都使
 \begin{equation}
-\Phi(\mathcal A)=
+0<e_a\le1.
+\end{equation}
+
+这里的 reference 必须满足相同数值问题、精度目标与允许算法集合，否则“最佳性能”本身不可比较。
+
+Pennycook、Sewall 与 Lee 提出的经典 performance-portability 指标在目标平台集合 $\mathcal A$ 上使用效率的调和平均，并把任一目标平台不受支持的情况定义为零 portability\cite{pennycook2019performance}：
+\begin{equation}
+\Phi(\mathcal A)
+=
 \begin{cases}
 \displaystyle
 \frac{|\mathcal A|}
 {\sum_{a\in\mathcal A}1/e_a},
-& \text{若所有 }a\in\mathcal A\text{ 都受支持},\\[1.0em]
+&
+\text{若所有 }a\in\mathcal A\text{ 都受支持},
+\\[1.0em]
 0,
-& \text{否则}.
+&
+\text{否则}.
 \end{cases}
 \label{eq:portability-pennycook-metric}
 \end{equation}
-这个定义的价值不在于宣称一个标量足够描述所有可移植性，而在于同时惩罚低效率平台和缺失平台；实际分析仍应保留各平台的 $e_a$ 分布。
 
-对 multigrid，$e_a$ 的评价对象也不应只是单个 fine-grid kernel，而应是完整、数值等价的 V-cycle 或 solve。特别是在异步后端中，不能把所有 kernel/MPI event duration 简单相加作为总时间。按照\chapref{ch:benchmarking}的计时约定，应直接测量
+这个标量适合做摘要，但不能替代每个平台的 $e_a$、wall time 和瓶颈结构。一个平台特别差时，必须继续解释是 memory layout、coarse path、communication 还是缺少 specialization。
+
+\section{异步后端的计时必须使用 Wall Time 语义}
+
+GPU/MPI/task runtime 中，不同 kernels、copies、events 可以重叠。把 profiler 中所有 event duration 直接相加，可能得到大于实际 wall time 的总量。
+
+因此完整 solve 的主评价对象应是
 \begin{equation}
-T_{solve}^{\mathrm{wall}},
+T_{\mathrm{solve}}^{\mathrm{wall}},
 \end{equation}
-并把 level/operation 数据作为 exclusive accounting 或可重叠 event duration 分别报告。一个框架若细层 stencil 很快但无法控制粗层重分布，完整 solve 的 $e_a$ 仍可能很低。
+而 operation-level 数据要明确区分：
+\begin{itemize}
+\item exclusive phase accounting；
+\item 可重叠 event duration；
+\item critical-path time。
+\end{itemize}
+
+这一计时语义与\chapref{ch:benchmarking}保持一致。性能可移植比较如果连计时口径都不同，归一化效率没有意义。
+
+\section{抽象边界泄漏的诊断}
+
+出现以下信号时，应怀疑数值层与后端层边界失效：
+
+\begin{itemize}
+\item PDE kernel 中直接判断 GPU vendor/model；
+\item 数值类持有大量 CUDA stream / HIP queue / MPI request 细节；
+\item CPU/GPU 各有一份近乎相同的 discretization code；
+\item 一个新 backend 需要修改大量数学层文件；
+\item 所有后端被迫使用完全相同的 tile/block；
+\item 为了兼容同步 CPU API，每个 GPU operation 都强制 device synchronize；
+\item memory migration/copy 由调用方手工散落管理。
+\end{itemize}
+
+相反，一个健康边界应该让数值代码主要讨论
+\begin{equation}
+\text{iteration domain},
+\quad
+\text{state versions},
+\quad
+\text{ownership},
+\quad
+\text{dependency},
+\quad
+\text{operator semantics},
+\end{equation}
+后端负责 execution/memory policy。
 
 \section{本章小结}
 
-异构可移植性的核心是稳定算法语义与可替换执行后端：任务、ownership、memory view、reduction 与 halo dependency 必须被清楚表达；tile、thread/block、stream 和后端调优参数则允许特化。真正的评价对象是完整 V-cycle/solve，而不是某个孤立 kernel 能否跨平台运行。
+异构性能可移植性的核心不是“一个 API 覆盖所有硬件”，而是把不变量与可变策略分开。
+
+必须跨后端稳定的是：离散数学语义、状态版本、输入输出 ownership、ghost/transfer dependency 与完成条件。应该允许后端特化的是：tile、thread/block、memory layout、fusion、stream、active resources 与 bottom strategy。
+
+一个好的可移植层既不能把硬件细节泄漏到数学代码，也不能为了统一而抹掉算法真实结构。最终评价必须回到数值等价的完整 V-cycle/solve，并使用一致 wall-time 口径比较。
 
 \section*{习题}
-\subsection*{抽象边界与性能模型}
-\begin{enumerate}[label=\arabic*.]
-\item 某 portable backend 在 CPU/GPU 上分别达到各自原生最佳 time-to-solution 效率的 85\%/72\%。按式~\eqref{eq:portability-pennycook-metric}计算两平台 performance portability；再计算算术平均与几何平均，并比较三种聚合方式对低效率平台的敏感性。
-\item 给定 V-cycle 五类 operation 时间，分别计算两个后端的 total cycle time，判断单独 stencil 快 20\% 是否足以让整体更快。
-\item 一个 backend 需要每 cycle 额外做两次 host-device sync，各 15 $\mu$s。计算在 100 $\mu$s 与 2 ms cycle 上的相对开销。
 
-\item 说明为什么 execution-space 抽象不能自动解决 memory-space 正确性。
-\item 给出“语义可移植、调度参数后端特化”不会改变数值结果的条件。
-\item 构造一个反例说明：如果 abstraction 既不向数值层暴露 halo/ownership 语义，也没有在运行时内部编码相应的通信与依赖，那么仅靠 local parallel-for 不能保证分布式 stencil 的全局正确性。再说明为什么“隐藏具体 MPI rank”本身并不违反这一条件。
-\end{enumerate}
-\subsection*{跨后端验证}
+\subsection*{抽象边界}
 \begin{enumerate}[label=\arabic*.]
-\item 为 residual/restriction/prolongation 设计统一 kernel interface，并实现两个执行后端。
-\item 比较 AoS/SoA 或不同多维 layout 在 CPU/GPU 上的影响。
-\item 为同一 V-cycle 收集 backend-neutral phase timing。
+\item 对 residual、restriction、prolongation 分别列出 numerical semantics、state/data contract、dependency 与 backend policy 四层内容。
+\item 解释为什么 execution-space abstraction 不能自动解决 memory-space correctness。
+\item 把 CUDA block size、Jacobi damping factor、MPI owner mapping、GPU stream 数分别归类为 algorithm parameter 或 execution policy。
+\item 设计一个 completion token 接口，使同步 CPU backend 与异步 GPU backend 都能表达 residual $\rightarrow$ restriction 依赖。
+\item 构造一个抽象泄漏案例：数值层直接判断 warp size。重构成 capability/policy 形式。
 \end{enumerate}
-\subsection*{可移植性决策}
+
+\subsection*{跨后端正确性验证}
 \begin{enumerate}[label=\arabic*.]
-\item 设计一个 backend abstraction，明确哪些概念必须暴露给数值层、哪些必须隐藏。
-\item 评审一个“所有硬件统一 tile size”的方案，指出性能可移植性风险。
-\item 为软件库选择原生 CUDA/HIP、OpenMP target、SYCL 或 Kokkos 时制定评价矩阵。
+\item 从已经验证的 CPU residual 迁移到 GPU，制定数值、boundary、dependency、residency 四级测试。
+\item 构造一个 GPU kernel 数值本身正确、但由于缺少 ghost-ready dependency 而产生间歇错误的案例。
+\item 设计 backend-neutral test，验证 fused prolongation+correction 与显式 $e_h$ 路径数值等价。
+\item 说明浮点 reduction 顺序变化时，应如何定义“跨后端一致”而不是机械要求 bitwise identical。
+\end{enumerate}
+
+\subsection*{性能可移植性}
+\begin{enumerate}[label=\arabic*.]
+\item 某 portable backend 在 CPU/GPU 上分别达到各自最佳 time-to-solution 的 $85\%/72\%$。按式~\eqref{eq:portability-pennycook-metric}计算 performance portability。
+\item 加入第三个平台，效率只有 $35\%$，重新计算并解释调和平均为何对低效率平台敏感。
+\item 一个 backend 每 cycle 额外发生两次 host-device sync，各 $15\,\mu s$。计算在 $100\,\mu s$ 与 $2$ ms cycle 中的相对开销。
+\item 给定两套后端的 fine kernel、transfer、coarse solve、sync 时间，比较单 kernel ranking 与 end-to-end ranking 是否一致。
+\item 设计一套平台矩阵，同时报告 $e_a$、wall time、memory traffic、coarse-level efficiency，而不是只给一个 $\Phi$。
+\end{enumerate}
+
+\subsection*{架构与决策}
+\begin{enumerate}[label=\arabic*.]
+\item 设计 portable default + backend fast path 架构，说明两条路径如何共享同一数值测试。
+\item 评审“所有 CPU/GPU 统一 tile size”的方案，指出它违反了哪些层次边界。
+\item 为原生 CUDA/HIP、OpenMP target、SYCL、Kokkos 或其他方案制定评价矩阵，至少包含 async dependency、memory model、multi-GPU、profiling、specialization 与维护成本。
+\item 某新硬件具有不同 warp/wavefront 宽度。说明为什么 capability/policy 层应吸收差异，而 residual 数值接口不应修改。
+\item 给出一个“可编译但不可维护”的异构设计，并按本章四层契约重新拆分。
 \end{enumerate}
