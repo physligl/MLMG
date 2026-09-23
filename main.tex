@@ -17,26 +17,10 @@
 \usepackage{hyperref}
 \usepackage{cleveref}
 \usepackage{microtype}
-\setlength{\emergencystretch}{2em}
 \usepackage{fancyhdr}
 \usepackage{csquotes}
 \usepackage[backend=biber,style=numeric-comp,sorting=none,maxbibnames=20]{biblatex}
 \addbibresource{references.bib}
-
-\definecolor{deepblue}{RGB}{33,68,112}
-\definecolor{softblue}{RGB}{237,243,249}
-\definecolor{softgray}{RGB}{246,247,249}
-\definecolor{softgreen}{RGB}{239,247,241}
-\definecolor{softorange}{RGB}{252,246,235}
-
-\hypersetup{colorlinks=true,linkcolor=deepblue,citecolor=deepblue,urlcolor=deepblue,pdftitle={并行多重网格方法},pdfauthor={OpenAI}}
-\setlength{\parindent}{2em}
-\setlength{\parskip}{0.15em}
-\pagestyle{fancy}
-\fancyhf{}
-\fancyhead[LE]{\small 并行多重网格方法}
-\fancyhead[RO]{\small\leftmark}
-\fancyfoot[C]{\thepage}
 
 \newcommand{\chapref}[1]{第\ref{#1}章}
 \newcommand{\secref}[1]{第\ref{#1}节}
@@ -57,7 +41,9 @@
 
 \input{chapters/ch01_continuous_pde}
 \input{chapters/ch01_discretization}
-\input{chapters/ch02_amr_discretization}
+\input{chapters/ch02_finite_difference}
+\input{chapters/ch03_finite_volume}
+\input{chapters/ch04_discrete_operator}
 \input{chapters/ch03_iterative_smoothing}
 \input{chapters/ch04_two_grid}
 \input{chapters/ch05_multigrid_cycles}
